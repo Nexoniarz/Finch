@@ -108,6 +108,7 @@ Function *Codegen::rt(const std::string &name) {
         {"finch_map_free", {V, {P}}},
         {"finch_map_clone_raw", {V, {P, P, I}}},
         {"finch_map_missing", {V, {P, I, P}}},
+        {"finch_map_changed", {V, {P, I}}},
         {"finch_buf_add", {V, {P, P, I}}},
         {"finch_buf_int", {V, {P, I}}},
         {"finch_buf_uint", {V, {P, I}}},
@@ -125,7 +126,7 @@ Function *Codegen::rt(const std::string &name) {
     }
     Function *f = Function::Create(FunctionType::get(it->second.ret, it->second.params, false), Function::ExternalLinkage,
                                    name, mod.get());
-    if (name == "finch_panic" || name == "finch_panic_index" || name == "finch_map_missing") {
+    if (name == "finch_panic" || name == "finch_panic_index" || name == "finch_map_missing" || name == "finch_map_changed") {
         f->addFnAttr(Attribute::NoReturn);
         f->addFnAttr(Attribute::Cold);
     }
@@ -309,6 +310,8 @@ Value_ Codegen::call(const CallExpr &c) {
     if (n == "write_file") {
         checkArgs(c.args, c.argNames, 2, p, n);
         Value_ path = coerce(expr(*c.args[0]), FType::Str, c.args[0]->pos, "the file name");
+        Held held(*this);
+        hold(path);
         Value_ text = coerce(expr(*c.args[1]), FType::Str, c.args[1]->pos, "the text");
         if (canFail) {
             Value *err = tmp(zero(FType::Str));
@@ -360,6 +363,7 @@ Value_ Codegen::callFinch(const Fn &fn, const std::vector<ExprPtr> &args, const 
     checkArgs(args, names, fn.params.size(), p, shown);
     std::vector<Value *> vals;
     std::vector<Value_> fresh;
+    Held held(*this);
     if (self) vals.push_back(self);
     for (size_t i = 0; i < args.size(); i++) {
         Value_ v = coerce(exprWant(*args[i], fn.params[i]), fn.params[i], args[i]->pos, "argument '" + d.params[i].name + "'");
@@ -368,6 +372,7 @@ Value_ Codegen::callFinch(const Fn &fn, const std::vector<ExprPtr> &args, const 
             v = {copyValue(v.v, v.type), v.type, false, true};
         vals.push_back(v.v);  // owning values are lent: the function never drops them
         if (v.fresh) fresh.push_back(v);
+        hold(v);
     }
     setLoc(p);
     Value *r = b.CreateCall(fn.llvm, vals);
@@ -412,6 +417,7 @@ Value_ Codegen::construct(StructInfo *s, const std::vector<ExprPtr> &args, const
     }
 
     Value *v = zero(t);
+    Held held(*this);
     for (size_t k = 0; k < fields.size(); k++) {
         const StructInfo::F &f = *fields[k];
         Value_ fv;
@@ -432,7 +438,9 @@ Value_ Codegen::construct(StructInfo *s, const std::vector<ExprPtr> &args, const
         } else {
             continue;  // zero
         }
-        v = b.CreateInsertValue(v, own(fv), f.llvmIndex);
+        Value *fo = own(fv);
+        hold({fo, f.type, false, true});
+        v = b.CreateInsertValue(v, fo, f.llvmIndex);
     }
     return {v, t, false, owning(t)};
 }
@@ -441,7 +449,9 @@ Value_ Codegen::callC(const CFunc &f, const std::vector<ExprPtr> &args, Pos p) {
     if (!f.unsupported.empty())
         failAt(p.file, p.line, p.col, "the C function '" + f.name + "' can't be used from Finch yet: it " + f.unsupported);
     std::vector<Value_> vals;
+    Held held(*this);
     for (size_t i = 0; i < args.size(); i++) {
+        if (!vals.empty()) hold(vals.back());
         if (i < f.params.size()) {
             FType pt = resolve(f.params[i], p);
             vals.push_back(coerce(exprWant(*args[i], pt), pt, args[i]->pos, "argument " + std::to_string(i + 1) + " of " + f.name));
@@ -592,8 +602,10 @@ Value_ Codegen::method(const MethodExpr &m) {
         std::string root = rootVar(*m.obj);
         if (Var *v = root.empty() ? nullptr : lookup(root); v && v->readonly) failAt(p.file, p.line, p.col, v->readonlyWhy);
     }
+    Held held(*this);
     if (t.kind == FType::Map) {
         Value_ recv = r.isPlace ? Value_{r.pl.addr, t} : Value_{tmp(r.val.v), t, false, r.val.fresh};
+        if (!r.isPlace && r.val.fresh) holdAddr(recv.v, t);
         Value_ out = mapMethod(m, &recv);
         if (!r.isPlace && r.val.fresh) dropAt(recv.v, t);
         return out;
@@ -611,6 +623,7 @@ Value_ Codegen::method(const MethodExpr &m) {
         if (!r.isPlace) {
             if (changing.count(m.name)) failAt(p.file, p.line, p.col, m.name + "() would change a temporary array; store it in a variable first");
             recv = {tmp(r.val.v), t, false, r.val.fresh};
+            if (r.val.fresh) holdAddr(recv.v, t);
         }
         Value_ out = arrayMethod(m, &recv);
         if (!r.isPlace && r.val.fresh) dropAt(recv.v, t);
@@ -619,8 +632,11 @@ Value_ Codegen::method(const MethodExpr &m) {
     if (t.kind == FType::Str) {
         Value_ sv = r.isPlace ? Value_{b.CreateLoad(ty(t), r.pl.addr), t} : r.val;
         Value *addr = tmp(sv.v);  // the runtime takes strings by address
+        if (!r.isPlace) hold(sv);
         auto argStr = [&](size_t i, const char *what) {
-            return coerce(expr(*m.args[i]), FType::Str, m.args[i]->pos, what);
+            Value_ a = coerce(expr(*m.args[i]), FType::Str, m.args[i]->pos, what);
+            hold(a);
+            return a;
         };
         auto argInt = [&](size_t i, const char *what) {
             return coerce(expr(*m.args[i]), FType::I64, m.args[i]->pos, what).v;
@@ -714,6 +730,8 @@ Value_ Codegen::structMethod(const MethodExpr &m, LRef &r, const FType &t) {
         self = tmp(r.val.v);  // a temporary struct: Point(1, 2).length()
         temp = true;
     }
+    Held held(*this);
+    if (temp && r.val.fresh) holdAddr(self, st);
     Value_ out = callFinch(*fn, m.args, m.argNames, p, st.name + "." + m.name, &m, self, root);
     if (temp && r.val.fresh && owning(st)) dropAt(self, st);
     return out;

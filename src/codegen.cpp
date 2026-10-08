@@ -296,6 +296,21 @@ void Codegen::define(Fn &fn) {
 
 void Codegen::pushScope() { scopes.emplace_back(); }
 
+void Codegen::hold(const Value_ &v) {
+    if (v.fresh && v.v && !isa<Constant>(v.v) && owning(v.type)) pending.push_back({v.v, v.type, false});
+}
+
+void Codegen::holdAddr(Value *addr, const FType &t) {
+    if (owning(t)) pending.push_back({addr, t, true});
+}
+
+void Codegen::dropPending(size_t downTo) {
+    for (size_t i = pending.size(); i-- > downTo;) {
+        if (pending[i].isAddr) dropAt(pending[i].v, pending[i].type);
+        else dropValue(pending[i].v, pending[i].type);
+    }
+}
+
 void Codegen::popScope() {
     if (!terminated()) emitScopeCleanups(scopes.size() - 1);
     scopes.pop_back();
@@ -352,7 +367,8 @@ Var *Codegen::lookup(const std::string &name) {
 
 Var &Codegen::addVar(Pos p, const std::string &name, const FType &t, Value *init, bool owned, bool readonly,
                      unsigned argNo) {
-    if (lookup(name)) failAt(p.file, p.line, p.col, "a variable named '" + name + "' already exists here");
+    // `err` of an inner `or` hides the outer one: f() or g() or err
+    if (lookup(name) && name != "err") failAt(p.file, p.line, p.col, "a variable named '" + name + "' already exists here");
     ModuleScope &m = modules[curModule];
     if (m.fns.count(name)) failAt(p.file, p.line, p.col, "'" + name + "' is already the name of a function");
     if (m.imports.count(name)) failAt(p.file, p.line, p.col, "'" + name + "' is already the name of an imported module");
@@ -427,6 +443,7 @@ void Codegen::jump(bool isBreak, Pos p) {
     if (inDefer) failAt(p.file, p.line, p.col, std::string(word) + " can't be used inside defer");
     if (loops.empty()) failAt(p.file, p.line, p.col, std::string(word) + " can only be used inside a loop");
     Loop l = loops.back();
+    dropPending(l.pendingDepth);
     emitCleanups(l.scopeDepth);
     b.CreateBr(isBreak ? l.breakTo : l.continueTo);
 }
@@ -466,6 +483,8 @@ void Codegen::assign(const AssignStmt &s) {
             if (Var *var = lookup(root)) { want = var->type; known = true; }
         }
         v = known ? exprWant(*s.value, want) : expr(*s.value);
+        Held held(*this);
+        hold(v);  // while the target is computed (a[try f()] = ...)
         Place dst = place(*s.target, true);
         v = coerce(v, dst.type, s.value->pos, what);
         Value *nv = own(v);
@@ -481,6 +500,8 @@ void Codegen::assign(const AssignStmt &s) {
     BinOp op = s.op == '+' ? BinOp::Add : s.op == '-' ? BinOp::Sub : s.op == '*' ? BinOp::Mul
              : s.op == '/' ? BinOp::Div : BinOp::Mod;
     Value_ rhs = expr(*s.value);
+    Held held(*this);
+    hold(rhs);
     Place dst = place(*s.target, true);
     Value_ cur{b.CreateLoad(ty(dst.type), dst.addr), dst.type};
     Value_ v = coerce(arith(op, cur, rhs, s.pos), dst.type, s.pos, what);
@@ -538,7 +559,7 @@ void Codegen::whileStmt(const WhileStmt &s) {
     else b.CreateCondBr(cond, body, end);
 
     b.SetInsertPoint(body);
-    loops.push_back({condBB, end, scopes.size()});
+    loops.push_back({condBB, end, scopes.size(), pending.size()});
     block(*s.body);
     loops.pop_back();
     if (!terminated()) b.CreateBr(condBB);
@@ -564,7 +585,7 @@ void Codegen::forStmt(const ForStmt &s) {
     b.CreateCondBr(b.CreateICmpSLT(b.CreateLoad(b.getInt64Ty(), i), to), body, end);
 
     b.SetInsertPoint(body);
-    loops.push_back({step, end, scopes.size()});
+    loops.push_back({step, end, scopes.size(), pending.size()});
     block(*s.body);
     loops.pop_back();
     if (!terminated()) b.CreateBr(step);
@@ -600,10 +621,20 @@ void Codegen::forEachStmt(const ForEachStmt &s) {
         bool copyKV = live && mutates(rootVar(*s.list), *s.body);
         Value *i = slot(FType::I64, "$i");
         b.CreateStore(b.getInt64(0), i);
+        // adding keys inside the loop could reorder the entries: that stops the program (removing is fine)
+        Value *adds = live ? b.CreateLoad(b.getInt64Ty(), b.CreateStructGEP(MT, addr, 6)) : nullptr;
         BasicBlock *condBB = newBlock("map.cond"), *check = newBlock("map.check"), *body = newBlock("map.body"),
                    *step = newBlock("map.step"), *end = newBlock("map.end");
         b.CreateBr(condBB);
         b.SetInsertPoint(condBB);
+        if (adds && mutates(rootVar(*s.list), *s.body)) {
+            BasicBlock *changed = newBlock("map.changed"), *same = newBlock("map.same");
+            b.CreateCondBr(b.CreateICmpNE(b.CreateLoad(b.getInt64Ty(), b.CreateStructGEP(MT, addr, 6)), adds), changed, same);
+            b.SetInsertPoint(changed);
+            b.CreateCall(rt("finch_map_changed"), {fileName(s.pos), b.getInt64(s.pos.line)});
+            b.CreateUnreachable();
+            b.SetInsertPoint(same);
+        }
         Value *iv = b.CreateLoad(b.getInt64Ty(), i);
         b.CreateCondBr(b.CreateICmpSLT(iv, b.CreateLoad(b.getInt64Ty(), b.CreateStructGEP(MT, addr, 2))), check, end);
         b.SetInsertPoint(check);
@@ -611,7 +642,7 @@ void Codegen::forEachStmt(const ForEachStmt &s) {
         Value *hash = b.CreateLoad(b.getInt64Ty(), b.CreateStructGEP(ET, entry, 0));
         b.CreateCondBr(b.CreateICmpEQ(hash, b.getInt64(0)), step, body);  // a removed entry
         b.SetInsertPoint(body);
-        loops.push_back({step, end, scopes.size()});
+        loops.push_back({step, end, scopes.size(), pending.size()});
         pushScope();
         std::string why = " can't be changed (to change the map, use m[key] = ...)";
         Value *kv = b.CreateLoad(ty(kt), b.CreateStructGEP(ET, entry, 1));
@@ -662,7 +693,7 @@ void Codegen::forEachStmt(const ForEachStmt &s) {
         elemAddr = b.CreateInBoundsGEP(ty(et), data, iv);
     }
     Value *elem = b.CreateLoad(ty(et), elemAddr);
-    loops.push_back({step, end, scopes.size()});
+    loops.push_back({step, end, scopes.size(), pending.size()});
     pushScope();
     std::string elemVar = s.var;
     Pos elemPos = s.varPos;
@@ -718,6 +749,7 @@ void Codegen::returnStmt(const ReturnStmt &s) {
                 if (std::string(bd.name) == "error") note(c.pos, 5, "```finch\n" + std::string(bd.signature) + "\n```\n" + bd.doc);
         checkArgs(c.args, c.argNames, 1, c.pos, "error");
         Value *msg = own(coerce(expr(*c.args[0]), FType::Str, c.args[0]->pos, "the error message"));
+        dropPending(0);
         emitCleanups(0);
         retError(msg);
         return;
@@ -725,6 +757,7 @@ void Codegen::returnStmt(const ReturnStmt &s) {
     if (curFn->ret.kind == FType::Void) {
         if (s.value)
             failAt(s.value->pos.file, s.value->pos.line, s.value->pos.col, "'" + d.name + "' doesn't return a value (it has no '-> type')");
+        dropPending(0);
         emitCleanups(0);
         retValue(nullptr);
         return;
@@ -740,6 +773,7 @@ void Codegen::returnStmt(const ReturnStmt &s) {
             if (it->second.owned && it->second.type == curFn->ret) {
                 Value *v = b.CreateLoad(ty(it->second.type), it->second.slot);
                 it->second.moved = true;
+                dropPending(0);
                 emitCleanups(0);
                 scopes[idx].vars[name].moved = false;
                 retValue(v);
@@ -750,6 +784,7 @@ void Codegen::returnStmt(const ReturnStmt &s) {
     }
     Value_ v = coerce(exprWant(*s.value, curFn->ret), curFn->ret, s.value->pos, "the returned value");
     Value *out = own(v);
+    dropPending(0);
     emitCleanups(0);
     retValue(out);
 }
@@ -889,6 +924,7 @@ Value_ Codegen::tryExpr(const TryExpr &t) {
     BasicBlock *bad = newBlock("try.failed"), *ok = newBlock("try.ok");
     b.CreateCondBr(failed, bad, ok);
     b.SetInsertPoint(bad);
+    dropPending(0);  // what the expressions around this `try` were holding
     emitCleanups(0);
     retError(msg);
     b.SetInsertPoint(ok);
@@ -927,8 +963,10 @@ Value_ Codegen::orElse(const OrElseExpr &e, bool discard) {
     Pos fp = e.fallback->pos;
     if (v.type.kind == FType::Void)
         failAt(fp.file, fp.line, fp.col, "this call gives back no value, so there is nothing to replace; handle the failure with  or { ... }");
-    dropValue(msg, FType::Str);
+    pushScope();  // the fallback can use the message too: f(x) or err
+    addVar(fp, "err", FType::Str, msg, true);
     Value *fv = own(coerce(exprWant(*e.fallback, v.type), v.type, fp, "the value after 'or'"));
+    popScope();
     BasicBlock *badEnd = b.GetInsertBlock();
     BasicBlock *join = newBlock("or.end");
     b.CreateBr(join);
@@ -1126,6 +1164,8 @@ LRef Codegen::index(const IndexExpr &e, bool forWrite) {
     Pos p = e.pos;
     LRef obj = ref(*e.obj, forWrite);
     FType t = obj.isPlace ? obj.pl.type : obj.val.type;
+    Held held(*this);
+    if (!obj.isPlace) hold(obj.val);  // while the index is computed
     if (t.kind == FType::Map) return mapIndex(e, obj, t, forWrite);
     Value *i = coerce(expr(*e.index), FType::I64, e.index->pos, "an index").v;
 
@@ -1180,6 +1220,7 @@ Value_ Codegen::arrayLit(const ArrayLitExpr &a, const FType *want) {
         if (allNum && anyFloat) et = FType::F64;
     }
     std::vector<Value *> vals;
+    Held held(*this);
     for (size_t k = 0; k < a.elems.size(); k++) {
         Value_ v = et.kind == FType::Void ? exprWant(*a.elems[k], et) : exprWant(*a.elems[k], et);
         if (et.kind == FType::Void) {
@@ -1189,6 +1230,7 @@ Value_ Codegen::arrayLit(const ArrayLitExpr &a, const FType *want) {
         }
         v = coerce(v, et, a.elems[k]->pos, "every element of this array");
         vals.push_back(own(v));
+        hold({vals.back(), et, false, true});
     }
     FType at = FType::arrayOf(et);
     Value *n = b.getInt64(vals.size());
@@ -1404,11 +1446,17 @@ Value_ Codegen::binary(const BinaryExpr &e) {
     case BinOp::Greater:
     case BinOp::GreaterEq: {
         Value_ l = expr(*e.lhs);
-        return compare(e.op, l, expr(*e.rhs), e.pos);
+        Held held(*this);
+        hold(l);
+        Value_ r = expr(*e.rhs);
+        return compare(e.op, l, r, e.pos);
     }
     default: {
         Value_ l = expr(*e.lhs);
-        return arith(e.op, l, expr(*e.rhs), e.pos);
+        Held held(*this);
+        hold(l);
+        Value_ r = expr(*e.rhs);
+        return arith(e.op, l, r, e.pos);
     }
     }
 }

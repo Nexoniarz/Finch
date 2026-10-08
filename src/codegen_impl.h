@@ -87,7 +87,16 @@ struct Fn {
 
 struct Loop {
     llvm::BasicBlock *continueTo, *breakTo;
-    size_t scopeDepth;  // scopes opened inside the loop are cleaned up by break/continue
+    size_t scopeDepth;    // scopes opened inside the loop are cleaned up by break/continue
+    size_t pendingDepth;  // and so are temporaries held by expressions around it (see Codegen::pending)
+};
+
+// A fresh value an expression is holding while it computes another part (f(a + b, try g())): if that
+// part leaves early (try, or a return/break/continue in an `or { }` block), it must be dropped.
+struct Pending {
+    llvm::Value *v;
+    FType type;
+    bool isAddr;  // v is the value's address
 };
 
 struct Place {  // something that can be assigned to
@@ -136,6 +145,7 @@ public:
     std::vector<std::unique_ptr<StructInfo>> structStore;
     std::vector<Scope> scopes;
     std::vector<Loop> loops;
+    std::vector<Pending> pending;
     const Fn *curFn = nullptr;
     std::string curModule;
     int varOrder = 0;
@@ -183,6 +193,15 @@ public:
     bool terminated();
     llvm::BasicBlock *newBlock(const char *name);
 
+    void hold(const Value_ &v);                   // see Pending
+    void holdAddr(llvm::Value *addr, const FType &t);
+    void dropPending(size_t downTo);               // emit drops for pending[downTo..]
+    struct Held {                                  // forgets what was held when the expression is done
+        Codegen &cg;
+        size_t mark;
+        explicit Held(Codegen &c) : cg(c), mark(c.pending.size()) {}
+        ~Held() { cg.pending.erase(cg.pending.begin() + mark, cg.pending.end()); }
+    };
     void pushScope();
     void popScope();                      // emits the scope's cleanups if reachable
     void emitCleanups(size_t downTo);     // run cleanups of scopes [downTo, end) without popping

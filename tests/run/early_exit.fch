@@ -1,0 +1,96 @@
+// Leaving an expression half way (try, or { break / continue / return }) frees what it was holding.
+// MEMCHECK=1 tests/run.sh checks this with valgrind.
+
+struct Pair {
+    str a
+    str b
+}
+
+fn check(int n) -> str! {
+    if n > 0 {
+        return error("failed at " + str(n))
+    }
+    return "ok"
+}
+
+fn join3(str a, str b, str c) -> str {
+    return a + b + c
+}
+
+fn Pair.both() -> str {
+    return self.a + self.b
+}
+
+fn args(int n) -> str! {
+    s := "x".repeat(3)
+    return join3(s + "1", try check(n), s + "2")
+}
+
+fn array(int n) -> []str! {
+    s := "y".repeat(2)
+    return [s + "a", s + "b", try check(n)]
+}
+
+fn pair(int n) -> Pair! {
+    s := "z".repeat(2)
+    return Pair(s + "a", try check(n))
+}
+
+fn concat(int n) -> str! {
+    s := "w".repeat(2)
+    return s + "1" + (try check(n)) + "2"
+}
+
+fn method_on_temp(int n) -> str! {
+    s := "v".repeat(2)
+    return (s + "!").replace("v", try check(n))
+}
+
+fn struct_method(int n) -> str! {
+    s := "u".repeat(2)
+    t := Pair(s, s + "?").both() + (try check(n))
+    return t
+}
+
+fn map_literal(int n) -> map[str]str! {
+    s := "k".repeat(2)
+    return [s: s + "1", s + "x": try check(n)]
+}
+
+fn index_temp(int n) -> str! {
+    s := "i".repeat(2)
+    return [s + "0", s + "1"][int(try check(n)) or 0]
+}
+
+fn main() {
+    for n in 0..2 {
+        print(args(n) or err, "|", array(n) or ["-"], "|", pair(n) or Pair("-", "-"))
+        print(concat(n) or err, "|", method_on_temp(n) or err, "|", struct_method(n) or err)
+        print(map_literal(n) or ["-": "-"])
+    }
+    print(index_temp(1) or "index: failed")
+
+    // break / continue out of an or { } block in the middle of a call
+    s := "q".repeat(2)
+    for i in 0..4 {
+        t := join3(s + "a", check(i % 2) or { continue }, s + "b")
+        print(i, t)
+    }
+    for i in 0..4 {
+        t := join3(s + "a", check(i) or { break }, s + "b")
+        print("before break:", i, t)
+    }
+
+    // removing keys while looping over a map is fine
+    m := ["a": 1, "b": 2, "c": 3, "d": 4]
+    for k, v in m {
+        if v % 2 == 0 {
+            m.remove(k)
+        }
+    }
+    print(m)
+    for k in m {
+        m[k] = m[k] * 10              // changing values is fine too
+    }
+    print(m)
+}

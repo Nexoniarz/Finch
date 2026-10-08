@@ -1,0 +1,12 @@
+xxx1okxxx2 | ["yya", "yyb", "ok"] | Pair(a: "zza", b: "ok")
+ww1ok2 | okok! | uuuu?ok
+{"kk": "kk1", "kkx": "ok"}
+failed at 1 | ["-"] | Pair(a: "-", b: "-")
+failed at 1 | failed at 1 | failed at 1
+{"-": "-"}
+index: failed
+0 qqaokqqb
+2 qqaokqqb
+before break: 0 qqaokqqb
+{"a": 1, "c": 3}
+{"a": 10, "c": 30}
