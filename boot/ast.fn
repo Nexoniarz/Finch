@@ -1,0 +1,94 @@
+// The syntax tree of the self-hosted compiler.
+
+// A type as written or resolved.
+//   kind: "void" "int" "bool" "char" "float" "str" "null" "ptr" "array" "named" "struct"
+//   elem: the element of an array or the target of a ptr (zero or one entry)
+//   name, module: structs ("" module = the main file)
+struct Type {
+    str kind
+    []Type elem
+    str name
+    str module
+}
+
+fn simple(str kind) -> Type {
+    return Type(kind: kind)
+}
+
+fn arrayOf(Type t) -> Type {
+    out := Type(kind: "array")
+    out.elem.push(t)
+    return out
+}
+
+fn ptrTo(Type t) -> Type {
+    out := Type(kind: "ptr")
+    out.elem.push(t)
+    return out
+}
+
+fn same(Type a, Type b) -> bool {
+    if a.kind != b.kind {
+        return false
+    }
+    if a.kind == "struct" || a.kind == "named" {
+        return a.name == b.name && a.module == b.module
+    }
+    if a.kind == "array" || a.kind == "ptr" {
+        if a.elem.len != b.elem.len {
+            return false
+        }
+        if a.elem.len == 0 {
+            return true
+        }
+        return same(a.elem[0], b.elem[0])
+    }
+    return true
+}
+
+fn show(Type t) -> str {
+    if t.kind == "array" {
+        return "[]" + show(t.elem[0])
+    }
+    if t.kind == "ptr" {
+        if t.elem.len == 0 {
+            return "ptr"
+        }
+        return "ptr[" + show(t.elem[0]) + "]"
+    }
+    if t.kind == "struct" || t.kind == "named" {
+        if t.module.len > 0 {
+            return t.module + "." + t.name
+        }
+        return t.name
+    }
+    if t.kind == "void" {
+        return "nothing"
+    }
+    return t.kind
+}
+
+// One node of the tree, for expressions, statements, functions and structs alike.
+//   expressions: int float str char bool null var unary binary call member index array method
+//   statements:  decl assign expr if while for each return break continue block
+//   top level:   fn param struct field
+struct Node {
+    str kind
+    str name      // identifier, operator, callee, field or method name
+    str text      // literal text
+    Type ty       // declared type (decl, param, field, fn result)
+    bool flag     // decl: has a type; fn: has a body
+    []Node kids
+    []str names   // named arguments: Point(x: 1)
+    int line
+    int col
+    int file
+}
+
+struct Program {
+    str module
+    str path
+    []str imports   // Finch modules
+    []Node structs
+    []Node fns
+}

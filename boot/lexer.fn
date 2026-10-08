@@ -1,0 +1,210 @@
+// The Finch lexer, written in Finch.
+// A token's kind is a word: "ident", "int", "float", "string", "char", "eof",
+// or the keyword / operator itself ("fn", "{", "+=", ...).
+
+struct Token {
+    str kind
+    str text
+    int line
+    int col
+    bool nl        // a newline came before this token
+}
+
+fn isAlpha(char c) -> bool {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+fn isDigit(char c) -> bool {
+    return c >= '0' && c <= '9'
+}
+
+fn isHex(char c) -> bool {
+    return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+fn isKeyword(str w) -> bool {
+    keywords := ["fn", "return", "if", "else", "while", "for", "in", "break", "continue", "true", "false",
+                 "null", "import", "link", "struct", "defer"]
+    return keywords.contains(w)
+}
+
+struct Lexer {
+    str src
+    str path
+    int i
+    int line
+    int col
+    bool nl
+}
+
+fn fail(ptr[Lexer] lx, int line, int col, str msg) {
+    print(lx.path + ":" + str(line) + ":" + str(col) + ": error: " + msg)
+    exit(1)
+}
+
+fn peek(ptr[Lexer] lx, int off) -> char {
+    if lx.i + off < lx.src.len {
+        return lx.src[lx.i + off]
+    }
+    return char(0)
+}
+
+fn advance(ptr[Lexer] lx) {
+    c := lx.src[lx.i]
+    if c == '\n' {
+        lx.line += 1
+        lx.col = 1
+        lx.nl = true
+    } else if int(c) & 0xC0 != 0x80 {
+        lx.col += 1
+    }
+    lx.i += 1
+}
+
+// operators, longest first
+fn operator(ptr[Lexer] lx) -> str {
+    twos := ["->", "<<", ">>", "<=", ">=", "==", "!=", "&&", "||", "..", ":=", "+=", "-=", "*=", "/=", "%="]
+    if lx.i + 1 < lx.src.len {
+        two := lx.src.sub(lx.i, lx.i + 2)
+        if twos.contains(two) {
+            return two
+        }
+    }
+    ones := "(){}[],.:+-*/%&|^~<>=!"
+    c := lx.src.sub(lx.i, lx.i + 1)
+    if ones.contains(c) {
+        return c
+    }
+    return ""
+}
+
+fn escape(ptr[Lexer] lx, char e) -> char {
+    if e == 'n' {
+        return '\n'
+    }
+    if e == 't' {
+        return '\t'
+    }
+    if e == 'r' {
+        return '\r'
+    }
+    if e == '0' {
+        return char(0)
+    }
+    if e == '\\' || e == '"' || e == '\'' {
+        return e
+    }
+    fail(lx, lx.line, lx.col - 1, "unknown escape \\" + str(e))
+    return e
+}
+
+fn lex(str src, str path) -> []Token {
+    lexer := Lexer(src: src, path: path, i: 0, line: 1, col: 1, nl: true)
+    lx := addr(lexer)
+    []Token out
+    while lx.i < lx.src.len {
+        c := lx.src[lx.i]
+        if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+            advance(lx)
+            continue
+        }
+        if c == '/' && peek(lx, 1) == '/' {
+            while lx.i < lx.src.len && lx.src[lx.i] != '\n' {
+                advance(lx)
+            }
+            continue
+        }
+        if c == '/' && peek(lx, 1) == '*' {
+            line := lx.line
+            col := lx.col
+            advance(lx)
+            advance(lx)
+            while lx.i < lx.src.len && !(lx.src[lx.i] == '*' && peek(lx, 1) == '/') {
+                advance(lx)
+            }
+            if lx.i >= lx.src.len {
+                fail(lx, line, col, "comment is never closed (missing */)")
+            }
+            advance(lx)
+            advance(lx)
+            continue
+        }
+
+        t := Token(kind: "", text: "", line: lx.line, col: lx.col, nl: lx.nl)
+        lx.nl = false
+        start := lx.i
+        if isAlpha(c) {
+            while lx.i < lx.src.len && (isAlpha(lx.src[lx.i]) || isDigit(lx.src[lx.i])) {
+                advance(lx)
+            }
+            t.text = lx.src.sub(start, lx.i)
+            t.kind = "ident"
+            if isKeyword(t.text) {
+                t.kind = t.text
+            }
+        } else if isDigit(c) {
+            t.kind = "int"
+            if c == '0' && (peek(lx, 1) == 'x' || peek(lx, 1) == 'X') {
+                advance(lx)
+                advance(lx)
+                while lx.i < lx.src.len && (isHex(lx.src[lx.i]) || lx.src[lx.i] == '_') {
+                    advance(lx)
+                }
+            } else {
+                while lx.i < lx.src.len && (isDigit(lx.src[lx.i]) || lx.src[lx.i] == '_') {
+                    advance(lx)
+                }
+                if peek(lx, 0) == '.' && isDigit(peek(lx, 1)) {
+                    t.kind = "float"
+                    advance(lx)
+                    while lx.i < lx.src.len && (isDigit(lx.src[lx.i]) || lx.src[lx.i] == '_') {
+                        advance(lx)
+                    }
+                }
+            }
+            t.text = lx.src.sub(start, lx.i).replace("_", "")
+        } else if c == '"' || c == '\'' {
+            quote := c
+            t.kind = "string"
+            if quote == '\'' {
+                t.kind = "char"
+            }
+            advance(lx)
+            []str parts
+            while peek(lx, 0) != quote {
+                if peek(lx, 0) == char(0) || peek(lx, 0) == '\n' {
+                    if quote == '"' {
+                        fail(lx, t.line, t.col, "string is never closed (missing \")")
+                    }
+                    fail(lx, t.line, t.col, "char is never closed (missing ')")
+                }
+                ch := peek(lx, 0)
+                advance(lx)
+                if ch == '\\' {
+                    e := peek(lx, 0)
+                    advance(lx)
+                    ch = escape(lx, e)
+                }
+                parts.push(str(ch))
+            }
+            advance(lx)
+            t.text = parts.join("")
+            if quote == '\'' && t.text.len != 1 {
+                fail(lx, t.line, t.col, "a char holds exactly one character, like 'a'")
+            }
+        } else {
+            op := operator(lx)
+            if op.len == 0 {
+                fail(lx, t.line, t.col, "unexpected character '" + str(c) + "'")
+            }
+            for k in 0..op.len {
+                advance(lx)
+            }
+            t.kind = op
+            t.text = op
+        }
+        out.push(t)
+    }
+    out.push(Token(kind: "eof", text: "", line: lx.line, col: lx.col, nl: true))
+    return out
+}

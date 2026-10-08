@@ -8,7 +8,7 @@ namespace finch {
 
 bool Codegen::isBuiltin(const std::string &n) {
     static const std::set<std::string> names = {"print", "addr", "input", "new", "free", "read_file", "write_file",
-                                                "file_exists", "exit"};
+                                                "file_exists", "exit", "shell"};
     FType t;
     return names.count(n) || typeFromName(n, t);
 }
@@ -91,6 +91,7 @@ Function *Codegen::rt(const std::string &name) {
         {"finch_file_exists", {I32, {P}}},
         {"finch_read_file", {V, {P, P, P, I}}},
         {"finch_write_file", {I32, {P, P}}},
+        {"finch_shell", {I, {P}}},
     };
     auto it = sigs.find(name);
     if (it == sigs.end()) {
@@ -228,6 +229,15 @@ Value_ Codegen::call(const CallExpr &c) {
         }
         release(path);
         return res;
+    }
+    if (n == "shell") {
+        Value_ cmd = coerce(expr(one("command")), FType::Str, c.args[0]->pos, "the command");
+        Value *ss = tmpOf(ty(FType::Str));
+        b.CreateCall(rt("finch_str_copy"), {ss, tmp(cmd.v)});  // a heap copy is always NUL-terminated
+        Value *r = b.CreateCall(rt("finch_shell"), {ss});
+        dropAt(ss, FType::Str);
+        release(cmd);
+        return {r, FType::I64};
     }
     if (n == "write_file") {
         checkArgs(c.args, c.argNames, 2, p, n);

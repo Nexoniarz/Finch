@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 
 typedef struct {
     char *ptr;
@@ -416,6 +417,15 @@ void finch_read_file(FStr *out, const FStr *path, const char *file, int64_t line
     out->ptr = m;
     out->len = (int64_t)got;
     out->cap = size + 1;
+}
+
+// shell("ls -l"): run a command, give back its exit code
+int64_t finch_shell(const FStr *cmd) {
+    fflush(stdout);
+    int status = system(cmd->ptr ? cmd->ptr : "");
+    if (status == -1) return -1;
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    return 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
 }
 
 int finch_write_file(const FStr *path, const FStr *text) {

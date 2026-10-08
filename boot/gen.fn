@@ -1,0 +1,2161 @@
+// Type checking and LLVM IR generation (as text), written in Finch.
+//
+// The output is a .ll file that clang turns into a program, linked with the same
+// C runtime the main compiler uses. This compiler copies values like the main one
+// (so programs behave the same) but never frees them: it is the bootstrap compiler.
+import ast
+
+struct Var {
+    str name
+    ast.Type ty
+    str slot
+    bool readonly
+}
+
+struct Scope {
+    []Var vars
+}
+
+struct Loop {
+    str cont
+    str brk
+}
+
+struct FnSig {
+    str module
+    str name
+    str ll
+    ast.Type ret
+    []ast.Type params
+    []str pnames
+    []bool borrow
+    int prog
+    int index
+}
+
+struct StructDef {
+    str module
+    str name
+    []str fnames
+    []ast.Type ftypes
+    int prog
+    int index
+    int state      // 0 new, 1 resolving, 2 done
+    bool owning
+}
+
+struct Val {
+    str v
+    ast.Type ty
+    bool fresh     // a new value nobody holds: it can be stored without copying
+    bool lit       // a number written in the code
+}
+
+struct Place {
+    str addr
+    ast.Type ty
+}
+
+struct Ref {
+    bool isPlace
+    Place pl
+    Val val
+}
+
+struct Gen {
+    []ast.Program progs
+    []str files
+    []str head
+    []str out
+    []str body
+    []str allocas
+    int tmp
+    int lbl
+    int nstr
+    bool term
+    []Scope scopes
+    []Loop loops
+    FnSig cur
+    str module
+    []FnSig sigs
+    []StructDef structs
+    []str done
+}
+
+// ---------- basics ----------
+
+fn fail(ptr[Gen] g, ast.Node n, str msg) {
+    print(g.files[n.file] + ":" + str(n.line) + ":" + str(n.col) + ": error: " + msg)
+    exit(1)
+}
+
+fn emit(ptr[Gen] g, str line) {
+    g.body.push("  " + line)
+}
+
+fn tmpName(ptr[Gen] g) -> str {
+    g.tmp += 1
+    return "%t" + str(g.tmp)
+}
+
+fn newLabel(ptr[Gen] g, str hint) -> str {
+    g.lbl += 1
+    return hint + str(g.lbl)
+}
+
+fn label(ptr[Gen] g, str l) {
+    g.body.push(l + ":")
+    g.term = false
+}
+
+fn br(ptr[Gen] g, str l) {
+    if !g.term {
+        emit(g, "br label %" + l)
+        g.term = true
+    }
+}
+
+fn condBr(ptr[Gen] g, str c, str yes, str no) {
+    emit(g, "br i1 " + c + ", label %" + yes + ", label %" + no)
+    g.term = true
+}
+
+fn alloca(ptr[Gen] g, str ty) -> str {
+    g.tmp += 1
+    name := "%a" + str(g.tmp)
+    g.allocas.push("  " + name + " = alloca " + ty + ", align 16")
+    return name
+}
+
+fn load(ptr[Gen] g, str ty, str at) -> str {
+    t := tmpName(g)
+    emit(g, t + " = load " + ty + ", ptr " + at)
+    return t
+}
+
+fn store(ptr[Gen] g, str ty, str v, str at) {
+    emit(g, "store " + ty + " " + v + ", ptr " + at)
+}
+
+fn spill(ptr[Gen] g, Val v) -> str {
+    a := alloca(g, llty(g, v.ty))
+    store(g, llty(g, v.ty), v.v, a)
+    return a
+}
+
+fn op(ptr[Gen] g, str text) -> str {
+    t := tmpName(g)
+    emit(g, t + " = " + text)
+    return t
+}
+
+fn has([]str list, str x) -> bool {
+    return list.contains(x)
+}
+
+// ---------- types ----------
+
+fn T(str kind) -> ast.Type {
+    return ast.simple(kind)
+}
+
+fn isNumber(ast.Type t) -> bool {
+    return t.kind == "int" || t.kind == "float"
+}
+
+fn findStruct(ptr[Gen] g, str module, str name) -> int {
+    for i in 0..g.structs.len {
+        if g.structs[i].module == module && g.structs[i].name == name {
+            return i
+        }
+    }
+    return -1
+}
+
+fn progOf(ptr[Gen] g, str module) -> int {
+    for i in 0..g.progs.len {
+        if g.progs[i].module == module {
+            return i
+        }
+    }
+    return -1
+}
+
+fn imports(ptr[Gen] g, str module) -> bool {
+    return g.progs[progOf(g, g.module)].imports.contains(module)
+}
+
+fn resolve(ptr[Gen] g, ast.Type t, ast.Node at) -> ast.Type {
+    if t.kind == "array" {
+        return ast.arrayOf(resolve(g, t.elem[0], at))
+    }
+    if t.kind == "ptr" {
+        if t.elem.len == 0 {
+            return t
+        }
+        return ast.ptrTo(resolve(g, t.elem[0], at))
+    }
+    if t.kind != "named" {
+        return t
+    }
+    module := g.module
+    if t.module.len > 0 {
+        if !imports(g, t.module) {
+            fail(g, at, "'" + t.module + "' is not imported here (add: import " + t.module + ")")
+        }
+        module = t.module
+    }
+    if findStruct(g, module, t.name) < 0 {
+        fail(g, at, "there is no type named '" + ast.show(t) + "'")
+    }
+    return ast.Type(kind: "struct", name: t.name, module: module)
+}
+
+fn modName(str m) -> str {
+    if m.len == 0 {
+        return "main"
+    }
+    return m
+}
+
+fn llty(ptr[Gen] g, ast.Type t) -> str {
+    k := t.kind
+    if k == "int" {
+        return "i64"
+    }
+    if k == "bool" {
+        return "i1"
+    }
+    if k == "char" {
+        return "i8"
+    }
+    if k == "float" {
+        return "double"
+    }
+    if k == "str" || k == "array" {
+        return "{ ptr, i64, i64 }"
+    }
+    if k == "ptr" || k == "null" {
+        return "ptr"
+    }
+    if k == "void" {
+        return "void"
+    }
+    return "%S." + modName(t.module) + "." + t.name
+}
+
+fn zeroOf(ast.Type t) -> str {
+    k := t.kind
+    if k == "int" || k == "char" {
+        return "0"
+    }
+    if k == "bool" {
+        return "false"
+    }
+    if k == "float" {
+        return "0.0"
+    }
+    if k == "ptr" || k == "null" {
+        return "null"
+    }
+    return "zeroinitializer"
+}
+
+fn sizeOf(ptr[Gen] g, ast.Type t) -> str {
+    return "ptrtoint (ptr getelementptr (" + llty(g, t) + ", ptr null, i32 1) to i64)"
+}
+
+fn owning(ptr[Gen] g, ast.Type t) -> bool {
+    if t.kind == "str" || t.kind == "array" {
+        return true
+    }
+    if t.kind == "struct" {
+        return g.structs[findStruct(g, t.module, t.name)].owning
+    }
+    return false
+}
+
+fn typeKey(ast.Type t) -> str {
+    if t.kind == "array" {
+        return "arr_" + typeKey(t.elem[0])
+    }
+    if t.kind == "struct" {
+        return "S_" + modName(t.module) + "_" + t.name
+    }
+    return t.kind
+}
+
+// ---------- string constants ----------
+
+fn hex(int n) -> str {
+    digits := "0123456789ABCDEF"
+    return str(digits[n / 16]) + str(digits[n % 16])
+}
+
+fn strGlobal(ptr[Gen] g, str s) -> str {
+    g.nstr += 1
+    name := "@.str." + str(g.nstr)
+    []str enc
+    for c in s {
+        n := int(c)
+        if n < 0 {
+            n += 256
+        }
+        if n >= 32 && n < 127 && c != '"' && c != '\\' {
+            enc.push(str(c))
+        } else {
+            enc.push("\\" + hex(n))
+        }
+    }
+    g.head.push(name + " = private unnamed_addr constant [" + str(s.len + 1) + " x i8] c\"" + enc.join("") + "\\00\"")
+    return name
+}
+
+fn strConst(ptr[Gen] g, str s) -> Val {
+    gl := strGlobal(g, s)
+    return Val(v: "{ ptr " + gl + ", i64 " + str(s.len) + ", i64 0 }", ty: T("str"), fresh: true)
+}
+
+// ---------- runtime errors ----------
+
+fn panicIf(ptr[Gen] g, str cond, str msg, ast.Node at) {
+    bad := newLabel(g, "panic")
+    ok := newLabel(g, "ok")
+    condBr(g, cond, bad, ok)
+    label(g, bad)
+    file := strGlobal(g, g.files[at.file])
+    m := strGlobal(g, msg)
+    emit(g, "call void @finch_panic(ptr " + file + ", i64 " + str(at.line) + ", ptr " + m + ")")
+    emit(g, "unreachable")
+    g.term = true
+    label(g, ok)
+}
+
+fn boundsCheck(ptr[Gen] g, str i, str len, ast.Node at) {
+    bad := newLabel(g, "range")
+    ok := newLabel(g, "inrange")
+    c := op(g, "icmp uge i64 " + i + ", " + len)
+    condBr(g, c, bad, ok)
+    label(g, bad)
+    file := strGlobal(g, g.files[at.file])
+    emit(g, "call void @finch_panic_index(ptr " + file + ", i64 " + str(at.line) + ", i64 " + i + ", i64 " + len + ")")
+    emit(g, "unreachable")
+    g.term = true
+    label(g, ok)
+}
+
+// ---------- helper functions (generated once per type) ----------
+
+struct Saved {
+    []str body
+    []str allocas
+    int tmp
+    bool term
+}
+
+fn beginHelper(ptr[Gen] g) -> Saved {
+    s := Saved(body: g.body, allocas: g.allocas, tmp: g.tmp, term: g.term)
+    []str empty
+    g.body = empty
+    g.allocas = empty
+    g.tmp = 0
+    g.term = false
+    return s
+}
+
+fn endHelper(ptr[Gen] g, Saved s, str header) {
+    g.out.push(header + " {\nentry:\n" + g.allocas.join("\n") + "\n" + g.body.join("\n") + "\n}\n")
+    g.body = s.body
+    g.allocas = s.allocas
+    g.tmp = s.tmp
+    g.term = s.term
+}
+
+// for i in 0..n, inside the current function
+fn loopStart(ptr[Gen] g, str n) -> []str {
+    iv := alloca(g, "i64")
+    store(g, "i64", "0", iv)
+    cond := newLabel(g, "n.cond")
+    body := newLabel(g, "n.body")
+    end := newLabel(g, "n.end")
+    br(g, cond)
+    label(g, cond)
+    i := load(g, "i64", iv)
+    c := op(g, "icmp slt i64 " + i + ", " + n)
+    condBr(g, c, body, end)
+    label(g, body)
+    return [iv, cond, end, i]
+}
+
+fn loopEnd(ptr[Gen] g, []str l) {
+    i := load(g, "i64", l[0])
+    store(g, "i64", op(g, "add i64 " + i + ", 1"), l[0])
+    br(g, l[1])
+    label(g, l[2])
+}
+
+fn copyAt(ptr[Gen] g, str dst, str src, ast.Type t) {
+    if t.kind == "str" {
+        emit(g, "call void @finch_str_copy(ptr " + dst + ", ptr " + src + ")")
+    } else if t.kind == "array" || (t.kind == "struct" && owning(g, t)) {
+        emit(g, "call void " + copyFn(g, t) + "(ptr " + dst + ", ptr " + src + ")")
+    } else {
+        store(g, llty(g, t), load(g, llty(g, t), src), dst)
+    }
+}
+
+fn copyFn(ptr[Gen] g, ast.Type t) -> str {
+    name := "@finch.copy." + typeKey(t)
+    if has(g.done, name) {
+        return name
+    }
+    g.done.push(name)
+    s := beginHelper(g)
+    if t.kind == "array" {
+        et := t.elem[0]
+        emit(g, "call void @finch_arr_clone_raw(ptr %dst, ptr %src, i64 " + sizeOf(g, et) + ")")
+        if owning(g, et) {
+            d := load(g, "ptr", "%dst")
+            sp := load(g, "ptr", "%src")
+            len := load(g, "i64", op(g, "getelementptr inbounds { ptr, i64, i64 }, ptr %src, i32 0, i32 1"))
+            l := loopStart(g, len)
+            dp := op(g, "getelementptr inbounds " + llty(g, et) + ", ptr " + d + ", i64 " + l[3])
+            spp := op(g, "getelementptr inbounds " + llty(g, et) + ", ptr " + sp + ", i64 " + l[3])
+            copyAt(g, dp, spp, et)
+            loopEnd(g, l)
+        }
+    } else {
+        sd := g.structs[findStruct(g, t.module, t.name)]
+        st := llty(g, t)
+        store(g, st, load(g, st, "%src"), "%dst")
+        for k in 0..sd.ftypes.len {
+            if owning(g, sd.ftypes[k]) {
+                dp := op(g, "getelementptr inbounds " + st + ", ptr %dst, i32 0, i32 " + str(k))
+                spp := op(g, "getelementptr inbounds " + st + ", ptr %src, i32 0, i32 " + str(k))
+                copyAt(g, dp, spp, sd.ftypes[k])
+            }
+        }
+    }
+    emit(g, "ret void")
+    endHelper(g, s, "define internal void " + name + "(ptr %dst, ptr %src)")
+    return name
+}
+
+fn copyValue(ptr[Gen] g, str v, ast.Type t) -> str {
+    if !owning(g, t) {
+        return v
+    }
+    src := spill(g, Val(v: v, ty: t))
+    dst := alloca(g, llty(g, t))
+    copyAt(g, dst, src, t)
+    return load(g, llty(g, t), dst)
+}
+
+// something that can be stored: a fresh value moves, anything else is copied
+fn own(ptr[Gen] g, Val v) -> str {
+    if !owning(g, v.ty) || v.fresh {
+        return v.v
+    }
+    return copyValue(g, v.v, v.ty)
+}
+
+// ---------- printing ----------
+
+fn printf(ptr[Gen] g, str fmt, str args) {
+    f := strGlobal(g, fmt)
+    t := tmpName(g)
+    extra := ""
+    if args.len > 0 {
+        extra = ", " + args
+    }
+    emit(g, t + " = call i32 (ptr, ...) @printf(ptr " + f + extra + ")")
+}
+
+fn cstr(ptr[Gen] g, str v) -> str {
+    p := op(g, "extractvalue { ptr, i64, i64 } " + v + ", 0")
+    isNull := op(g, "icmp eq ptr " + p + ", null")
+    empty := strGlobal(g, "")
+    return op(g, "select i1 " + isNull + ", ptr " + empty + ", ptr " + p)
+}
+
+fn emitPrint(ptr[Gen] g, str v, ast.Type t, bool quoted) {
+    k := t.kind
+    if k == "int" {
+        printf(g, "%lld", "i64 " + v)
+    } else if k == "float" {
+        printf(g, "%g", "double " + v)
+    } else if k == "char" {
+        z := op(g, "sext i8 " + v + " to i32")
+        if quoted {
+            printf(g, "'%c'", "i32 " + z)
+        } else {
+            printf(g, "%c", "i32 " + z)
+        }
+    } else if k == "bool" {
+        yes := strGlobal(g, "true")
+        no := strGlobal(g, "false")
+        s := op(g, "select i1 " + v + ", ptr " + yes + ", ptr " + no)
+        printf(g, "%s", "ptr " + s)
+    } else if k == "str" {
+        len := op(g, "extractvalue { ptr, i64, i64 } " + v + ", 1")
+        n := op(g, "trunc i64 " + len + " to i32")
+        p := cstr(g, v)
+        if quoted {
+            printf(g, "\"%.*s\"", "i32 " + n + ", ptr " + p)
+        } else {
+            printf(g, "%.*s", "i32 " + n + ", ptr " + p)
+        }
+    } else if k == "ptr" {
+        printf(g, "%p", "ptr " + v)
+    } else if k == "null" {
+        printf(g, "null", "")
+    } else {
+        emit(g, "call void " + printFn(g, t) + "(ptr " + spill(g, Val(v: v, ty: t)) + ")")
+    }
+}
+
+fn printFn(ptr[Gen] g, ast.Type t) -> str {
+    name := "@finch.print." + typeKey(t)
+    if has(g.done, name) {
+        return name
+    }
+    g.done.push(name)
+    s := beginHelper(g)
+    if t.kind == "array" {
+        et := t.elem[0]
+        d := load(g, "ptr", "%a")
+        len := load(g, "i64", op(g, "getelementptr inbounds { ptr, i64, i64 }, ptr %a, i32 0, i32 1"))
+        printf(g, "[", "")
+        l := loopStart(g, len)
+        sep := newLabel(g, "sep")
+        item := newLabel(g, "item")
+        c := op(g, "icmp sgt i64 " + l[3] + ", 0")
+        condBr(g, c, sep, item)
+        label(g, sep)
+        printf(g, ", ", "")
+        br(g, item)
+        label(g, item)
+        ep := op(g, "getelementptr inbounds " + llty(g, et) + ", ptr " + d + ", i64 " + l[3])
+        emitPrint(g, load(g, llty(g, et), ep), et, true)
+        loopEnd(g, l)
+        printf(g, "]", "")
+    } else {
+        sd := g.structs[findStruct(g, t.module, t.name)]
+        st := llty(g, t)
+        printf(g, sd.name + "(", "")
+        for k in 0..sd.ftypes.len {
+            sep := ", "
+            if k == 0 {
+                sep = ""
+            }
+            printf(g, sep + sd.fnames[k] + ": ", "")
+            fp := op(g, "getelementptr inbounds " + st + ", ptr %a, i32 0, i32 " + str(k))
+            emitPrint(g, load(g, llty(g, sd.ftypes[k]), fp), sd.ftypes[k], true)
+        }
+        printf(g, ")", "")
+    }
+    emit(g, "ret void")
+    endHelper(g, s, "define internal void " + name + "(ptr %a)")
+    return name
+}
+
+// ---------- conversions ----------
+
+fn coerce(ptr[Gen] g, Val v, ast.Type want, ast.Node at, str what) -> Val {
+    if ast.same(v.ty, want) {
+        return v
+    }
+    if v.ty.kind == "null" && want.kind == "ptr" {
+        return Val(v: "null", ty: want)
+    }
+    if v.ty.kind == "ptr" && want.kind == "ptr" && (v.ty.elem.len == 0 || want.elem.len == 0) {
+        return Val(v: v.v, ty: want)
+    }
+    if v.ty.kind == "int" && want.kind == "float" {
+        if v.lit {
+            return Val(v: v.v + ".0", ty: want, lit: true)
+        }
+        return Val(v: op(g, "sitofp i64 " + v.v + " to double"), ty: want)
+    }
+    msg := what + " must be " + ast.show(want) + ", but this is " + ast.show(v.ty)
+    if v.ty.kind == "float" && want.kind == "int" {
+        msg = msg + " (use int(...) to convert, it cuts off the fraction)"
+    }
+    if want.kind == "str" && (isNumber(v.ty) || v.ty.kind == "bool" || v.ty.kind == "char") {
+        msg = msg + " (turn it into text with str(...))"
+    }
+    fail(g, at, msg)
+    return v
+}
+
+// ---------- scopes ----------
+
+fn lookup(ptr[Gen] g, str name) -> int {
+    // returns scope * 100000 + index, or -1
+    for k in 0..g.scopes.len {
+        s := g.scopes.len - 1 - k
+        for i in 0..g.scopes[s].vars.len {
+            if g.scopes[s].vars[i].name == name {
+                return s * 100000 + i
+            }
+        }
+    }
+    return -1
+}
+
+fn varAt(ptr[Gen] g, int id) -> Var {
+    return g.scopes[id / 100000].vars[id % 100000]
+}
+
+fn findFn(ptr[Gen] g, str module, str name) -> int {
+    for i in 0..g.sigs.len {
+        if g.sigs[i].module == module && g.sigs[i].name == name {
+            return i
+        }
+    }
+    return -1
+}
+
+fn isBuiltin(str n) -> bool {
+    names := ["print", "addr", "str", "int", "char", "float", "bool", "read_file", "write_file", "file_exists",
+              "shell", "exit", "input", "new", "free", "ptr"]
+    return names.contains(n)
+}
+
+fn addVar(ptr[Gen] g, ast.Node at, str name, ast.Type t, str init, bool readonly) -> str {
+    if lookup(g, name) >= 0 {
+        fail(g, at, "a variable named '" + name + "' already exists here")
+    }
+    if findFn(g, g.module, name) >= 0 {
+        fail(g, at, "'" + name + "' is already the name of a function")
+    }
+    if isBuiltin(name) {
+        fail(g, at, "'" + name + "' is a built-in name, pick another one")
+    }
+    slot := alloca(g, llty(g, t))
+    store(g, llty(g, t), init, slot)
+    g.scopes[g.scopes.len - 1].vars.push(Var(name: name, ty: t, slot: slot, readonly: readonly))
+    return slot
+}
+
+fn pushScope(ptr[Gen] g) {
+    g.scopes.push(Scope())
+}
+
+fn popScope(ptr[Gen] g) {
+    g.scopes.pop()
+}
+
+// ---------- mutation analysis: does a function change a parameter? ----------
+
+fn rootVar(ast.Node e) -> str {
+    if e.kind == "var" {
+        return e.name
+    }
+    if e.kind == "member" || e.kind == "index" {
+        return rootVar(e.kids[0])
+    }
+    return ""
+}
+
+fn mutates(str name, ast.Node n) -> bool {
+    changing := ["push", "pop", "insert", "remove", "clear", "resize", "sort", "reverse"]
+    if n.kind == "assign" && rootVar(n.kids[0]) == name {
+        return true
+    }
+    if n.kind == "method" && changing.contains(n.name) && rootVar(n.kids[0]) == name {
+        return true
+    }
+    if n.kind == "call" && n.name == "addr" && n.kids.len == 1 && rootVar(n.kids[0]) == name {
+        return true
+    }
+    for k in n.kids {
+        if mutates(name, k) {
+            return true
+        }
+    }
+    return false
+}
+
+// ---------- program ----------
+
+fn declare(ptr[Gen] g) {
+    for pi in 0..g.progs.len {
+        g.module = g.progs[pi].module
+        for si in 0..g.progs[pi].structs.len {
+            s := g.progs[pi].structs[si]
+            if findStruct(g, g.module, s.name) >= 0 {
+                fail(g, s, "the struct '" + s.name + "' is defined twice")
+            }
+            g.structs.push(StructDef(module: g.module, name: s.name, prog: pi, index: si))
+        }
+    }
+    for i in 0..g.structs.len {
+        resolveStruct(g, i)
+    }
+    for pi in 0..g.progs.len {
+        g.module = g.progs[pi].module
+        for fi in 0..g.progs[pi].fns.len {
+            f := g.progs[pi].fns[fi]
+            if findFn(g, g.module, f.name) >= 0 {
+                fail(g, f, "function '" + f.name + "' is defined twice")
+            }
+            if isBuiltin(f.name) {
+                fail(g, f, "'" + f.name + "' is a built-in function, pick another name")
+            }
+            sig := FnSig(module: g.module, name: f.name, prog: pi, index: fi)
+            sig.ll = "@finch." + modName(g.module) + "." + f.name
+            sig.ret = resolve(g, f.ty, f)
+            body := f.kids[f.kids.len - 1]
+            for k in 0..f.kids.len - 1 {
+                pt := resolve(g, f.kids[k].ty, f.kids[k])
+                sig.params.push(pt)
+                sig.pnames.push(f.kids[k].name)
+                sig.borrow.push(owning(g, pt) && !mutates(f.kids[k].name, body))
+            }
+            g.sigs.push(sig)
+        }
+    }
+}
+
+fn resolveStruct(ptr[Gen] g, int i) {
+    if g.structs[i].state == 2 {
+        return
+    }
+    decl := g.progs[g.structs[i].prog].structs[g.structs[i].index]
+    if g.structs[i].state == 1 {
+        fail(g, decl, "the struct " + decl.name + " contains itself; use ptr[" + decl.name + "] or []" + decl.name + " for that field")
+    }
+    g.structs[i].state = 1
+    saved := g.module
+    g.module = g.structs[i].module
+    owns := false
+    []str fields
+    for f in decl.kids {
+        t := resolve(g, f.ty, f)
+        if t.kind == "struct" {
+            resolveStruct(g, findStruct(g, t.module, t.name))
+        }
+        g.structs[i].fnames.push(f.name)
+        g.structs[i].ftypes.push(t)
+        if owning(g, t) {
+            owns = true
+        }
+        fields.push(llty(g, t))
+    }
+    g.structs[i].owning = owns
+    g.module = saved
+    g.structs[i].state = 2
+    g.head.push("%S." + modName(g.structs[i].module) + "." + decl.name + " = type { " + fields.join(", ") + " }")
+}
+
+fn define(ptr[Gen] g, int si) {
+    g.cur = g.sigs[si]
+    g.module = g.cur.module
+    f := g.progs[g.cur.prog].fns[g.cur.index]
+    []str empty
+    g.body = empty
+    g.allocas = empty
+    g.tmp = 0
+    g.term = false
+    []Scope none
+    g.scopes = none
+    pushScope(g)
+    []str params
+    for k in 0..g.cur.params.len {
+        pt := g.cur.params[k]
+        params.push(llty(g, pt) + " %p" + str(k))
+        v := "%p" + str(k)
+        if owning(g, pt) && !g.cur.borrow[k] {
+            v = copyValue(g, v, pt)
+        }
+        addVar(g, f.kids[k], g.cur.pnames[k], pt, v, false)
+    }
+    block(g, f.kids[f.kids.len - 1], false)
+    if !g.term {
+        if g.cur.ret.kind != "void" {
+            fail(g, f, "function '" + f.name + "' can reach its end without returning " + ast.show(g.cur.ret))
+        }
+        emit(g, "ret void")
+    }
+    g.out.push("define internal " + llty(g, g.cur.ret) + " " + g.cur.ll + "(" + params.join(", ") + ") {\nentry:\n" +
+               g.allocas.join("\n") + "\n" + g.body.join("\n") + "\n}\n")
+}
+
+// ---------- statements ----------
+
+fn block(ptr[Gen] g, ast.Node b, bool scope) {
+    if scope {
+        pushScope(g)
+    }
+    for s in b.kids {
+        if g.term {
+            fail(g, s, "this code can never run (it comes after return, break or continue)")
+        }
+        stmt(g, s)
+    }
+    if scope {
+        popScope(g)
+    }
+}
+
+fn stmt(ptr[Gen] g, ast.Node s) {
+    k := s.kind
+    if k == "block" {
+        block(g, s, true)
+    } else if k == "decl" {
+        declStmt(g, s)
+    } else if k == "assign" {
+        assignStmt(g, s)
+    } else if k == "expr" {
+        expr(g, s.kids[0])
+    } else if k == "if" {
+        ifStmt(g, s)
+    } else if k == "while" {
+        whileStmt(g, s)
+    } else if k == "for" {
+        forStmt(g, s)
+    } else if k == "each" {
+        eachStmt(g, s)
+    } else if k == "return" {
+        returnStmt(g, s)
+    } else if k == "break" || k == "continue" {
+        if g.loops.len == 0 {
+            fail(g, s, k + " can only be used inside a loop")
+        }
+        l := g.loops[g.loops.len - 1]
+        if k == "break" {
+            br(g, l.brk)
+        } else {
+            br(g, l.cont)
+        }
+    } else {
+        fail(g, s, "unknown statement " + k)
+    }
+}
+
+fn declStmt(ptr[Gen] g, ast.Node s) {
+    if !s.flag {
+        v := expr(g, s.kids[0])
+        if v.ty.kind == "void" {
+            fail(g, s.kids[0], "this gives back nothing, so it can't be stored")
+        }
+        if v.ty.kind == "null" {
+            fail(g, s.kids[0], "null needs a type, like: ptr[int] " + s.name + " = null")
+        }
+        addVar(g, s, s.name, v.ty, own(g, v), false)
+        return
+    }
+    t := resolve(g, s.ty, s)
+    if s.kids.len == 0 {
+        if t.kind == "struct" && hasDefaults(g, t) {
+            []ast.Node noArgs
+            []str noNames
+            v := construct(g, findStruct(g, t.module, t.name), noArgs, noNames, s)
+            addVar(g, s, s.name, t, v.v, false)
+            return
+        }
+        addVar(g, s, s.name, t, zeroOf(t), false)
+        return
+    }
+    v := coerce(g, exprWant(g, s.kids[0], t), t, s.kids[0], "'" + s.name + "'")
+    addVar(g, s, s.name, t, own(g, v), false)
+}
+
+fn hasDefaults(ptr[Gen] g, ast.Type t) -> bool {
+    sd := g.structs[findStruct(g, t.module, t.name)]
+    for f in g.progs[sd.prog].structs[sd.index].kids {
+        if f.kids.len > 0 {
+            return true
+        }
+    }
+    return false
+}
+
+fn assignStmt(ptr[Gen] g, ast.Node s) {
+    target := s.kids[0]
+    root := rootVar(target)
+    if root.len > 0 {
+        id := lookup(g, root)
+        if id < 0 && target.kind == "var" {
+            fail(g, s, "there is no variable named '" + root + "' (create it with " + root + " := ...)")
+        }
+        if id >= 0 && varAt(g, id).readonly {
+            fail(g, s, "the loop variable '" + root + "' can't be changed")
+        }
+    }
+    what := "the value"
+    if target.kind == "var" {
+        what = "'" + root + "'"
+    }
+    if s.name == "=" {
+        v := expr(g, s.kids[1])
+        dst := place(g, target, true)
+        v = coerce(g, v, dst.ty, s.kids[1], what)
+        store(g, llty(g, dst.ty), own(g, v), dst.addr)
+        return
+    }
+    rhs := expr(g, s.kids[1])
+    dst := place(g, target, true)
+    cur := Val(v: load(g, llty(g, dst.ty), dst.addr), ty: dst.ty)
+    opName := s.name.sub(0, 1)
+    v := coerce(g, arith(g, opName, cur, rhs, s), dst.ty, s, what)
+    store(g, llty(g, dst.ty), own(g, v), dst.addr)
+}
+
+fn condition(ptr[Gen] g, ast.Node e) -> str {
+    return coerce(g, expr(g, e), T("bool"), e, "a condition").v
+}
+
+fn ifStmt(ptr[Gen] g, ast.Node s) {
+    c := condition(g, s.kids[0])
+    then := newLabel(g, "then")
+    els := newLabel(g, "else")
+    end := newLabel(g, "endif")
+    if s.kids.len > 2 {
+        condBr(g, c, then, els)
+    } else {
+        condBr(g, c, then, end)
+    }
+    label(g, then)
+    block(g, s.kids[1], true)
+    reached := !g.term
+    br(g, end)
+    if s.kids.len > 2 {
+        label(g, els)
+        stmt(g, s.kids[2])
+        reached = reached || !g.term
+        br(g, end)
+    } else {
+        reached = true
+    }
+    if reached {
+        label(g, end)
+    }
+}
+
+fn whileStmt(ptr[Gen] g, ast.Node s) {
+    cond := newLabel(g, "while.cond")
+    body := newLabel(g, "while.body")
+    end := newLabel(g, "while.end")
+    br(g, cond)
+    label(g, cond)
+    infinite := s.kids[0].kind == "bool" && s.kids[0].text == "true"
+    c := condition(g, s.kids[0])
+    if infinite {
+        br(g, body)
+    } else {
+        condBr(g, c, body, end)
+    }
+    label(g, body)
+    g.loops.push(Loop(cont: cond, brk: end))
+    breaks := countBreaks(s.kids[1])
+    block(g, s.kids[1], true)
+    g.loops.pop()
+    br(g, cond)
+    if !infinite || breaks {
+        label(g, end)
+    }
+}
+
+// does a loop body contain a break for this loop?
+fn countBreaks(ast.Node n) -> bool {
+    if n.kind == "break" {
+        return true
+    }
+    if n.kind == "while" || n.kind == "for" || n.kind == "each" {
+        return false
+    }
+    for k in n.kids {
+        if countBreaks(k) {
+            return true
+        }
+    }
+    return false
+}
+
+fn forStmt(ptr[Gen] g, ast.Node s) {
+    from := coerce(g, expr(g, s.kids[0]), T("int"), s.kids[0], "the start of a range").v
+    to := coerce(g, expr(g, s.kids[1]), T("int"), s.kids[1], "the end of a range").v
+    pushScope(g)
+    i := addVar(g, s, s.name, T("int"), from, true)
+    cond := newLabel(g, "for.cond")
+    body := newLabel(g, "for.body")
+    step := newLabel(g, "for.step")
+    end := newLabel(g, "for.end")
+    br(g, cond)
+    label(g, cond)
+    iv := load(g, "i64", i)
+    c := op(g, "icmp slt i64 " + iv + ", " + to)
+    condBr(g, c, body, end)
+    label(g, body)
+    g.loops.push(Loop(cont: step, brk: end))
+    block(g, s.kids[2], true)
+    g.loops.pop()
+    br(g, step)
+    label(g, step)
+    iv2 := load(g, "i64", i)
+    store(g, "i64", op(g, "add i64 " + iv2 + ", 1"), i)
+    br(g, cond)
+    label(g, end)
+    popScope(g)
+}
+
+fn eachStmt(ptr[Gen] g, ast.Node s) {
+    pushScope(g)
+    r := ref(g, s.kids[0], false)
+    listAddr := ""
+    lt := T("void")
+    if r.isPlace {
+        listAddr = r.pl.addr
+        lt = r.pl.ty
+    } else {
+        lt = r.val.ty
+        listAddr = spill(g, r.val)
+    }
+    if lt.kind != "array" && lt.kind != "str" {
+        fail(g, s.kids[0], "for ... in needs an array or a str, but this is " + ast.show(lt) + " (for a range of numbers write 0..n)")
+    }
+    et := T("char")
+    if lt.kind == "array" {
+        et = lt.elem[0]
+    }
+    copyElems := r.isPlace && owning(g, et) && mutates(rootVar(s.kids[0]), s.kids[1])
+    iv := alloca(g, "i64")
+    store(g, "i64", "0", iv)
+    cond := newLabel(g, "each.cond")
+    body := newLabel(g, "each.body")
+    step := newLabel(g, "each.step")
+    end := newLabel(g, "each.end")
+    br(g, cond)
+    label(g, cond)
+    len := load(g, "i64", op(g, "getelementptr inbounds { ptr, i64, i64 }, ptr " + listAddr + ", i32 0, i32 1"))
+    i := load(g, "i64", iv)
+    c := op(g, "icmp slt i64 " + i + ", " + len)
+    condBr(g, c, body, end)
+    label(g, body)
+    data := load(g, "ptr", listAddr)
+    ep := op(g, "getelementptr inbounds " + llty(g, et) + ", ptr " + data + ", i64 " + i)
+    elem := load(g, llty(g, et), ep)
+    if copyElems {
+        elem = copyValue(g, elem, et)
+    }
+    g.loops.push(Loop(cont: step, brk: end))
+    pushScope(g)
+    addVar(g, s, s.name, et, elem, true)
+    block(g, s.kids[1], true)
+    popScope(g)
+    g.loops.pop()
+    br(g, step)
+    label(g, step)
+    i2 := load(g, "i64", iv)
+    store(g, "i64", op(g, "add i64 " + i2 + ", 1"), iv)
+    br(g, cond)
+    label(g, end)
+    popScope(g)
+}
+
+fn returnStmt(ptr[Gen] g, ast.Node s) {
+    if g.cur.ret.kind == "void" {
+        if s.kids.len > 0 {
+            fail(g, s.kids[0], "'" + g.cur.name + "' doesn't return a value (it has no '-> type')")
+        }
+        emit(g, "ret void")
+        g.term = true
+        return
+    }
+    if s.kids.len == 0 {
+        fail(g, s, "'" + g.cur.name + "' must return " + ast.show(g.cur.ret))
+    }
+    v := coerce(g, exprWant(g, s.kids[0], g.cur.ret), g.cur.ret, s.kids[0], "the returned value")
+    out := v.v
+    // returning a local variable moves it out; anything else borrowed is copied
+    isLocal := false
+    if s.kids[0].kind == "var" {
+        id := lookup(g, s.kids[0].name)
+        isLocal = id >= 0 && id / 100000 > 0
+    }
+    if !isLocal {
+        out = own(g, v)
+    }
+    emit(g, "ret " + llty(g, g.cur.ret) + " " + out)
+    g.term = true
+}
+
+// ---------- expressions ----------
+
+fn exprWant(ptr[Gen] g, ast.Node e, ast.Type want) -> Val {
+    if e.kind == "array" {
+        return arrayLit(g, e, want)
+    }
+    return expr(g, e)
+}
+
+fn expr(ptr[Gen] g, ast.Node e) -> Val {
+    k := e.kind
+    if k == "int" {
+        if e.text.starts_with("0x") || e.text.starts_with("0X") {
+            n := 0
+            for c in e.text.sub(2, e.text.len) {
+                d := int(c) - int('0')
+                if c >= 'a' && c <= 'f' {
+                    d = int(c) - int('a') + 10
+                }
+                if c >= 'A' && c <= 'F' {
+                    d = int(c) - int('A') + 10
+                }
+                n = n * 16 + d
+            }
+            return Val(v: str(n), ty: T("int"), lit: true)
+        }
+        return Val(v: str(int(e.text)), ty: T("int"), lit: true)
+    }
+    if k == "float" {
+        return Val(v: e.text, ty: T("float"), lit: true)
+    }
+    if k == "bool" {
+        return Val(v: e.text, ty: T("bool"))
+    }
+    if k == "char" {
+        n := int(e.text[0])
+        return Val(v: str(n), ty: T("char"))
+    }
+    if k == "str" {
+        return strConst(g, e.text)
+    }
+    if k == "null" {
+        return Val(v: "null", ty: T("null"))
+    }
+    if k == "var" || k == "member" || k == "index" {
+        r := ref(g, e, false)
+        if !r.isPlace {
+            return r.val
+        }
+        return Val(v: load(g, llty(g, r.pl.ty), r.pl.addr), ty: r.pl.ty)
+    }
+    if k == "unary" {
+        return unary(g, e)
+    }
+    if k == "binary" {
+        return binary(g, e)
+    }
+    if k == "call" {
+        return call(g, e)
+    }
+    if k == "method" {
+        return method(g, e)
+    }
+    if k == "array" {
+        return arrayLit(g, e, T("void"))
+    }
+    fail(g, e, "unknown expression " + k)
+    return Val()
+}
+
+fn unary(ptr[Gen] g, ast.Node e) -> Val {
+    v := expr(g, e.kids[0])
+    if e.name == "!" {
+        c := coerce(g, v, T("bool"), e.kids[0], "the value after '!'")
+        return Val(v: op(g, "xor i1 " + c.v + ", true"), ty: T("bool"))
+    }
+    if e.name == "~" {
+        if v.ty.kind != "int" {
+            fail(g, e, "'~' flips the bits of a whole number, not of " + ast.show(v.ty))
+        }
+        return Val(v: op(g, "xor i64 " + v.v + ", -1"), ty: v.ty)
+    }
+    if v.ty.kind == "int" {
+        if v.lit {
+            if v.v.starts_with("-") {
+                return Val(v: v.v.sub(1, v.v.len), ty: v.ty, lit: true)
+            }
+            return Val(v: "-" + v.v, ty: v.ty, lit: true)
+        }
+        return Val(v: op(g, "sub i64 0, " + v.v), ty: v.ty)
+    }
+    if v.ty.kind == "float" {
+        return Val(v: op(g, "fneg double " + v.v), ty: v.ty)
+    }
+    fail(g, e, "can't put '-' in front of " + ast.show(v.ty))
+    return v
+}
+
+fn badOperands(ptr[Gen] g, str o, Val l, Val r, ast.Node at) {
+    msg := "can't use '" + o + "' on " + ast.show(l.ty)
+    if !ast.same(l.ty, r.ty) {
+        msg = msg + " and " + ast.show(r.ty)
+    }
+    if o == "+" && (l.ty.kind == "str" || r.ty.kind == "str") {
+        msg = msg + " (turn the other side into text first: str(...))"
+    }
+    fail(g, at, msg)
+}
+
+fn unify(ptr[Gen] g, ptr[Val] l, ptr[Val] r) -> bool {
+    if ast.same(l.ty, r.ty) {
+        return true
+    }
+    if l.ty.kind == "int" && r.ty.kind == "float" {
+        l.value = coerce(g, l.value, T("float"), Node0(), "")
+        return true
+    }
+    if l.ty.kind == "float" && r.ty.kind == "int" {
+        r.value = coerce(g, r.value, T("float"), Node0(), "")
+        return true
+    }
+    return false
+}
+
+fn Node0() -> ast.Node {
+    return ast.Node()
+}
+
+fn arith(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
+    if o == "+" && l.ty.kind == "str" && r.ty.kind == "str" {
+        out := alloca(g, "{ ptr, i64, i64 }")
+        emit(g, "call void @finch_str_concat(ptr " + out + ", ptr " + spill(g, l) + ", ptr " + spill(g, r) + ")")
+        return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
+    }
+    if !unify(g, addr(l), addr(r)) {
+        badOperands(g, o, l, r, at)
+    }
+    if l.ty.kind == "int" {
+        names := ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"]
+        insts := ["add", "sub", "mul", "sdiv", "srem", "and", "or", "xor", "shl", "ashr"]
+        k := names.find(o)
+        if k < 0 {
+            badOperands(g, o, l, r, at)
+        }
+        if o == "/" || o == "%" {
+            if r.lit && r.v == "0" {
+                fail(g, at, "division by zero")
+            }
+            if !r.lit {
+                panicIf(g, op(g, "icmp eq i64 " + r.v + ", 0"), "division by zero", at)
+            }
+        }
+        lit := l.lit && r.lit
+        return Val(v: op(g, insts[k] + " i64 " + l.v + ", " + r.v), ty: l.ty)
+    }
+    if l.ty.kind == "float" {
+        names := ["+", "-", "*", "/", "%"]
+        insts := ["fadd", "fsub", "fmul", "fdiv", "frem"]
+        k := names.find(o)
+        if k < 0 {
+            badOperands(g, o, l, r, at)
+        }
+        return Val(v: op(g, insts[k] + " double " + l.v + ", " + r.v), ty: l.ty)
+    }
+    badOperands(g, o, l, r, at)
+    return l
+}
+
+fn compare(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
+    eq := o == "==" || o == "!="
+    if l.ty.kind == "ptr" || r.ty.kind == "ptr" || l.ty.kind == "null" || r.ty.kind == "null" {
+        if !eq {
+            badOperands(g, o, l, r, at)
+        }
+        pred := "eq"
+        if o == "!=" {
+            pred = "ne"
+        }
+        return Val(v: op(g, "icmp " + pred + " ptr " + l.v + ", " + r.v), ty: T("bool"))
+    }
+    if l.ty.kind == "str" && r.ty.kind == "str" {
+        if eq {
+            c := op(g, "call i32 @finch_str_eq(ptr " + spill(g, l) + ", ptr " + spill(g, r) + ")")
+            pred := "ne"
+            if o == "!=" {
+                pred = "eq"
+            }
+            return Val(v: op(g, "icmp " + pred + " i32 " + c + ", 0"), ty: T("bool"))
+        }
+        c := op(g, "call i64 @finch_str_cmp(ptr " + spill(g, l) + ", ptr " + spill(g, r) + ")")
+        return Val(v: op(g, "icmp " + intPred(o) + " i64 " + c + ", 0"), ty: T("bool"))
+    }
+    if !unify(g, addr(l), addr(r)) {
+        badOperands(g, o, l, r, at)
+    }
+    k := l.ty.kind
+    if k == "float" {
+        ops := ["==", "!=", "<", "<=", ">", ">="]
+        preds := ["oeq", "une", "olt", "ole", "ogt", "oge"]
+        return Val(v: op(g, "fcmp " + preds[ops.find(o)] + " double " + l.v + ", " + r.v), ty: T("bool"))
+    }
+    if k == "bool" && !eq {
+        badOperands(g, o, l, r, at)
+    }
+    if k != "int" && k != "char" && k != "bool" {
+        badOperands(g, o, l, r, at)
+    }
+    return Val(v: op(g, "icmp " + intPred(o) + " " + llty(g, l.ty) + " " + l.v + ", " + r.v), ty: T("bool"))
+}
+
+fn intPred(str o) -> str {
+    ops := ["==", "!=", "<", "<=", ">", ">="]
+    preds := ["eq", "ne", "slt", "sle", "sgt", "sge"]
+    return preds[ops.find(o)]
+}
+
+fn binary(ptr[Gen] g, ast.Node e) -> Val {
+    o := e.name
+    if o == "&&" || o == "||" {
+        l := condition(g, e.kids[0])
+        from := newLabel(g, "logic.from")
+        rhs := newLabel(g, "logic.rhs")
+        end := newLabel(g, "logic.end")
+        br(g, from)
+        label(g, from)
+        if o == "&&" {
+            condBr(g, l, rhs, end)
+        } else {
+            condBr(g, l, end, rhs)
+        }
+        label(g, rhs)
+        r := condition(g, e.kids[1])
+        rhsEnd := newLabel(g, "logic.rend")
+        br(g, rhsEnd)
+        label(g, rhsEnd)
+        br(g, end)
+        label(g, end)
+        short := "true"
+        if o == "&&" {
+            short = "false"
+        }
+        return Val(v: op(g, "phi i1 [ " + short + ", %" + from + " ], [ " + r + ", %" + rhsEnd + " ]"), ty: T("bool"))
+    }
+    l := expr(g, e.kids[0])
+    r := expr(g, e.kids[1])
+    if o == "==" || o == "!=" || o == "<" || o == "<=" || o == ">" || o == ">=" {
+        return compare(g, o, l, r, e)
+    }
+    return arith(g, o, l, r, e)
+}
+
+fn arrayLit(ptr[Gen] g, ast.Node a, ast.Type want) -> Val {
+    et := T("void")
+    if want.kind == "array" {
+        et = want.elem[0]
+    } else if a.kids.len == 0 {
+        fail(g, a, "an empty [] needs a type, like: []int nums = []")
+    }
+    []str vals
+    for k in a.kids {
+        v := Val()
+        if et.kind == "void" {
+            v = expr(g, k)
+            et = v.ty
+        } else {
+            v = exprWant(g, k, et)
+        }
+        v = coerce(g, v, et, k, "every element of this array")
+        vals.push(own(g, v))
+    }
+    at := ast.arrayOf(et)
+    n := str(vals.len)
+    data := "null"
+    if vals.len > 0 {
+        size := op(g, "mul i64 " + n + ", " + sizeOf(g, et))
+        data = op(g, "call ptr @finch_alloc(i64 " + size + ")")
+    }
+    for i in 0..vals.len {
+        p := op(g, "getelementptr inbounds " + llty(g, et) + ", ptr " + data + ", i64 " + str(i))
+        store(g, llty(g, et), vals[i], p)
+    }
+    v1 := op(g, "insertvalue { ptr, i64, i64 } undef, ptr " + data + ", 0")
+    v2 := op(g, "insertvalue { ptr, i64, i64 } " + v1 + ", i64 " + n + ", 1")
+    v3 := op(g, "insertvalue { ptr, i64, i64 } " + v2 + ", i64 " + n + ", 2")
+    return Val(v: v3, ty: at, fresh: true)
+}
+
+// ---------- places: variables, fields, elements ----------
+
+fn place(ptr[Gen] g, ast.Node e, bool write) -> Place {
+    if e.kind == "var" && lookup(g, e.name) < 0 {
+        fail(g, e, "there is no variable named '" + e.name + "'")
+    }
+    r := ref(g, e, write)
+    if !r.isPlace {
+        fail(g, e, "this is a temporary value, it can't be changed or pointed to")
+    }
+    return r.pl
+}
+
+fn ref(ptr[Gen] g, ast.Node e, bool write) -> Ref {
+    if e.kind == "var" {
+        id := lookup(g, e.name)
+        if id < 0 {
+            if imports(g, e.name) {
+                fail(g, e, "'" + e.name + "' is a module; use something from it, like " + e.name + ".name(...)")
+            }
+            fail(g, e, "there is no variable named '" + e.name + "'")
+        }
+        v := varAt(g, id)
+        return Ref(isPlace: true, pl: Place(addr: v.slot, ty: v.ty))
+    }
+    if e.kind == "member" {
+        return member(g, e, write)
+    }
+    if e.kind == "index" {
+        return index(g, e, write)
+    }
+    return Ref(isPlace: false, val: expr(g, e))
+}
+
+fn member(ptr[Gen] g, ast.Node m, bool write) -> Ref {
+    obj := ref(g, m.kids[0], write)
+    t := obj.val.ty
+    if obj.isPlace {
+        t = obj.pl.ty
+    }
+    if t.kind == "ptr" {
+        pv := obj.val.v
+        if obj.isPlace {
+            pv = load(g, "ptr", obj.pl.addr)
+        }
+        if t.elem.len == 0 {
+            fail(g, m, "this ptr has no type, so Finch doesn't know what's inside")
+        }
+        panicIf(g, op(g, "icmp eq ptr " + pv + ", null"), "used ." + m.name + " on a null pointer", m)
+        target := t.elem[0]
+        structHasValue := false
+        if target.kind == "struct" {
+            structHasValue = g.structs[findStruct(g, target.module, target.name)].fnames.contains("value")
+        }
+        if m.name == "value" && !structHasValue {
+            return Ref(isPlace: true, pl: Place(addr: pv, ty: target))
+        }
+        if target.kind != "struct" {
+            fail(g, m, "a " + ast.show(t) + " only has '.value' (the thing it points to)")
+        }
+        obj = Ref(isPlace: true, pl: Place(addr: pv, ty: target))
+        t = target
+    }
+    if t.kind == "array" || t.kind == "str" {
+        if m.name != "len" {
+            fail(g, m, "an array or str has .len, not '." + m.name + "'")
+        }
+        if write {
+            fail(g, m, ".len can't be changed directly (use push or pop)")
+        }
+        if obj.isPlace {
+            lp := op(g, "getelementptr inbounds { ptr, i64, i64 }, ptr " + obj.pl.addr + ", i32 0, i32 1")
+            return Ref(isPlace: false, val: Val(v: load(g, "i64", lp), ty: T("int")))
+        }
+        return Ref(isPlace: false, val: Val(v: op(g, "extractvalue { ptr, i64, i64 } " + obj.val.v + ", 1"), ty: T("int")))
+    }
+    if t.kind != "struct" {
+        fail(g, m, ast.show(t) + " has no fields (no '." + m.name + "')")
+    }
+    sd := g.structs[findStruct(g, t.module, t.name)]
+    k := sd.fnames.find(m.name)
+    if k < 0 {
+        fail(g, m, "the struct " + ast.show(t) + " has no field '" + m.name + "' (it has: " + sd.fnames.join(", ") + ")")
+    }
+    ft := sd.ftypes[k]
+    if obj.isPlace {
+        fp := op(g, "getelementptr inbounds " + llty(g, t) + ", ptr " + obj.pl.addr + ", i32 0, i32 " + str(k))
+        return Ref(isPlace: true, pl: Place(addr: fp, ty: ft))
+    }
+    fv := op(g, "extractvalue " + llty(g, t) + " " + obj.val.v + ", " + str(k))
+    out := Val(v: fv, ty: ft)
+    if owning(g, ft) && obj.val.fresh {
+        out = Val(v: copyValue(g, fv, ft), ty: ft, fresh: true)
+    }
+    return Ref(isPlace: false, val: out)
+}
+
+fn index(ptr[Gen] g, ast.Node e, bool write) -> Ref {
+    obj := ref(g, e.kids[0], write)
+    t := obj.val.ty
+    if obj.isPlace {
+        t = obj.pl.ty
+    }
+    i := coerce(g, expr(g, e.kids[1]), T("int"), e.kids[1], "an index").v
+    if t.kind == "ptr" {
+        if t.elem.len == 0 {
+            fail(g, e, "this ptr has no type, so Finch doesn't know what's inside")
+        }
+        pv := obj.val.v
+        if obj.isPlace {
+            pv = load(g, "ptr", obj.pl.addr)
+        }
+        et := t.elem[0]
+        return Ref(isPlace: true, pl: Place(addr: op(g, "getelementptr inbounds " + llty(g, et) + ", ptr " + pv + ", i64 " + i), ty: et))
+    }
+    if t.kind != "array" && t.kind != "str" {
+        fail(g, e, "[ ] works on arrays, str and pointers, not on " + ast.show(t))
+    }
+    et := T("char")
+    if t.kind == "array" {
+        et = t.elem[0]
+    }
+    if t.kind == "str" && write {
+        if !obj.isPlace {
+            fail(g, e, "this is a temporary str, it can't be changed")
+        }
+        emit(g, "call void @finch_str_own(ptr " + obj.pl.addr + ")")
+    }
+    v := obj.val.v
+    if obj.isPlace {
+        v = load(g, "{ ptr, i64, i64 }", obj.pl.addr)
+    }
+    len := op(g, "extractvalue { ptr, i64, i64 } " + v + ", 1")
+    boundsCheck(g, i, len, e)
+    data := op(g, "extractvalue { ptr, i64, i64 } " + v + ", 0")
+    ep := op(g, "getelementptr inbounds " + llty(g, et) + ", ptr " + data + ", i64 " + i)
+    if obj.isPlace {
+        return Ref(isPlace: true, pl: Place(addr: ep, ty: et))
+    }
+    ev := load(g, llty(g, et), ep)
+    out := Val(v: ev, ty: et)
+    if owning(g, et) && obj.val.fresh {
+        out = Val(v: copyValue(g, ev, et), ty: et, fresh: true)
+    }
+    return Ref(isPlace: false, val: out)
+}
+
+// ---------- calls ----------
+
+fn checkArgs(ptr[Gen] g, ast.Node c, int first, int want, str name) {
+    have := c.kids.len - first
+    for n in c.names {
+        if n.len > 0 {
+            fail(g, c, "named arguments (" + n + ": ...) are only for creating structs")
+        }
+    }
+    if have != want {
+        fail(g, c, "'" + name + "' takes " + str(want) + " argument(s), but got " + str(have))
+    }
+}
+
+fn strArg(ptr[Gen] g, ast.Node e, str what) -> Val {
+    return coerce(g, expr(g, e), T("str"), e, what)
+}
+
+fn strOut(ptr[Gen] g) -> str {
+    return alloca(g, "{ ptr, i64, i64 }")
+}
+
+fn call(ptr[Gen] g, ast.Node c) -> Val {
+    n := c.name
+    if n == "print" {
+        for i in 0..c.kids.len {
+            v := expr(g, c.kids[i])
+            if v.ty.kind == "void" {
+                fail(g, c.kids[i], "this gives back nothing, so there is nothing to print")
+            }
+            if i > 0 {
+                printf(g, " ", "")
+            }
+            emitPrint(g, v.v, v.ty, false)
+        }
+        printf(g, "\n", "")
+        return Val(ty: T("void"))
+    }
+    if n == "addr" {
+        checkArgs(g, c, 0, 1, n)
+        a := c.kids[0]
+        if a.kind != "var" && a.kind != "member" && a.kind != "index" {
+            fail(g, a, "addr(...) needs a variable, a field or an element, like addr(x)")
+        }
+        pl := place(g, a, true)
+        return Val(v: pl.addr, ty: ast.ptrTo(pl.ty))
+    }
+    if n == "str" {
+        checkArgs(g, c, 0, 1, n)
+        v := expr(g, c.kids[0])
+        out := strOut(g)
+        k := v.ty.kind
+        if k == "str" {
+            return Val(v: copyValue(g, v.v, v.ty), ty: v.ty, fresh: true)
+        } else if k == "int" {
+            emit(g, "call void @finch_str_from_int(ptr " + out + ", i64 " + v.v + ")")
+        } else if k == "float" {
+            emit(g, "call void @finch_str_from_float(ptr " + out + ", double " + v.v + ")")
+        } else if k == "char" {
+            emit(g, "call void @finch_str_from_char(ptr " + out + ", i8 signext " + v.v + ")")
+        } else if k == "bool" {
+            z := op(g, "zext i1 " + v.v + " to i32")
+            emit(g, "call void @finch_str_from_bool(ptr " + out + ", i32 " + z + ")")
+        } else {
+            fail(g, c.kids[0], "can't turn " + ast.show(v.ty) + " into str")
+        }
+        return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
+    }
+    if n == "int" || n == "float" || n == "char" {
+        checkArgs(g, c, 0, 1, n)
+        v := expr(g, c.kids[0])
+        k := v.ty.kind
+        file := strGlobal(g, g.files[c.file])
+        if n == "int" {
+            if k == "int" {
+                return v
+            }
+            if k == "char" {
+                return Val(v: op(g, "zext i8 " + v.v + " to i64"), ty: T("int"))
+            }
+            if k == "float" {
+                return Val(v: op(g, "fptosi double " + v.v + " to i64"), ty: T("int"))
+            }
+            if k == "bool" {
+                return Val(v: op(g, "zext i1 " + v.v + " to i64"), ty: T("int"))
+            }
+            if k == "str" {
+                return Val(v: op(g, "call i64 @finch_str_to_int(ptr " + spill(g, v) + ", ptr " + file + ", i64 " + str(c.line) + ")"), ty: T("int"))
+            }
+        }
+        if n == "float" {
+            if k == "float" {
+                return v
+            }
+            if k == "int" {
+                return Val(v: op(g, "sitofp i64 " + v.v + " to double"), ty: T("float"))
+            }
+            if k == "str" {
+                return Val(v: op(g, "call double @finch_str_to_float(ptr " + spill(g, v) + ", ptr " + file + ", i64 " + str(c.line) + ")"), ty: T("float"))
+            }
+        }
+        if n == "char" {
+            if k == "char" {
+                return v
+            }
+            if k == "int" {
+                return Val(v: op(g, "trunc i64 " + v.v + " to i8"), ty: T("char"))
+            }
+        }
+        fail(g, c.kids[0], "can't turn " + ast.show(v.ty) + " into " + n)
+    }
+    if n == "read_file" || n == "file_exists" {
+        checkArgs(g, c, 0, 1, n)
+        path := spill(g, strArg(g, c.kids[0], "the file name"))
+        if n == "file_exists" {
+            r := op(g, "call i32 @finch_file_exists(ptr " + path + ")")
+            return Val(v: op(g, "icmp ne i32 " + r + ", 0"), ty: T("bool"))
+        }
+        out := strOut(g)
+        file := strGlobal(g, g.files[c.file])
+        emit(g, "call void @finch_read_file(ptr " + out + ", ptr " + path + ", ptr " + file + ", i64 " + str(c.line) + ")")
+        return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
+    }
+    if n == "write_file" {
+        checkArgs(g, c, 0, 2, n)
+        path := spill(g, strArg(g, c.kids[0], "the file name"))
+        text := spill(g, strArg(g, c.kids[1], "the text"))
+        r := op(g, "call i32 @finch_write_file(ptr " + path + ", ptr " + text + ")")
+        return Val(v: op(g, "icmp ne i32 " + r + ", 0"), ty: T("bool"))
+    }
+    if n == "shell" {
+        checkArgs(g, c, 0, 1, n)
+        cmd := strArg(g, c.kids[0], "the command")
+        heap := strOut(g)
+        emit(g, "call void @finch_str_copy(ptr " + heap + ", ptr " + spill(g, cmd) + ")")
+        return Val(v: op(g, "call i64 @finch_shell(ptr " + heap + ")"), ty: T("int"))
+    }
+    if n == "exit" {
+        checkArgs(g, c, 0, 1, n)
+        code := coerce(g, expr(g, c.kids[0]), T("int"), c.kids[0], "the exit code")
+        t := op(g, "trunc i64 " + code.v + " to i32")
+        f := op(g, "call i32 @fflush(ptr null)")
+        emit(g, "call void @exit(i32 " + t + ")")
+        return Val(ty: T("void"))
+    }
+    if n == "input" {
+        prompt := strConst(g, "")
+        if c.kids.len > 0 {
+            checkArgs(g, c, 0, 1, n)
+            prompt = strArg(g, c.kids[0], "the question")
+        }
+        out := strOut(g)
+        emit(g, "call void @finch_input(ptr " + out + ", ptr " + spill(g, prompt) + ")")
+        return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
+    }
+    if n == "new" {
+        checkArgs(g, c, 0, 1, n)
+        v := expr(g, c.kids[0])
+        mem := op(g, "call ptr @finch_alloc(i64 " + sizeOf(g, v.ty) + ")")
+        store(g, llty(g, v.ty), own(g, v), mem)
+        return Val(v: mem, ty: ast.ptrTo(v.ty))
+    }
+    if n == "free" {
+        checkArgs(g, c, 0, 1, n)
+        v := expr(g, c.kids[0])
+        if v.ty.kind != "ptr" {
+            fail(g, c.kids[0], "free(...) is only for pointers from new(...)")
+        }
+        emit(g, "call void @free(ptr " + v.v + ")")
+        return Val(ty: T("void"))
+    }
+    fi := findFn(g, g.module, n)
+    if fi >= 0 {
+        return callFn(g, fi, c, 0, n)
+    }
+    si := findStruct(g, g.module, n)
+    if si >= 0 {
+        return construct(g, si, c.kids, c.names, c)
+    }
+    if lookup(g, n) >= 0 {
+        fail(g, c, "'" + n + "' is a variable, not a function")
+    }
+    fail(g, c, "there is no function named '" + n + "'")
+    return Val()
+}
+
+fn callFn(ptr[Gen] g, int fi, ast.Node c, int first, str shown) -> Val {
+    sig := g.sigs[fi]
+    if sig.module.len == 0 && sig.name == "main" {
+        fail(g, c, "main can't be called, it is where the program starts")
+    }
+    checkArgs(g, c, first, sig.params.len, shown)
+    []str args
+    for k in 0..sig.params.len {
+        a := c.kids[first + k]
+        v := coerce(g, exprWant(g, a, sig.params[k]), sig.params[k], a, "argument '" + sig.pnames[k] + "'")
+        args.push(llty(g, sig.params[k]) + " " + v.v)
+    }
+    text := "call " + llty(g, sig.ret) + " " + sig.ll + "(" + args.join(", ") + ")"
+    if sig.ret.kind == "void" {
+        emit(g, text)
+        return Val(ty: sig.ret)
+    }
+    return Val(v: op(g, text), ty: sig.ret, fresh: owning(g, sig.ret))
+}
+
+fn construct(ptr[Gen] g, int si, []ast.Node args, []str names, ast.Node at) -> Val {
+    sd := g.structs[si]
+    decl := g.progs[sd.prog].structs[sd.index]
+    t := ast.Type(kind: "struct", name: sd.name, module: sd.module)
+    st := llty(g, t)
+    named := names.len > 0 && names[0].len > 0
+    []int given
+    for k in 0..sd.fnames.len {
+        given.push(-1)
+    }
+    for i in 0..args.len {
+        if (names[i].len > 0) != named {
+            fail(g, args[i], "give either all fields by name (x: 1, y: 2) or none (1, 2), not a mix")
+        }
+        if !named {
+            if args.len != sd.fnames.len {
+                fail(g, at, sd.name + " has " + str(sd.fnames.len) + " fields, but got " + str(args.len) + " values (or name them: " + sd.name + "(field: value))")
+            }
+            given[i] = i
+            continue
+        }
+        k := sd.fnames.find(names[i])
+        if k < 0 {
+            fail(g, args[i], sd.name + " has no field '" + names[i] + "'")
+        }
+        if given[k] >= 0 {
+            fail(g, args[i], "the field '" + names[i] + "' is given twice")
+        }
+        given[k] = i
+    }
+    v := "zeroinitializer"
+    for k in 0..sd.fnames.len {
+        ft := sd.ftypes[k]
+        fv := Val()
+        if given[k] >= 0 {
+            fv = coerce(g, exprWant(g, args[given[k]], ft), ft, args[given[k]], "the field '" + sd.fnames[k] + "'")
+        } else if decl.kids[k].kids.len > 0 {
+            // a default value is evaluated where the struct is defined, without the caller's variables
+            savedScopes := g.scopes
+            savedModule := g.module
+            []Scope none
+            g.scopes = none
+            pushScope(g)
+            g.module = sd.module
+            fv = coerce(g, exprWant(g, decl.kids[k].kids[0], ft), ft, decl.kids[k].kids[0], "the default of '" + sd.fnames[k] + "'")
+            g.module = savedModule
+            g.scopes = savedScopes
+        } else {
+            continue
+        }
+        v = op(g, "insertvalue " + st + " " + v + ", " + llty(g, ft) + " " + own(g, fv) + ", " + str(k))
+    }
+    return Val(v: v, ty: t, fresh: owning(g, t))
+}
+
+// ---------- methods ----------
+
+fn method(ptr[Gen] g, ast.Node m) -> Val {
+    objNode := m.kids[0]
+    if objNode.kind == "var" && lookup(g, objNode.name) < 0 {
+        mn := objNode.name
+        if !imports(g, mn) {
+            fail(g, objNode, "there is no variable or module named '" + mn + "' (to use a module, add  import " + mn + "  at the top)")
+        }
+        fi := findFn(g, mn, m.name)
+        if fi >= 0 {
+            return callFn(g, fi, m, 1, mn + "." + m.name)
+        }
+        si := findStruct(g, mn, m.name)
+        if si >= 0 {
+            []ast.Node args
+            for k in 1..m.kids.len {
+                args.push(m.kids[k])
+            }
+            return construct(g, si, args, m.names, m)
+        }
+        fail(g, m, "the module '" + mn + "' has no function or struct named '" + m.name + "'")
+    }
+    changing := ["push", "pop", "insert", "remove", "clear", "resize", "sort", "reverse"]
+    r := ref(g, objNode, changing.contains(m.name))
+    t := r.val.ty
+    if r.isPlace {
+        t = r.pl.ty
+    }
+    if t.kind == "array" {
+        a := ""
+        if r.isPlace {
+            a = r.pl.addr
+        } else {
+            if changing.contains(m.name) {
+                fail(g, m, m.name + "() would change a temporary array; store it in a variable first")
+            }
+            a = spill(g, r.val)
+        }
+        return arrayMethod(g, m, a, t)
+    }
+    if t.kind == "str" {
+        sv := r.val
+        if r.isPlace {
+            sv = Val(v: load(g, "{ ptr, i64, i64 }", r.pl.addr), ty: t)
+        }
+        return strMethod(g, m, spill(g, sv))
+    }
+    if t.kind == "struct" {
+        fail(g, m, "structs don't have methods; write a function and call it: " + m.name + "(value, ...)")
+    }
+    fail(g, m, ast.show(t) + " has no methods")
+    return Val()
+}
+
+fn need(ptr[Gen] g, ast.Node m, int n) {
+    checkArgs(g, m, 1, n, m.name)
+}
+
+fn arrayMethod(ptr[Gen] g, ast.Node m, str a, ast.Type at) -> Val {
+    et := at.elem[0]
+    ET := llty(g, et)
+    n := m.name
+    lenAddr := op(g, "getelementptr inbounds { ptr, i64, i64 }, ptr " + a + ", i32 0, i32 1")
+    if n == "push" {
+        need(g, m, 1)
+        v := own(g, coerce(g, exprWant(g, m.kids[1], et), et, m.kids[1], "the element"))
+        l := load(g, "i64", lenAddr)
+        l1 := op(g, "add i64 " + l + ", 1")
+        emit(g, "call void @finch_arr_reserve(ptr " + a + ", i64 " + l1 + ", i64 " + sizeOf(g, et) + ")")
+        data := load(g, "ptr", a)
+        store(g, ET, v, op(g, "getelementptr inbounds " + ET + ", ptr " + data + ", i64 " + l))
+        store(g, "i64", l1, lenAddr)
+        return Val(ty: T("void"))
+    }
+    if n == "pop" {
+        need(g, m, 0)
+        l := load(g, "i64", lenAddr)
+        panicIf(g, op(g, "icmp eq i64 " + l + ", 0"), "pop() on an empty array", m)
+        last := op(g, "sub i64 " + l + ", 1")
+        data := load(g, "ptr", a)
+        v := load(g, ET, op(g, "getelementptr inbounds " + ET + ", ptr " + data + ", i64 " + last))
+        store(g, "i64", last, lenAddr)
+        return Val(v: v, ty: et, fresh: owning(g, et))
+    }
+    if n == "clear" {
+        need(g, m, 0)
+        store(g, "i64", "0", lenAddr)
+        return Val(ty: T("void"))
+    }
+    if n == "find" || n == "contains" {
+        need(g, m, 1)
+        x := coerce(g, exprWant(g, m.kids[1], et), et, m.kids[1], "the value to look for")
+        res := alloca(g, "i64")
+        store(g, "i64", "-1", res)
+        l := load(g, "i64", lenAddr)
+        data := load(g, "ptr", a)
+        iv := alloca(g, "i64")
+        store(g, "i64", "0", iv)
+        cond := newLabel(g, "find.cond")
+        body := newLabel(g, "find.body")
+        hit := newLabel(g, "find.hit")
+        nxt := newLabel(g, "find.next")
+        end := newLabel(g, "find.end")
+        br(g, cond)
+        label(g, cond)
+        i := load(g, "i64", iv)
+        c := op(g, "icmp slt i64 " + i + ", " + l)
+        condBr(g, c, body, end)
+        label(g, body)
+        ev := Val(v: load(g, ET, op(g, "getelementptr inbounds " + ET + ", ptr " + data + ", i64 " + i)), ty: et)
+        eq := compare(g, "==", ev, x, m).v
+        condBr(g, eq, hit, nxt)
+        label(g, hit)
+        store(g, "i64", i, res)
+        br(g, end)
+        label(g, nxt)
+        store(g, "i64", op(g, "add i64 " + i + ", 1"), iv)
+        br(g, cond)
+        label(g, end)
+        r := load(g, "i64", res)
+        if n == "find" {
+            return Val(v: r, ty: T("int"))
+        }
+        return Val(v: op(g, "icmp sge i64 " + r + ", 0"), ty: T("bool"))
+    }
+    if n == "join" {
+        need(g, m, 1)
+        if et.kind != "str" {
+            fail(g, m, "join() works on an array of str")
+        }
+        sep := spill(g, strArg(g, m.kids[1], "the separator"))
+        out := strOut(g)
+        emit(g, "call void @finch_str_join(ptr " + out + ", ptr " + a + ", ptr " + sep + ")")
+        return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
+    }
+    if n == "insert" {
+        need(g, m, 2)
+        i := coerce(g, expr(g, m.kids[1]), T("int"), m.kids[1], "the position").v
+        v := own(g, coerce(g, exprWant(g, m.kids[2], et), et, m.kids[2], "the element"))
+        file := strGlobal(g, g.files[m.file])
+        emit(g, "call void @finch_arr_insert_gap(ptr " + a + ", i64 " + i + ", i64 " + sizeOf(g, et) + ", ptr " + file + ", i64 " + str(m.line) + ")")
+        data := load(g, "ptr", a)
+        store(g, ET, v, op(g, "getelementptr inbounds " + ET + ", ptr " + data + ", i64 " + i))
+        return Val(ty: T("void"))
+    }
+    if n == "remove" {
+        need(g, m, 1)
+        i := coerce(g, expr(g, m.kids[1]), T("int"), m.kids[1], "the position").v
+        boundsCheck(g, i, load(g, "i64", lenAddr), m)
+        data := load(g, "ptr", a)
+        v := load(g, ET, op(g, "getelementptr inbounds " + ET + ", ptr " + data + ", i64 " + i))
+        emit(g, "call void @finch_arr_remove_gap(ptr " + a + ", i64 " + i + ", i64 " + sizeOf(g, et) + ")")
+        return Val(v: v, ty: et, fresh: owning(g, et))
+    }
+    if n == "resize" {
+        need(g, m, 1)
+        k := coerce(g, expr(g, m.kids[1]), T("int"), m.kids[1], "the new length").v
+        emit(g, "call void @finch_arr_resize(ptr " + a + ", i64 " + k + ", i64 " + sizeOf(g, et) + ")")
+        return Val(ty: T("void"))
+    }
+    if n == "reverse" {
+        need(g, m, 0)
+        l := load(g, "i64", lenAddr)
+        data := load(g, "ptr", a)
+        half := op(g, "sdiv i64 " + l + ", 2")
+        lp := loopStart(g, half)
+        x := op(g, "getelementptr inbounds " + ET + ", ptr " + data + ", i64 " + lp[3])
+        j := op(g, "sub i64 " + op(g, "sub i64 " + l + ", 1") + ", " + lp[3])
+        y := op(g, "getelementptr inbounds " + ET + ", ptr " + data + ", i64 " + j)
+        xv := load(g, ET, x)
+        yv := load(g, ET, y)
+        store(g, ET, yv, x)
+        store(g, ET, xv, y)
+        loopEnd(g, lp)
+        return Val(ty: T("void"))
+    }
+    if n == "slice" {
+        need(g, m, 2)
+        st := coerce(g, expr(g, m.kids[1]), T("int"), m.kids[1], "the start").v
+        en := coerce(g, expr(g, m.kids[2]), T("int"), m.kids[2], "the end").v
+        l := load(g, "i64", lenAddr)
+        bad1 := op(g, "icmp slt i64 " + st + ", 0")
+        bad2 := op(g, "icmp sgt i64 " + en + ", " + l)
+        bad3 := op(g, "icmp sgt i64 " + st + ", " + en)
+        panicIf(g, op(g, "or i1 " + op(g, "or i1 " + bad1 + ", " + bad2) + ", " + bad3), "slice(start, end) is out of range", m)
+        cnt := op(g, "sub i64 " + en + ", " + st)
+        out := alloca(g, "{ ptr, i64, i64 }")
+        emit(g, "call void @finch_arr_make(ptr " + out + ", i64 " + cnt + ", i64 " + sizeOf(g, et) + ")")
+        src := load(g, "ptr", a)
+        dst := load(g, "ptr", out)
+        lp := loopStart(g, cnt)
+        dp := op(g, "getelementptr inbounds " + ET + ", ptr " + dst + ", i64 " + lp[3])
+        sp := op(g, "getelementptr inbounds " + ET + ", ptr " + src + ", i64 " + op(g, "add i64 " + st + ", " + lp[3]))
+        copyAt(g, dp, sp, et)
+        loopEnd(g, lp)
+        return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: at, fresh: true)
+    }
+    if n == "sort" {
+        need(g, m, 0)
+        k := et.kind
+        if k != "int" && k != "float" && k != "char" && k != "str" {
+            fail(g, m, "sort() works on arrays of numbers, chars or str")
+        }
+        cmp := cmpFn(g, et)
+        l := load(g, "i64", lenAddr)
+        data := load(g, "ptr", a)
+        emit(g, "call void @qsort(ptr " + data + ", i64 " + l + ", i64 " + sizeOf(g, et) + ", ptr " + cmp + ")")
+        return Val(ty: T("void"))
+    }
+    fail(g, m, "an array has no method '" + n + "' (it has: push, pop, insert, remove, clear, resize, find, contains, join, slice, reverse, sort)")
+    return Val()
+}
+
+// -1, 0 or 1, for qsort
+fn cmpFn(ptr[Gen] g, ast.Type t) -> str {
+    name := "@finch.cmp." + typeKey(t)
+    if has(g.done, name) {
+        return name
+    }
+    g.done.push(name)
+    s := beginHelper(g)
+    r := ""
+    if t.kind == "str" {
+        c := op(g, "call i64 @finch_str_cmp(ptr %x, ptr %y)")
+        r = op(g, "trunc i64 " + c + " to i32")
+    } else {
+        ty := llty(g, t)
+        x := load(g, ty, "%x")
+        y := load(g, ty, "%y")
+        lt := ""
+        gt := ""
+        if t.kind == "float" {
+            lt = op(g, "fcmp olt double " + x + ", " + y)
+            gt = op(g, "fcmp ogt double " + x + ", " + y)
+        } else {
+            lt = op(g, "icmp slt " + ty + " " + x + ", " + y)
+            gt = op(g, "icmp sgt " + ty + " " + x + ", " + y)
+        }
+        r = op(g, "sub i32 " + op(g, "zext i1 " + gt + " to i32") + ", " + op(g, "zext i1 " + lt + " to i32"))
+    }
+    emit(g, "ret i32 " + r)
+    endHelper(g, s, "define internal i32 " + name + "(ptr %x, ptr %y)")
+    return name
+}
+
+fn strMethod(ptr[Gen] g, ast.Node m, str s) -> Val {
+    n := m.name
+    out := strOut(g)
+    file := strGlobal(g, g.files[m.file])
+    if n == "sub" {
+        need(g, m, 2)
+        a := coerce(g, expr(g, m.kids[1]), T("int"), m.kids[1], "the start").v
+        b := coerce(g, expr(g, m.kids[2]), T("int"), m.kids[2], "the end").v
+        emit(g, "call void @finch_str_sub(ptr " + out + ", ptr " + s + ", i64 " + a + ", i64 " + b + ", ptr " + file + ", i64 " + str(m.line) + ")")
+        return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
+    }
+    if n == "find" || n == "contains" || n == "starts_with" || n == "ends_with" {
+        need(g, m, 1)
+        t := spill(g, strArg(g, m.kids[1], "the text to look for"))
+        if n == "find" {
+            return Val(v: op(g, "call i64 @finch_str_find(ptr " + s + ", ptr " + t + ")"), ty: T("int"))
+        }
+        if n == "contains" {
+            r := op(g, "call i64 @finch_str_find(ptr " + s + ", ptr " + t + ")")
+            return Val(v: op(g, "icmp sge i64 " + r + ", 0"), ty: T("bool"))
+        }
+        fname := "@finch_str_starts"
+        if n == "ends_with" {
+            fname = "@finch_str_ends"
+        }
+        r := op(g, "call i32 " + fname + "(ptr " + s + ", ptr " + t + ")")
+        return Val(v: op(g, "icmp ne i32 " + r + ", 0"), ty: T("bool"))
+    }
+    if n == "trim" || n == "upper" || n == "lower" {
+        need(g, m, 0)
+        emit(g, "call void @finch_str_" + n + "(ptr " + out + ", ptr " + s + ")")
+        return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
+    }
+    if n == "replace" {
+        need(g, m, 2)
+        a := spill(g, strArg(g, m.kids[1], "the text to replace"))
+        b := spill(g, strArg(g, m.kids[2], "the new text"))
+        emit(g, "call void @finch_str_replace(ptr " + out + ", ptr " + s + ", ptr " + a + ", ptr " + b + ")")
+        return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
+    }
+    if n == "split" {
+        need(g, m, 1)
+        sep := spill(g, strArg(g, m.kids[1], "the separator"))
+        ao := strOut(g)
+        emit(g, "call void @finch_str_split(ptr " + ao + ", ptr " + s + ", ptr " + sep + ")")
+        return Val(v: load(g, "{ ptr, i64, i64 }", ao), ty: ast.arrayOf(T("str")), fresh: true)
+    }
+    if n == "repeat" {
+        need(g, m, 1)
+        k := coerce(g, expr(g, m.kids[1]), T("int"), m.kids[1], "the count").v
+        emit(g, "call void @finch_str_repeat(ptr " + out + ", ptr " + s + ", i64 " + k + ")")
+        return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
+    }
+    fail(g, m, "a str has no method '" + n + "' (it has: sub, find, contains, starts_with, ends_with, split, trim, upper, lower, replace, repeat)")
+    return Val()
+}
+
+// ---------- the whole program ----------
+
+fn runtimeDecls() -> str {
+    decls := [
+        "declare void @finch_panic(ptr, i64, ptr) noreturn cold",
+        "declare void @finch_panic_index(ptr, i64, i64, i64) noreturn cold",
+        "declare ptr @finch_alloc(i64)",
+        "declare void @finch_str_copy(ptr, ptr)",
+        "declare void @finch_str_own(ptr)",
+        "declare void @finch_str_concat(ptr, ptr, ptr)",
+        "declare i32 @finch_str_eq(ptr, ptr)",
+        "declare i64 @finch_str_cmp(ptr, ptr)",
+        "declare void @finch_str_from_int(ptr, i64)",
+        "declare void @finch_str_from_float(ptr, double)",
+        "declare void @finch_str_from_char(ptr, i8 signext)",
+        "declare void @finch_str_from_bool(ptr, i32)",
+        "declare i64 @finch_str_to_int(ptr, ptr, i64)",
+        "declare double @finch_str_to_float(ptr, ptr, i64)",
+        "declare void @finch_str_sub(ptr, ptr, i64, i64, ptr, i64)",
+        "declare i64 @finch_str_find(ptr, ptr)",
+        "declare i32 @finch_str_starts(ptr, ptr)",
+        "declare i32 @finch_str_ends(ptr, ptr)",
+        "declare void @finch_str_trim(ptr, ptr)",
+        "declare void @finch_str_upper(ptr, ptr)",
+        "declare void @finch_str_lower(ptr, ptr)",
+        "declare void @finch_str_replace(ptr, ptr, ptr, ptr)",
+        "declare void @finch_str_split(ptr, ptr, ptr)",
+        "declare void @finch_str_join(ptr, ptr, ptr)",
+        "declare void @finch_str_repeat(ptr, ptr, i64)",
+        "declare void @finch_arr_reserve(ptr, i64, i64)",
+        "declare void @finch_arr_clone_raw(ptr, ptr, i64)",
+        "declare void @finch_arr_make(ptr, i64, i64)",
+        "declare void @finch_arr_resize(ptr, i64, i64)",
+        "declare void @finch_arr_insert_gap(ptr, i64, i64, ptr, i64)",
+        "declare void @finch_arr_remove_gap(ptr, i64, i64)",
+        "declare void @qsort(ptr, i64, i64, ptr)",
+        "declare void @finch_args(ptr, i32, ptr)",
+        "declare void @finch_input(ptr, ptr)",
+        "declare i32 @finch_file_exists(ptr)",
+        "declare void @finch_read_file(ptr, ptr, ptr, i64)",
+        "declare i32 @finch_write_file(ptr, ptr)",
+        "declare i64 @finch_shell(ptr)",
+        "declare i32 @printf(ptr, ...)",
+        "declare i32 @fflush(ptr)",
+        "declare void @exit(i32) noreturn",
+        "declare void @free(ptr)",
+    ]
+    return decls.join("\n") + "\n"
+}
+
+fn generate([]ast.Program progs, []str files) -> str {
+    gen := Gen(progs: progs, files: files)
+    g := addr(gen)
+    declare(g)
+    main := findFn(g, "", "main")
+    if main < 0 {
+        print(files[0] + ":1:1: error: there is no main function (add 'fn main() { ... }')")
+        exit(1)
+    }
+    for i in 0..g.sigs.len {
+        define(g, i)
+    }
+    // the C entry point calls the Finch main
+    m := g.sigs[main]
+    callText := "call " + llty(g, m.ret) + " " + m.ll + "("
+    pre := ""
+    if m.params.len == 1 {
+        pre = "  %args = alloca { ptr, i64, i64 }\n  call void @finch_args(ptr %args, i32 %argc, ptr %argv)\n  %a = load { ptr, i64, i64 }, ptr %args\n"
+        callText = callText + "{ ptr, i64, i64 } %a"
+    }
+    callText = callText + ")"
+    ret := "  ret i32 0\n"
+    if m.ret.kind == "int" {
+        callText = "%r = " + callText
+        ret = "  %code = trunc i64 %r to i32\n  ret i32 %code\n"
+    }
+    g.out.push("define i32 @main(i32 %argc, ptr %argv) {\nentry:\n" + pre + "  " + callText + "\n" + ret + "}\n")
+    return "; generated by the self-hosted Finch compiler\n\n" + g.head.join("\n") + "\n\n" + runtimeDecls() + "\n" + g.out.join("\n")
+}

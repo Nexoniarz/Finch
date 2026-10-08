@@ -1,0 +1,116 @@
+// finch-boot: the Finch compiler written in Finch.
+//
+//   finch-boot build <file.fn> [-o name]    compile a program
+//   finch-boot ir    <file.fn>              print the LLVM IR
+//
+// It reads the program and the modules it imports, checks it, writes LLVM IR as text
+// and lets clang turn that into a program, linked with Finch's C runtime.
+import lexer
+import ast
+import parser
+import gen
+
+fn dirOf(str path) -> str {
+    i := path.len - 1
+    while i >= 0 && path[i] != '/' {
+        i -= 1
+    }
+    if i < 0 {
+        return "."
+    }
+    return path.sub(0, i)
+}
+
+fn stem(str path) -> str {
+    name := path.sub(dirOf(path).len + 1, path.len)
+    if dirOf(path) == "." && !path.starts_with("./") {
+        name = path
+    }
+    dot := name.find(".")
+    if dot > 0 {
+        return name.sub(0, dot)
+    }
+    return name
+}
+
+struct Loader {
+    []ast.Program progs
+    []str files
+    []str loaded
+}
+
+fn load(ptr[Loader] l, str path, str module) {
+    if !file_exists(path) {
+        if module.len > 0 {
+            print("error: can't find the module '" + module + "' (looked for " + path + ")")
+        } else {
+            print("error: can't open '" + path + "'")
+        }
+        exit(1)
+    }
+    src := read_file(path)
+    file := l.files.len
+    l.files.push(path)
+    prog := parser.parse(lexer.lex(src, path), file, path)
+    prog.module = module
+    prog.path = path
+    imports := prog.imports
+    l.progs.push(prog)
+    for name in imports {
+        if !l.loaded.contains(name) {
+            l.loaded.push(name)
+            load(l, dirOf(path) + "/" + name + ".fn", name)
+        }
+    }
+}
+
+fn usage() {
+    print("finch-boot - the Finch compiler written in Finch")
+    print("usage: finch-boot build <file.fn> [-o name]")
+    print("       finch-boot ir <file.fn>")
+    exit(1)
+}
+
+fn main([]str args) -> int {
+    if args.len < 3 {
+        usage()
+    }
+    cmd := args[1]
+    file := args[2]
+    out := stem(file)
+    if args.len == 5 && args[3] == "-o" {
+        out = args[4]
+    } else if args.len != 3 {
+        usage()
+    }
+    if cmd != "build" && cmd != "ir" {
+        usage()
+    }
+
+    loader := Loader()
+    load(addr(loader), file, "")
+    ir := gen.generate(loader.progs, loader.files)
+    if cmd == "ir" {
+        print(ir)
+        return 0
+    }
+
+    // the runtime is Finch's C file; FINCH_RT can point somewhere else
+    rt := dirOf(args[0]) + "/../runtime/finch_rt.c"
+    if file_exists("runtime/finch_rt.c") {
+        rt = "runtime/finch_rt.c"
+    }
+    if !file_exists(rt) {
+        print("error: can't find the Finch runtime (runtime/finch_rt.c)")
+        return 1
+    }
+    llPath := out + ".ll"
+    write_file(llPath, ir)
+    code := shell("clang -O2 -w '" + llPath + "' '" + rt + "' -o '" + out + "' -lm")
+    shell("rm -f '" + llPath + "'")
+    if code != 0 {
+        print("error: clang failed")
+        return 1
+    }
+    return 0
+}
