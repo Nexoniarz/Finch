@@ -1,0 +1,101 @@
+struct Stats {
+    int count
+    []str words
+}
+
+fn count_words(str text) -> map[str]int {
+    map[str]int counts
+    for w in text.split(" ") {
+        if w.len > 0 {
+            counts[w.lower()] += 1     // a missing key starts at 0
+        }
+    }
+    return counts
+}
+
+fn main() {
+    ages := ["anna": 31, "bob": 25]
+    ages["cyril"] = 40
+    ages["bob"] = 26
+    print(ages, ages.len)
+    print(ages["anna"], ages.has("bob"), ages.has("zoe"), ages.get("zoe", -1))
+
+    for name, age in ages {
+        print(name, "is", age)
+    }
+    for name in ages {
+        print(name)
+    }
+
+    print(ages.remove("bob"), ages.remove("bob"), ages)
+    ages["dave"] = 19                   // goes to the end; insertion order is kept
+    print(ages.keys(), ages.values())
+
+    counts := count_words("the cat and The dog and THE bird")
+    print(counts)
+    print(str(counts))
+
+    // values that own memory
+    map[str][]int groups
+    for i in 0..10 {
+        key := "odd"
+        if i % 2 == 0 {
+            key = "even"
+        }
+        groups[key].push(i)            // m[k].push(x) adds the key with an empty array first
+    }
+    print(groups)
+
+    copy := groups
+    copy["odd"].clear()
+    print(groups["odd"].len, copy["odd"].len)
+
+    map[int]Stats by_len
+    for w in ["a", "bb", "cc", "ddd", "e"] {
+        by_len[w.len].count += 1
+        by_len[w.len].words.push(w)
+    }
+    for n, s in by_len {
+        print(n, s.count, s.words)
+    }
+
+    // many keys: growing, removing and adding again
+    map[int]int squares
+    for i in 0..1000 {
+        squares[i] = i * i
+    }
+    for i in 0..1000 {
+        if i % 3 != 0 {
+            squares.remove(i)
+        }
+    }
+    for i in 2000..2010 {
+        squares[i] = 1
+    }
+    total := 0
+    for k, v in squares {
+        total += v
+    }
+    print(squares.len, total, squares[999], squares.has(998))
+
+    map[char]bool seen
+    for c in "hello" {
+        seen[c] = true
+    }
+    print(seen.keys())
+
+    empty := ages
+    empty.clear()
+    print(empty, empty.len, ages.len)
+
+    map[str]str m = [:]
+    m["x"] = "1"
+    print(m)
+
+    for i, w in ["zero", "one", "two"] {
+        print(i, w)
+    }
+    for i, c in "hey" {
+        print(i, c)
+    }
+}

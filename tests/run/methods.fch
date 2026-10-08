@@ -1,0 +1,101 @@
+import geometry
+import "abi.h"
+link "abi.c"
+
+struct Counter {
+    str name
+    int count
+    []int history
+}
+
+fn Counter.add(int n) {
+    self.count += n
+    self.history.push(n)
+}
+
+fn Counter.add_twice(int n) {
+    self.add(n)        // a method calling another method on self
+    self.add(n)
+}
+
+fn Counter.total() -> int {
+    sum := 0
+    for x in self.history {
+        sum += x
+    }
+    return sum
+}
+
+fn Counter.describe() -> str {
+    return self.name + ": " + str(self.count) + " " + str(self.history)
+}
+
+fn Counter.copy_named(str name) -> Counter {
+    c := self          // a copy of the struct, not the original
+    c.name = name
+    return c
+}
+
+fn Counter.merge(Counter other) {
+    for x in other.history {
+        self.add(x)
+    }
+}
+
+struct Node {
+    int value
+    ptr[Node] next
+}
+
+fn Node.sum() -> int {
+    total := self.value
+    if self.next != null {
+        total += self.next.sum()   // through a pointer
+    }
+    return total
+}
+
+// a method on a struct from C
+fn Vec2.length2() -> f32 {
+    return self.x * self.x + self.y * self.y
+}
+
+fn main() {
+    c := Counter(name: "clicks")
+    c.add(3)
+    c.add_twice(2)
+    print(c.describe(), c.total())
+
+    d := c.copy_named("copy")
+    d.add(10)
+    print(c.describe())
+    print(d.describe())
+
+    c.merge(c)         // the argument lives inside self: the method gets its own copy
+    print(c.describe())
+
+    []Counter all = [Counter(name: "a"), Counter(name: "b")]
+    all[1].add(7)
+    for i in 0..all.len {
+        all[i].add(i)
+    }
+    print(all[0].describe(), "|", all[1].describe())
+
+    print(Counter(name: "temp", count: 5).describe())
+
+    last := new(Node(3, null))
+    first := new(Node(1, new(Node(2, last))))
+    print(first.sum())
+    p := first.next
+    p.value = 20
+    print(first.sum(), p.sum())
+    free(last)
+    free(first.next)
+    free(first)
+
+    v := geometry.Vec(3, 4)
+    print(geometry.length(v.scaled(2)))
+
+    w := Vec2(3, 4)
+    print(w.length2())
+}

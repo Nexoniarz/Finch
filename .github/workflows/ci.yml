@@ -69,6 +69,19 @@ jobs:
         run: CC=/usr/bin/clang tests/boot.sh
       - name: Language server
         run: python3 tests/lsp_test.py
+      - name: Apple frameworks
+        run: |
+          cat > fw.fch <<'EOF'
+          import "CoreFoundation/CoreFoundation.h"
+          link "CoreFoundation.framework"
+
+          fn main() {
+              print(CFAbsoluteTimeGetCurrent() > 0.0)
+          }
+          EOF
+          out=$(CC=/usr/bin/clang build/finch run fw.fch)
+          echo "$out"
+          test "$out" = "true"
       - name: Package
         run: |
           mkdir -p dist/finch && cp build/finch README.md LICENSE dist/finch/ && cp -r examples dist/finch/

@@ -1,0 +1,12 @@
+// expect: the loop variable 'c' can't be changed
+struct Counter {
+    int n
+}
+fn Counter.bump() {
+    self.n += 1
+}
+fn main() {
+    for c in [Counter(1), Counter(2)] {
+        c.bump()
+    }
+}

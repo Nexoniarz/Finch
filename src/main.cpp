@@ -39,10 +39,11 @@ static void usage() {
                  "  finch build <file.fch> [-o name]    compile to a program\n"
                  "  finch ir    <file.fch>              show the generated LLVM IR\n"
                  "  finch version                      show the version\n"
-                 "  finch lsp                          the language server, for editors (VS Code)\n"
+                 "  finch lsp                          the language server, for editors (VS Code, Kate, ...)\n"
                  "\n"
                  "  -l <lib>          link a C library, same as  link \"lib\"  in the file\n"
-                 "  --target <name>   build for another system: windows, linux, or an LLVM triple\n"
+                 "  --target <name>   build for another system: windows, linux, arm64 (Linux), macos,\n"
+                 "                    or an LLVM triple\n"
                  "  -g                add debug info (gdb / lldb / Visual Studio)\n"
                  "  -O0               skip optimizations (to read the raw IR)\n");
     std::exit(1);

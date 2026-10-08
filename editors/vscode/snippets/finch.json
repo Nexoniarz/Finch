@@ -1,16 +1,160 @@
 {
-  "main": { "prefix": "main", "body": ["fn main() {", "\t$0", "}"], "description": "The program's start" },
-  "main with arguments": { "prefix": "mainargs", "body": ["fn main([]str args) {", "\t$0", "}"], "description": "main that gets the command-line arguments" },
-  "function": { "prefix": "fn", "body": ["fn ${1:name}(${2}) {", "\t$0", "}"], "description": "A function" },
-  "function with result": { "prefix": "fnr", "body": ["fn ${1:name}(${2}) -> ${3:int} {", "\t$0", "}"], "description": "A function that returns a value" },
-  "struct": { "prefix": "struct", "body": ["struct ${1:Name} {", "\t${2:int} ${3:field}", "}"], "description": "A struct" },
-  "if": { "prefix": "if", "body": ["if ${1:condition} {", "\t$0", "}"] },
-  "if else": { "prefix": "ife", "body": ["if ${1:condition} {", "\t$2", "} else {", "\t$0", "}"] },
-  "for range": { "prefix": "for", "body": ["for ${1:i} in ${2:0}..${3:n} {", "\t$0", "}"], "description": "Count from start to end-1" },
-  "for each": { "prefix": "foreach", "body": ["for ${1:item} in ${2:list} {", "\t$0", "}"], "description": "Every element of an array or str" },
-  "while": { "prefix": "while", "body": ["while ${1:condition} {", "\t$0", "}"] },
-  "print": { "prefix": "print", "body": ["print(${1})"] },
-  "input": { "prefix": "input", "body": ["${1:answer} := input(\"${2:Question? }\")"] },
-  "import C header": { "prefix": "importc", "body": ["import \"${1:stdio.h}\""] },
-  "defer": { "prefix": "defer", "body": ["defer ${1}"], "description": "Run this when the block ends" }
+  "main": {
+    "prefix": "main",
+    "body": [
+      "fn main() {",
+      "\t$0",
+      "}"
+    ],
+    "description": "The program's start"
+  },
+  "main with arguments": {
+    "prefix": "mainargs",
+    "body": [
+      "fn main([]str args) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "main that gets the command-line arguments"
+  },
+  "function": {
+    "prefix": "fn",
+    "body": [
+      "fn ${1:name}(${2}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "A function"
+  },
+  "function with result": {
+    "prefix": "fnr",
+    "body": [
+      "fn ${1:name}(${2}) -> ${3:int} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "A function that returns a value"
+  },
+  "struct": {
+    "prefix": "struct",
+    "body": [
+      "struct ${1:Name} {",
+      "\t${2:int} ${3:field}",
+      "}"
+    ],
+    "description": "A struct"
+  },
+  "if": {
+    "prefix": "if",
+    "body": [
+      "if ${1:condition} {",
+      "\t$0",
+      "}"
+    ]
+  },
+  "if else": {
+    "prefix": "ife",
+    "body": [
+      "if ${1:condition} {",
+      "\t$2",
+      "} else {",
+      "\t$0",
+      "}"
+    ]
+  },
+  "for range": {
+    "prefix": "for",
+    "body": [
+      "for ${1:i} in ${2:0}..${3:n} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Count from start to end-1"
+  },
+  "for each": {
+    "prefix": "foreach",
+    "body": [
+      "for ${1:item} in ${2:list} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Every element of an array or str"
+  },
+  "while": {
+    "prefix": "while",
+    "body": [
+      "while ${1:condition} {",
+      "\t$0",
+      "}"
+    ]
+  },
+  "print": {
+    "prefix": "print",
+    "body": [
+      "print(${1})"
+    ]
+  },
+  "input": {
+    "prefix": "input",
+    "body": [
+      "${1:answer} := input(\"${2:Question? }\")"
+    ]
+  },
+  "import C header": {
+    "prefix": "importc",
+    "body": [
+      "import \"${1:stdio.h}\""
+    ]
+  },
+  "defer": {
+    "prefix": "defer",
+    "body": [
+      "defer ${1}"
+    ],
+    "description": "Run this when the block ends"
+  },
+  "method": {
+    "prefix": "method",
+    "body": [
+      "fn ${1:Type}.${2:name}(${3}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "A method: self is the struct it is called on"
+  },
+  "fallible function": {
+    "prefix": "fnf",
+    "body": [
+      "fn ${1:name}(${2}) -> ${3:int}! {",
+      "\t$0",
+      "}"
+    ],
+    "description": "A function that can fail: return error(\"...\")"
+  },
+  "map": {
+    "prefix": "map",
+    "body": [
+      "map[${1:str}]${2:int} ${3:name}"
+    ],
+    "description": "An empty map"
+  },
+  "or block": {
+    "prefix": "orb",
+    "body": [
+      "or {",
+      "\t${1:print(err)}",
+      "\t${2:return}",
+      "}"
+    ],
+    "description": "Handle a failure: err is the message"
+  },
+  "for key, value": {
+    "prefix": "forkv",
+    "body": [
+      "for ${1:key}, ${2:value} in ${3:map} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Every key and value of a map (or index and element of an array)"
+  }
 }

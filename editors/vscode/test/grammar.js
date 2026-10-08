@@ -20,6 +20,12 @@ const code = [
   '    p := Point(x: 1)',
   '    return a + p.x',
   '}',
+  'fn Point.move(int dx) -> int! {',
+  '    map[str]int m',
+  '    n := try parse(s) or 0',
+  '    self.x += dx',
+  '    return error("no")',
+  '}',
 ];
 const expect = [  // [line, token text, scope that must be present]
   [0, 'import', 'keyword.control.import'], [0, '"stdio.h"', 'string.quoted.double'],
@@ -32,6 +38,11 @@ const expect = [  // [line, token text, scope that must be present]
   [7, 'c', 'string.quoted.single'], [7, '3.5', 'constant.numeric.float'], [7, 'true', 'constant.language'], [7, 'null', 'constant.language'],
   [8, 'Point', 'entity.name.type'],
   [9, 'return', 'keyword.control'],
+  [11, 'Point', 'entity.name.type'], [11, 'move', 'entity.name.function'], [11, '!', 'keyword.operator'],
+  [12, 'map', 'storage.type.primitive'],
+  [13, 'try', 'keyword.control'], [13, 'or', 'keyword.control'],
+  [14, 'self', 'variable.language.self'],
+  [15, 'error', 'support.function.builtin'],
 ];
 registry.loadGrammar('source.finch').then((g) => {
   let state = vsctm.INITIAL, toks = [];

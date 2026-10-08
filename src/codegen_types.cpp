@@ -25,6 +25,10 @@ llvm::Type *Codegen::ty(const FType &t) {
     case FType::F64: return b.getDoubleTy();
     case FType::Str:
     case FType::Array: return StructType::get(ctx, {b.getPtrTy(), b.getInt64Ty(), b.getInt64Ty()});
+    case FType::Map: {
+        llvm::Type *P = b.getPtrTy(), *I = b.getInt64Ty();
+        return StructType::get(ctx, {P, I, I, I, P, I});  // entries, len, used, cap, index, icap
+    }
     case FType::Ptr:
     case FType::Null: return b.getPtrTy();
     case FType::Fixed: return ArrayType::get(ty(*t.elem), t.count);
@@ -60,6 +64,14 @@ FType Codegen::resolveT(const FType &t, Pos p, bool deep) {
         if (!t.elem) return t;
         return FType::ptrTo(resolveT(*t.elem, p, false));
     case FType::Array: return FType::arrayOf(resolveT(*t.elem, p, false));
+    case FType::Map: {
+        FType k = resolveT(*t.key, p, true);
+        if (!k.isInt() && k.kind != FType::Char && k.kind != FType::Bool && k.kind != FType::Str)
+            failAt(p.file, p.line, p.col, "a map key must be a whole number, a char, a bool or a str, not " + k.show());
+        FType v = resolveT(*t.elem, p, false);
+        if (v.kind == FType::Void) failAt(p.file, p.line, p.col, "a map value can't have the type 'nothing'");
+        return FType::mapOf(k, v);
+    }
     case FType::Fixed: {
         FType f = t;
         f.elem = std::make_shared<FType>(resolveT(*t.elem, p, deep));
@@ -136,7 +148,8 @@ void Codegen::resolveStruct(StructInfo *s) {
 bool Codegen::owning(const FType &t) {
     switch (t.kind) {
     case FType::Str:
-    case FType::Array: return true;
+    case FType::Array:
+    case FType::Map: return true;
     case FType::Struct:
         resolveStruct(t.info);
         return t.info->owning;
@@ -279,6 +292,7 @@ void Codegen::forN(Value *n, const std::function<void(Value *)> &body) {
 std::string Codegen::typeKey(const FType &t) {
     switch (t.kind) {
     case FType::Array: return "arr_" + typeKey(*t.elem);
+    case FType::Map: return "map_" + typeKey(*t.key) + "_" + typeKey(*t.elem);
     case FType::Fixed: return "fix" + std::to_string(t.count) + "_" + typeKey(*t.elem);
     case FType::Ptr: return "ptr";
     case FType::Struct: return "S_" + (t.info->module.empty() ? std::string("main") : t.info->module) + "_" + t.info->name;
@@ -315,6 +329,14 @@ Function *Codegen::dropFn(const FType &t) {
             forN(len, [&](Value *i) { dropAt(b.CreateInBoundsGEP(ty(et), data, i), et); });
         }
         b.CreateCall(rt("finch_arr_free"), {a});
+    } else if (t.kind == FType::Map) {
+        FType kt = *t.key, vt = *t.elem;
+        if (owning(kt) || owning(vt))
+            forEachEntry(a, t, [&](Value *, Value *entry) {
+                dropAt(b.CreateStructGEP(mapEntryTy(t), entry, 1), kt);
+                dropAt(b.CreateStructGEP(mapEntryTy(t), entry, 2), vt);
+            });
+        b.CreateCall(rt("finch_map_free"), {a});
     } else if (t.kind == FType::Struct) {
         for (auto &fl : t.info->fields)
             if (owning(fl.type)) dropAt(b.CreateStructGEP(t.info->llvm, a, fl.llvmIndex), fl.type);
@@ -342,6 +364,16 @@ Function *Codegen::copyFn(const FType &t) {
                 copyAt(b.CreateInBoundsGEP(ty(et), d, i), b.CreateInBoundsGEP(ty(et), s, i), et);
             });
         }
+    } else if (t.kind == FType::Map) {
+        StructType *ET = mapEntryTy(t);
+        FType kt = *t.key, vt = *t.elem;
+        b.CreateCall(rt("finch_map_clone_raw"), {dst, src, b.getInt64(dl->getTypeAllocSize(ET))});
+        if (owning(kt) || owning(vt))  // the slots were copied byte for byte: now give the copy its own keys and values
+            forEachEntry(src, t, [&](Value *i, Value *from) {
+                Value *to = mapEntry(dst, t, i);
+                copyAt(b.CreateStructGEP(ET, to, 1), b.CreateStructGEP(ET, from, 1), kt);
+                copyAt(b.CreateStructGEP(ET, to, 2), b.CreateStructGEP(ET, from, 2), vt);
+            });
     } else if (t.kind == FType::Struct) {
         b.CreateStore(b.CreateLoad(ty(t), src), dst);
         for (auto &fl : t.info->fields)
@@ -388,30 +420,37 @@ void Codegen::emitPrint(Value *v, const FType &t, bool quoted) {
     else if (t.kind == FType::Bool) printf_("%s", {b.CreateSelect(v, b.CreateGlobalString("true", "true"), b.CreateGlobalString("false", "false"))});
     else if (t.kind == FType::Str)
         printf_(quoted ? "\"%.*s\"" : "%.*s", {b.CreateTrunc(b.CreateExtractValue(v, 1), b.getInt32Ty()), cstr(v)});
-    else if (t.isPtr()) {  // the same on every system: null or 0x...
-        Value *isNull = b.CreateIsNull(v);
-        BasicBlock *nul = newBlock("ptr.null"), *addr = newBlock("ptr.addr"), *done = newBlock("ptr.done");
-        b.CreateCondBr(isNull, nul, addr);
-        b.SetInsertPoint(nul);
-        printf_("null", {});
-        b.CreateBr(done);
-        b.SetInsertPoint(addr);
-        printf_("0x%llx", {b.CreatePtrToInt(v, b.getInt64Ty())});
-        b.CreateBr(done);
-        b.SetInsertPoint(done);
+    else {  // pointers, arrays, maps, structs: built as text first (the same text str(x) gives)
+        Value *buf = tmp(zero(FType::Str));
+        emitFormat(buf, v, t, quoted);
+        b.CreateCall(rt("finch_buf_print"), {buf});
     }
-    else if (t.kind == FType::Null) printf_("null", {});
-    else b.CreateCall(printFn(t), {tmp(v)});
 }
 
-Function *Codegen::printFn(const FType &t) {
-    std::string key = "print." + typeKey(t);
+void Codegen::bufText(Value *buf, const std::string &text) {
+    b.CreateCall(rt("finch_buf_add"), {buf, b.CreateGlobalString(text, "txt"), b.getInt64(text.size())});
+}
+
+void Codegen::emitFormat(Value *buf, Value *v, const FType &t, bool quoted) {
+    if (t.isSigned()) b.CreateCall(rt("finch_buf_int"), {buf, b.CreateSExt(v, b.getInt64Ty())});
+    else if (t.isUnsigned()) b.CreateCall(rt("finch_buf_uint"), {buf, b.CreateZExt(v, b.getInt64Ty())});
+    else if (t.isFloat()) b.CreateCall(rt("finch_buf_float"), {buf, b.CreateFPExt(v, b.getDoubleTy())});
+    else if (t.kind == FType::Char) b.CreateCall(rt("finch_buf_char"), {buf, v, b.getInt32(quoted)});
+    else if (t.kind == FType::Bool) b.CreateCall(rt("finch_buf_bool"), {buf, b.CreateZExt(v, b.getInt32Ty())});
+    else if (t.kind == FType::Str) b.CreateCall(rt("finch_buf_str"), {buf, tmp(v), b.getInt32(quoted)});
+    else if (t.isPtr() || t.kind == FType::Null) b.CreateCall(rt("finch_buf_ptr"), {buf, v});  // the same everywhere: null or 0x...
+    else b.CreateCall(formatFn(t), {buf, tmp(v)});
+}
+
+// One function per array / map / struct type: (str *buf, T *value)
+Function *Codegen::formatFn(const FType &t) {
+    std::string key = "format." + typeKey(t);
     if (auto it = helpers.find(key); it != helpers.end()) return it->second;
-    Function *f = Function::Create(FunctionType::get(b.getVoidTy(), {b.getPtrTy()}, false), Function::InternalLinkage,
-                                   "finch." + key, mod.get());
+    Function *f = Function::Create(FunctionType::get(b.getVoidTy(), {b.getPtrTy(), b.getPtrTy()}, false),
+                                   Function::InternalLinkage, "finch." + key, mod.get());
     helpers[key] = f;
     HelperScope hs(*this, f);
-    Value *a = f->getArg(0);
+    Value *buf = f->getArg(0), *a = f->getArg(1);
     if (t.kind == FType::Array || t.kind == FType::Fixed) {
         FType et = *t.elem;
         Value *data, *len;
@@ -422,26 +461,44 @@ Function *Codegen::printFn(const FType &t) {
             data = b.CreateLoad(b.getPtrTy(), b.CreateStructGEP(ty(t), a, 0));
             len = b.CreateLoad(b.getInt64Ty(), b.CreateStructGEP(ty(t), a, 1));
         }
-        printf_("[", {});
+        bufText(buf, "[");
         forN(len, [&](Value *i) {
             BasicBlock *sep = newBlock("sep"), *item = newBlock("item");
             b.CreateCondBr(b.CreateICmpSGT(i, b.getInt64(0)), sep, item);
             b.SetInsertPoint(sep);
-            printf_(", ", {});
+            bufText(buf, ", ");
             b.CreateBr(item);
             b.SetInsertPoint(item);
-            emitPrint(b.CreateLoad(ty(et), b.CreateInBoundsGEP(ty(et), data, i)), et, true);
+            emitFormat(buf, b.CreateLoad(ty(et), b.CreateInBoundsGEP(ty(et), data, i)), et, true);
         });
-        printf_("]", {});
+        bufText(buf, "]");
+    } else if (t.kind == FType::Map) {  // {"a": 1, "b": 2}
+        StructType *ET = mapEntryTy(t);
+        Value *firstItem = tmp(b.getInt1(true));
+        bufText(buf, "{");
+        forEachEntry(a, t, [&](Value *, Value *entry) {
+            BasicBlock *sep = newBlock("sep"), *item = newBlock("item");
+            b.CreateCondBr(b.CreateLoad(b.getInt1Ty(), firstItem), item, sep);
+            b.SetInsertPoint(sep);
+            bufText(buf, ", ");
+            b.CreateBr(item);
+            b.SetInsertPoint(item);
+            b.CreateStore(b.getInt1(false), firstItem);
+            emitFormat(buf, b.CreateLoad(ty(*t.key), b.CreateStructGEP(ET, entry, 1)), *t.key, true);
+            bufText(buf, ": ");
+            emitFormat(buf, b.CreateLoad(ty(*t.elem), b.CreateStructGEP(ET, entry, 2)), *t.elem, true);
+        });
+        bufText(buf, "}");
     } else if (t.kind == FType::Struct) {
-        printf_(t.info->name + "(", {});
+        bufText(buf, t.info->name + "(");
         bool first = true;
         for (auto &fl : t.info->fields) {
-            printf_((first ? "" : ", ") + fl.name + ": ", {});
+            if (fl.hidden) continue;
+            bufText(buf, (first ? "" : ", ") + fl.name + ": ");
             first = false;
-            emitPrint(b.CreateLoad(ty(fl.type), b.CreateStructGEP(t.info->llvm, a, fl.llvmIndex)), fl.type, true);
+            emitFormat(buf, b.CreateLoad(ty(fl.type), b.CreateStructGEP(t.info->llvm, a, fl.llvmIndex)), fl.type, true);
         }
-        printf_(")", {});
+        bufText(buf, ")");
     }
     b.CreateRetVoid();
     return f;
@@ -484,6 +541,16 @@ DIType *Codegen::diType(const FType &t) {
                            di->createMemberType(diUnit, "len", f, 0, 64, 64, 64, DINode::FlagZero, i64),
                            di->createMemberType(diUnit, "cap", f, 0, 64, 64, 128, DINode::FlagZero, i64)};
         d = di->createStructType(diUnit, t.show(), f, 0, 192, 64, DINode::FlagZero, nullptr, di->getOrCreateArray(els));
+        break;
+    }
+    case FType::Map: {  // shown by its parts; the entries are behind `entries`
+        DIType *i64 = diType(FType::I64), *pt = di->createPointerType(nullptr, 64);
+        DIFile *f = diFiles[0];
+        const char *names[] = {"entries", "len", "used", "cap", "index", "icap"};
+        std::vector<Metadata *> els;
+        for (unsigned k = 0; k < 6; k++)
+            els.push_back(di->createMemberType(diUnit, names[k], f, 0, 64, 64, 64 * k, DINode::FlagZero, k == 0 || k == 4 ? pt : i64));
+        d = di->createStructType(diUnit, t.show(), f, 0, 384, 64, DINode::FlagZero, nullptr, di->getOrCreateArray(els));
         break;
     }
     case FType::Struct: {

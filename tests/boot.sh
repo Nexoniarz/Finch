@@ -21,11 +21,12 @@ fi
 pass=0; failed=0; skipped=0
 for f in tests/run/*.fch; do
     grep -q "^fn main" "$f" || continue
-    # the bootstrap compiler doesn't do C imports, sized numbers or defer
+    # the bootstrap compiler doesn't do C imports, sized numbers, defer, maps, methods or errors as values
     # (checked in the test and in the modules it imports)
     files="$f"
     for m in $(sed -n 's/^import \([a-z_]*\)$/\1/p' "$f"); do files="$files tests/run/$m.fch"; done
-    if grep -qE '^import "|^link |defer |0x' $files || grep -qwE 'u8|u16|u32|u64|i8|i16|i32|f32|f64' $files; then
+    if grep -qE '^import "|^link |defer |0x| or |try |map\[|!\s*\{|^fn [A-Z][A-Za-z0-9_]*\.|for [a-z_]+, ' $files ||
+       grep -qwE 'u8|u16|u32|u64|i8|i16|i32|f32|f64' $files; then
         skipped=$((skipped + 1))
         continue
     fi

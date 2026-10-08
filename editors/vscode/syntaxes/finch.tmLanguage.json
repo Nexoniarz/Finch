@@ -85,12 +85,18 @@
       }
     },
     "function": {
-      "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "match": "\\b(fn)\\s+(?:([A-Za-z_][A-Za-z0-9_]*)(\\.))?([A-Za-z_][A-Za-z0-9_]*)",
       "captures": {
         "1": {
           "name": "storage.type.function.finch"
         },
         "2": {
+          "name": "entity.name.type.finch"
+        },
+        "3": {
+          "name": "punctuation.accessor.finch"
+        },
+        "4": {
           "name": "entity.name.function.finch"
         }
       }
@@ -111,7 +117,7 @@
         },
         {
           "name": "keyword.control.finch",
-          "match": "\\b(if|else|while|for|in|break|continue|return|defer)\\b"
+          "match": "\\b(if|else|while|for|in|break|continue|return|defer|or|try)\\b"
         },
         {
           "name": "storage.type.function.finch",
@@ -126,11 +132,15 @@
           "match": "\\b(true|false|null)\\b"
         },
         {
-          "name": "storage.type.primitive.finch",
-          "match": "\\b(int|float|bool|char|str|ptr|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64)\\b"
+          "name": "variable.language.self.finch",
+          "match": "\\bself\\b"
         },
         {
-          "match": "\\b(print|input|read_file|write_file|file_exists|delete_file|shell|exit|addr|new|free)\\s*(?=\\()",
+          "name": "storage.type.primitive.finch",
+          "match": "\\b(int|float|bool|char|str|ptr|map|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64)\\b"
+        },
+        {
+          "match": "\\b(print|input|read_file|write_file|file_exists|delete_file|shell|exit|addr|new|free|error)\\s*(?=\\()",
           "captures": {
             "1": {
               "name": "support.function.builtin.finch"

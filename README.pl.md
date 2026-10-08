@@ -38,6 +38,8 @@ fn main() {
 - **Bezpieczniejszy niż C tam, gdzie to tanie.** Nie ma cichego zwężania typów ani mieszania liczb ze znakiem
   i bez znaku. Indeks poza zakresem, dzielenie przez zero i null zatrzymują program czytelnym błędem, zamiast
   powodować niezdefiniowane zachowanie. Priorytety operatorów nie gryzą (`x & 1 == 0` znaczy to, co widać).
+- **Praktyczny.** Mapy, metody, błędy jako wartości (`int(s) or 0`, `try read_file(p)`), moduły, każda
+  biblioteka C i serwer języka dla twojego edytora. Działa na Linuksie, macOS i Windowsie, na x86-64 i ARM64.
 - **Błędy mówią po ludzku:**
   ```
   gra.fch:3:13: error: 'y' must be i32, but this is int (use i32(...) to convert)
@@ -51,11 +53,18 @@ fn main() {
 
 ## Szybki start
 
-**Windows:** pobierz `finch-windows-x64.zip` z [wydań](https://github.com/Nexoniarz/Finch/releases),
-zainstaluj LLVM 21 i Visual Studio Build Tools (C++), a potem przejdź przez
-[kroki instalacji](docs/pl/dla-technikow.md#windows). **VS Code:** zainstaluj plik `.vsix` `finch-lang` z tego samego wydania.
+Gotowe wersje są w [wydaniach](https://github.com/Nexoniarz/Finch/releases):
 
-**Linux** x86-64, LLVM 21:
+| System | Plik | Potrzebuje też |
+|---|---|---|
+| Windows x64 | `finch-windows-x64.zip` | LLVM 21, Visual Studio Build Tools (C++); [kroki](docs/pl/dla-technikow.md#windows) |
+| macOS (Apple Silicon) | `finch-macos-arm64.tar.gz` | `brew install llvm@21`; [kroki](docs/pl/dla-technikow.md#macos) |
+| Linux x64 / ARM64 | `finch-linux-x64.tar.gz` / `finch-linux-arm64.tar.gz` | biblioteki LLVM 21, kompilator C; [kroki](docs/pl/dla-technikow.md#linux) |
+
+Edytory: **Kate** (`editors/kate/install.sh`), **VS Code** (plik `.vsix` `finch-lang` z wydania) albo każdy
+edytor obsługujący LSP (`finch lsp`).
+
+**Samodzielne budowanie** (Linux albo macOS, LLVM 21):
 
 ```sh
 git clone https://github.com/Nexoniarz/Finch.git
@@ -66,7 +75,7 @@ ninja -C build
 
 ./build/finch run examples/hello.fch
 ./build/finch build examples/tour.fch -o tour && ./tour
-tests/run.sh                        # 59 passed, 0 failed
+tests/run.sh                        # 74 passed, 0 failed
 tests/boot.sh                       # kompilator napisany w Finchu buduje sam siebie
 ```
 
@@ -86,17 +95,20 @@ Wybierz przewodnik dla siebie:
 | | |
 |---|---|
 | Zmienne | `x := 5` (typ zgadnięty) albo `int x = 5` |
-| Typy | `int` `float` `bool` `char` `str`, z rozmiarem `i8`…`i64` `u8`…`u64` `f32` `f64`, tablice `[]T`, wskaźniki `ptr[T]` |
+| Typy | `int` `float` `bool` `char` `str`, z rozmiarem `i8`…`i64` `u8`…`u64` `f32` `f64`, tablice `[]T`, mapy `map[K]V`, wskaźniki `ptr[T]` |
 | Funkcje | `fn add(int a, int b) -> int { return a + b }` |
 | Struktury | `struct Punkt { … }` z jednym polem na linijkę (`int x`, `int y = 0`); tworzenie przez `Punkt(1, 2)` albo `Punkt(x: 1)` |
-| Tablice | `liczby := [1, 2, 3]`, `liczby.push(4)`, `liczby[0]`, `liczby.len`, `for n in liczby { }` |
+| Metody | `fn Punkt.przesun(int dx) { self.x += dx }` → `p.przesun(3)` |
+| Tablice | `liczby := [1, 2, 3]`, `liczby.push(4)`, `liczby[0]`, `liczby.len`, `for i, n in liczby { }` |
+| Mapy | `wiek := ["ania": 31]`, `wiek["bob"] = 25`, `wiek.has("cy")`, `ile[s] += 1`, `for k, v in wiek { }` |
+| Błędy | `fn parsuj(str s) -> int! { … return error("zły") }` → `parsuj(s) or 0`, `parsuj(s) or { … }`, `try parsuj(s)` |
 | Tekst | `"a" + "b"`, `str(42)`, `int("42")`, `s.split(",")`, `s.upper()`, `s[0]` |
 | Sterowanie | `if` / `else if` / `else`, `while`, `for i in 0..10`, `break`, `continue`, `defer` |
 | Pamięć | automatyczna dla tablic, tekstów i struktur; `new(...)` / `free(...)` dla własnych struktur na stercie |
 | Moduły | `import ksztalty` → `ksztalty.pole(p)` |
 | Współpraca z C | `import "stdio.h"`, `link "glfw"`, `link "moje.c"`, `addr(fn)` dla callbacków |
 | Wejście/wyjście | `print(...)`, `input("? ")`, `read_file`, `write_file`, `shell` |
-| Narzędzia | `finch run/build/ir`, `-g` dla gdb, `-O0` |
+| Narzędzia | `finch run/build/ir/lsp`, `--target windows/arm64/macos`, `-g` dla gdb/lldb, `-O0` |
 
 ## Przykłady
 
@@ -106,6 +118,7 @@ Wybierz przewodnik dla siebie:
 | [`examples/tour.fch`](examples/tour.fch) | zmienne, funkcje, warunki, pętle |
 | [`examples/guess.fch`](examples/guess.fch) | gra w zgadywanie: wejście, pętle, `rand` z C |
 | [`examples/todo.fch`](examples/todo.fch) | struktury, tablice, teksty i pliki |
+| [`examples/wordcount.fch`](examples/wordcount.fch) | mapy, metody i błędy jako wartości: najczęstsze słowa w pliku |
 | [`examples/structs.fch`](examples/structs.fch) | struktury, tablice struktur, lista wiązana z `new`/`free` |
 | [`examples/types.fch`](examples/types.fch) | liczby z rozmiarem i wskaźniki |
 | [`examples/c_import.fch`](examples/c_import.fch) | `printf`, `math.h`, `malloc`/`free`, `stderr` |
@@ -132,19 +145,20 @@ Wybierz przewodnik dla siebie:
 - [x] Bootstrap: kompilator Fincha napisany w Finchu, który buduje sam siebie
 - [x] Windows: `finch.exe`, programy `.exe`, ABI Microsoft x64; budowanie na Windowsa z Linuksa (`--target windows`)
 - [x] Serwer języka (`finch lsp`) i rozszerzenie VS Code
-- [ ] Mapy, metody w strukturach, `match`
-- [ ] Błędy jako wartości zamiast zatrzymywania programu
-- [ ] Więcej platform (macOS, ARM64)
+- [x] macOS i ARM64 (Linux i Apple Silicon) z ich konwencjami wywołań C; obsługa Kate
+- [x] Metody w strukturach, mapy, błędy jako wartości (`!`, `or`, `try`)
+- [ ] Typy generyczne, `match`, enumy
+- [ ] Biblioteka standardowa w Finchu (JSON, ścieżki, czas, procesy)
 
 ## Struktura
 
 ```
-src/        kompilator: lekser, parser, AST, codegen, import C + ABI, sterownik (C++17, ok. 4,5 tys. linii)
+src/        kompilator: lekser, parser, AST, codegen, import C + ABI, serwer języka, sterownik (C++17, ok. 7 tys. linii)
 runtime/    mały runtime w C dołączany do każdego programu
 boot/       kompilator Fincha napisany w Finchu (ok. 3 tys. linii)
 examples/   przykładowe programy
-editors/    rozszerzenie VS Code
-tests/      run/ (wzorcowe wyjście), fail/ (oczekiwane błędy), run.sh, boot.sh, windows.sh, lsp_test.py
+editors/    rozszerzenie VS Code, podświetlanie i konfiguracja LSP dla Kate
+tests/      run/ (wzorcowe wyjście), fail/ (oczekiwane błędy), run.sh, boot.sh, cross.sh, lsp_test.py
 docs/       przewodniki en/ i pl/ dla trzech grup odbiorców
 ```
 

@@ -11,12 +11,14 @@ struct Type {
         Void, Bool, Char, I8, I16, I32, I64, U8, U16, U32, U64, F32, F64,
         Str, Ptr, Null,
         Array,   // []T: growable, owns its elements
+        Map,     // map[K]V: a hash map that keeps insertion order, owns its keys and values
         Fixed,   // [N]T: only inside C structs
         Struct,  // a resolved struct
         Named,   // a struct name as written, before codegen resolves it
     };
     Kind kind = Void;
-    std::shared_ptr<Type> elem;  // Ptr (null = untyped `ptr`), Array, Fixed
+    std::shared_ptr<Type> elem;  // Ptr (null = untyped `ptr`), Array, Fixed; Map: the value
+    std::shared_ptr<Type> key;   // Map
     long long count = 0;         // Fixed
     std::string name;            // Named / Struct
     std::string module;          // Named: written qualifier ("" = none); Struct: defining module
@@ -33,6 +35,12 @@ struct Type {
         Type a(Array);
         a.elem = std::make_shared<Type>(t);
         return a;
+    }
+    static Type mapOf(const Type &k, const Type &v) {
+        Type m(Map);
+        m.key = std::make_shared<Type>(k);
+        m.elem = std::make_shared<Type>(v);
+        return m;
     }
 
     bool isInt() const { return kind >= I8 && kind <= U64; }
@@ -58,6 +66,7 @@ struct Type {
             if (!elem || !o.elem) return !elem && !o.elem;
             return *elem == *o.elem;
         case Array: return *elem == *o.elem;
+        case Map: return *key == *o.key && *elem == *o.elem;
         case Fixed: return count == o.count && *elem == *o.elem;
         case Struct: return info == o.info;
         case Named: return name == o.name && module == o.module;
@@ -86,6 +95,7 @@ struct Type {
         case Ptr: return elem ? "ptr[" + elem->show() + "]" : "ptr";
         case Null: return "null";
         case Array: return "[]" + elem->show();
+        case Map: return "map[" + key->show() + "]" + elem->show();
         case Fixed: return "[" + std::to_string(count) + "]" + elem->show();
         case Struct:
         case Named: return module.empty() ? name : module + "." + name;
@@ -104,7 +114,8 @@ struct Pos {
 
 // ---------- expressions ----------
 
-enum class ExprKind { Int, Float, Bool, Char, Str, Null, Var, Unary, Binary, Call, Member, Index, ArrayLit, Method };
+enum class ExprKind { Int, Float, Bool, Char, Str, Null, Var, Unary, Binary, Call, Member, Index, ArrayLit, Method,
+                      MapLit, Try, OrElse };
 
 struct Expr {
     ExprKind kind;
@@ -179,13 +190,32 @@ struct ArrayLitExpr : Expr {  // [1, 2, 3]
     std::vector<ExprPtr> elems;
     explicit ArrayLitExpr(Pos p) : Expr(ExprKind::ArrayLit, p) {}
 };
-// obj.name(args): a.push(x), s.find("x"), and math.sqrt(2) / math.Vec(1, 2) for modules
+struct MapLitExpr : Expr {  // ["a": 1, "b": 2], or [:] for an empty map
+    std::vector<ExprPtr> keys, values;
+    explicit MapLitExpr(Pos p) : Expr(ExprKind::MapLit, p) {}
+};
+// obj.name(args): a.push(x), s.find("x"), p.move(1, 2), and math.sqrt(2) / math.Vec(1, 2) for modules
 struct MethodExpr : Expr {
     ExprPtr obj;
     std::string name;
     std::vector<ExprPtr> args;
     std::vector<std::string> argNames;
     MethodExpr(Pos p, ExprPtr o, std::string n) : Expr(ExprKind::Method, p), obj(std::move(o)), name(std::move(n)) {}
+};
+
+struct BlockStmt;
+// try f(x): if f fails, the current function fails with the same error
+struct TryExpr : Expr {
+    ExprPtr call;
+    TryExpr(Pos p, ExprPtr c) : Expr(ExprKind::Try, p), call(std::move(c)) {}
+};
+// f(x) or fallback,  f(x) or { ...err... }
+struct OrElseExpr : Expr {
+    ExprPtr call;
+    ExprPtr fallback;                   // or a value
+    std::unique_ptr<BlockStmt> block;   // or a block that sees `err`
+    OrElseExpr(Pos p, ExprPtr c) : Expr(ExprKind::OrElse, p), call(std::move(c)) {}
+    ~OrElseExpr() override;
 };
 
 // ---------- statements ----------
@@ -206,6 +236,7 @@ struct BlockStmt : Stmt {
     explicit BlockStmt(Pos p) : Stmt(StmtKind::Block, p) {}
 };
 using BlockPtr = std::unique_ptr<BlockStmt>;
+inline OrElseExpr::~OrElseExpr() = default;
 
 struct VarDeclStmt : Stmt {
     bool hasType;  // `int x = 5` vs `x := 5`
@@ -246,7 +277,9 @@ struct ForStmt : Stmt {
 struct ForEachStmt : Stmt {
     std::string var;
     Pos varPos;
-    ExprPtr list;  // for var in list  (an array or a str)
+    std::string var2;  // for i, x in list  /  for k, v in map  ("" = one variable)
+    Pos var2Pos;
+    ExprPtr list;  // for var in list  (an array, a str or a map)
     BlockPtr body;
     ForEachStmt(Pos p) : Stmt(StmtKind::ForEach, p) {}
 };
@@ -278,7 +311,10 @@ struct FnDecl {
     Pos pos;
     Pos namePos;
     std::string name;
+    std::string recv;  // fn Point.move(...): "Point" (a method; `self` is the Point it is called on)
+    Pos recvPos;
     Type ret;  // Void when there is no `-> type`
+    bool fallible = false;  // -> int!  /  -> !  : can fail with an error
     std::vector<Param> params;
     BlockPtr body;
 };

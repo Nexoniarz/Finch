@@ -80,6 +80,9 @@ struct Fn {
     llvm::Function *cThunk = nullptr;
     FType ret;                      // resolved types
     std::vector<FType> params;
+    StructInfo *recv = nullptr;     // a method of this struct: the first LLVM parameter is `self`'s address
+    bool mutatesSelf = false;       // the method changes `self`
+    bool fallible = false;          // -> T!: returns { i1 ok, T value, str error }
 };
 
 struct Loop {
@@ -139,6 +142,13 @@ public:
     int deferLimit = -1;  // while emitting a defer: hide variables declared after it
     int inDefer = 0;
     std::map<std::string, llvm::Function *> helpers;  // drop/copy/print per type
+    std::map<StructInfo *, std::map<std::string, Fn>> methods;
+    std::set<std::string> mutatingMethods;  // names of methods that change self (for the mutation analysis)
+
+    // errors as values: the call that `or` / `try` is handling reports here whether it failed
+    const Expr *fallibleTarget = nullptr;
+    llvm::Value *fallibleFailed = nullptr;  // i1
+    llvm::Value *fallibleMsg = nullptr;     // str
 
     // debug info (-g)
     bool debug;
@@ -164,6 +174,9 @@ public:
     void forStmt(const ForStmt &s);
     void forEachStmt(const ForEachStmt &s);
     void returnStmt(const ReturnStmt &s);
+    llvm::Type *retType(const Fn &f);
+    void retValue(llvm::Value *v);    // return from the current function (wrapped as success if it can fail)
+    void retError(llvm::Value *msg);  // fail the current function with the str `msg`
     void jump(bool isBreak, Pos p);
     llvm::Value *condition(const Expr &e);
     void continueAt(llvm::BasicBlock *bb, llvm::BasicBlock *deadEnd);
@@ -194,6 +207,10 @@ public:
     LRef member(const MemberExpr &m, bool forWrite);
     LRef index(const IndexExpr &e, bool forWrite);
     Value_ arrayLit(const ArrayLitExpr &a, const FType *want);
+    Value_ fallible(const Expr &call, llvm::Value *&failed, llvm::Value *&msg);
+    Value_ tryExpr(const TryExpr &t);
+    Value_ orElse(const OrElseExpr &e, bool discard = false);  // discard: a statement, the value isn't used
+    FType structType(StructInfo *s);
     std::string rootVar(const Expr &e);
     bool mutates(const std::string &name, const Stmt &s);
     bool mutatesExpr(const std::string &name, const Expr &e);
@@ -225,7 +242,9 @@ public:
     std::string typeKey(const FType &t);
     llvm::Value *tmp(llvm::Value *v);  // a stack copy of v, to pass by address
     void emitPrint(llvm::Value *v, const FType &t, bool quoted);
-    llvm::Function *printFn(const FType &t);
+    void emitFormat(llvm::Value *buf, llvm::Value *v, const FType &t, bool quoted);  // append v as text to the str at buf
+    void bufText(llvm::Value *buf, const std::string &text);
+    llvm::Function *formatFn(const FType &t);
     void printf_(const std::string &fmt, std::vector<llvm::Value *> args);
     llvm::Value *strConst(const std::string &s);
     llvm::Value *cstr(llvm::Value *strValue);  // str -> char* for C
@@ -236,13 +255,26 @@ public:
     Value_ call(const CallExpr &c);
     Value_ method(const MethodExpr &m);
     Value_ callFinch(const Fn &fn, const std::vector<ExprPtr> &args, const std::vector<std::string> &names, Pos p,
-                     const std::string &shownName);
+                     const std::string &shownName, const Expr *site, llvm::Value *self = nullptr,
+                     const std::string &selfRoot = "");
     Value_ construct(StructInfo *s, const std::vector<ExprPtr> &args, const std::vector<std::string> &names, Pos p);
     Value_ callC(const CFunc &f, const std::vector<ExprPtr> &args, Pos p);
-    Value_ convert(const FType &to, const std::vector<ExprPtr> &args, Pos p, const std::string &name);
+    Value_ convert(const FType &to, const std::vector<ExprPtr> &args, Pos p, const std::string &name, bool canFail = false);
     Value_ print(const std::vector<ExprPtr> &args, Pos p);
     Value_ addrOf(const std::vector<ExprPtr> &args, Pos p);
     Value_ arrayMethod(const MethodExpr &m, Value_ *recv);
+    Value_ structMethod(const MethodExpr &m, LRef &r, const FType &t);
+
+    // ---------- codegen_map.cpp: maps ----------
+    llvm::StructType *mapEntryTy(const FType &t);
+    Value_ mapLit(const MapLitExpr &e, const FType *want);
+    LRef mapIndex(const IndexExpr &e, LRef &obj, const FType &t, bool forWrite);
+    Value_ mapMethod(const MethodExpr &m, Value_ *recv);
+    std::vector<llvm::Value *> mapArgs(llvm::Value *map, llvm::Value *keyAddr, const FType &t);
+    llvm::Value *mapSlot(llvm::Value *map, const FType &t, const Value_ &key, Pos p, bool fill);
+    llvm::Value *mapEntry(llvm::Value *map, const FType &t, llvm::Value *i);
+    void forEachEntry(llvm::Value *map, const FType &t, const std::function<void(llvm::Value *i, llvm::Value *entry)> &body);
+    llvm::Value *keyText(const Value_ &key);
     bool isBuiltin(const std::string &n);
     std::string headerHint(const std::string &name);
     void checkArgs(const std::vector<ExprPtr> &args, const std::vector<std::string> &names, size_t want, Pos p,

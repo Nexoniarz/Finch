@@ -5,7 +5,7 @@
   Install: copy to ~/.local/share/org.kde.syntax-highlighting/syntax/finch.xml
   (or run editors/kate/install.sh), then restart Kate.
 -->
-<language name="Finch" version="1" kateversion="5.0" section="Sources" extensions="*.fch"
+<language name="Finch" version="2" kateversion="5.0" section="Sources" extensions="*.fch"
           mimetype="text/x-finch" indenter="cstyle" author="The Finch authors" license="Apache-2.0">
   <highlighting>
     <list name="keywords">
@@ -22,6 +22,8 @@
       <item>continue</item>
       <item>return</item>
       <item>defer</item>
+      <item>or</item>
+      <item>try</item>
     </list>
     <list name="imports">
       <item>import</item>
@@ -31,6 +33,7 @@
       <item>true</item>
       <item>false</item>
       <item>null</item>
+      <item>self</item>
     </list>
     <list name="types">
       <item>int</item>
@@ -39,6 +42,7 @@
       <item>char</item>
       <item>str</item>
       <item>ptr</item>
+      <item>map</item>
       <item>i8</item>
       <item>i16</item>
       <item>i32</item>
@@ -62,6 +66,7 @@
       <item>addr</item>
       <item>new</item>
       <item>free</item>
+      <item>error</item>
     </list>
 
     <contexts>
@@ -99,8 +104,11 @@
         <AnyChar String="()[],.:" attribute="Symbol"/>
       </context>
 
+      <!-- fn name(  or  fn Type.method( -->
       <context name="FunctionName" attribute="Normal Text" lineEndContext="#pop" fallthroughContext="#pop">
         <DetectSpaces/>
+        <RegExpr String="[A-Za-z_][A-Za-z0-9_]*(?=\.)" attribute="Data Type"/>
+        <DetectChar char="." attribute="Symbol"/>
         <RegExpr String="[A-Za-z_][A-Za-z0-9_]*" attribute="Function Definition" context="#pop"/>
       </context>
 

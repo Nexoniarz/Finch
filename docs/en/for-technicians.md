@@ -20,16 +20,16 @@ compiler works inside. For that, see the [guide for engineers](for-engineers.md)
 7. [Operators](#7-operators)
 8. [Control flow](#8-control-flow)
 9. [Functions](#9-functions)
-10. [Arrays](#10-arrays)
+10. [Arrays and maps](#10-arrays-and-maps)
 11. [Text (str)](#11-text-str)
-12. [Structs](#12-structs)
+12. [Structs and methods](#12-structs-and-methods)
 13. [Memory: who frees what](#13-memory-who-frees-what)
 14. [Pointers](#14-pointers)
 15. [Built-in functions](#15-built-in-functions)
 16. [Modules](#16-modules)
 17. [Using C libraries](#17-using-c-libraries)
 18. [Errors](#18-errors)
-19. [Editor: VS Code](#19-editor-vs-code)
+19. [Editors: VS Code, Kate and others](#19-editors-vs-code-kate-and-others)
 20. [Debugging](#20-debugging)
 21. [Troubleshooting](#21-troubleshooting)
 22. [Project layout and tests](#22-project-layout-and-tests)
@@ -60,7 +60,9 @@ messages that tell you how to fix the problem.
 
 ## 2. Installing
 
-Finch runs on **Linux and Windows, x86-64**, and is built with **LLVM 21**.
+Finch runs on **Linux** (x86-64 and ARM64), **macOS** (Apple Silicon and Intel) and **Windows** (x86-64),
+and is built with **LLVM 21**. Each [release](https://github.com/Nexoniarz/Finch/releases) has a ready
+`finch` for Windows, Linux x86-64, Linux ARM64 and macOS ARM64.
 
 ### Windows
 
@@ -76,8 +78,30 @@ Finch runs on **Linux and Windows, x86-64**, and is built with **LLVM 21**.
 Programs are normal `.exe` files. To build from source on Windows instead, follow `.github/workflows/ci.yml`
 (Visual Studio 2022 + the `clang+llvm-21.x-x86_64-pc-windows-msvc` package from LLVM's releases).
 
+### macOS
+
+```sh
+brew install llvm@21                # Finch's LLVM; programs are linked with Apple's clang
+```
+
+Then either unpack **`finch-macos-arm64.tar.gz`** from the releases (it uses Homebrew's `llvm@21`),
+or build it yourself (Xcode command line tools: `xcode-select --install`):
+
+```sh
+git clone https://github.com/Nexoniarz/Finch.git && cd Finch
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR="$(brew --prefix llvm@21)/lib/cmake/llvm"
+ninja -C build
+./build/finch version
+```
+
+Apple frameworks link with `link "Cocoa.framework"` (`-framework Cocoa`), and their headers import as usual:
+`import "OpenGL/gl.h"`.
+
 ### Linux
 
+The ready `finch-linux-x64.tar.gz` / `finch-linux-arm64.tar.gz` need LLVM 21's libraries
+(Debian/Ubuntu: `libllvm21 libclang1-21` from [apt.llvm.org](https://apt.llvm.org)) and a C compiler (`cc`).
+Building it yourself works the same on x86-64 and ARM64 (Raspberry Pi 4/5, Graviton, …).
 Other LLVM versions will likely fail to compile, because LLVM's C++ API changes between releases.
 
 ### Option A: Nix (recommended, nothing to install by hand)
@@ -88,7 +112,7 @@ cd Finch
 nix-shell                        # downloads LLVM, libclang, clang, cmake, ninja, pkg-config
 cmake -S . -B build -G Ninja
 ninja -C build
-./build/finch version            # finch 2.3.0 (LLVM 21.x)
+./build/finch version            # finch 2.4.0 (LLVM 21.x)
 ```
 
 ### Option B: your distribution's packages
@@ -109,15 +133,26 @@ cmake -S . -B build -G Ninja -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm
 ninja -C build
 ```
 
-### Building Windows programs on Linux
+### Building for another system
 
-With the MinGW-w64 cross compiler installed (`x86_64-w64-mingw32-gcc`; on Nix
-`pkgsCross.mingwW64.buildPackages.gcc`):
+`--target` builds a program for another system. Finch needs that system's C compiler to link:
+
+| `--target` | Builds | C compiler used | `finch run` uses |
+|---|---|---|---|
+| `windows` | a Windows `.exe` | `x86_64-w64-mingw32-gcc` (MinGW-w64) | Wine |
+| `arm64` | an ARM64 Linux program | `aarch64-linux-gnu-gcc` | `qemu-aarch64` |
+| `linux` | an x86-64 Linux program | `clang --target=…` | |
+| `macos` | a macOS program (on a Mac: for the other processor) | `clang --target=…` | |
+| any LLVM triple | e.g. `aarch64-unknown-linux-gnu` | `clang --target=<triple>` | |
 
 ```sh
 finch build game.fch --target windows      # game.exe
-finch run game.fch --target windows        # runs it with Wine, if installed
+finch run game.fch --target arm64          # builds for ARM64 and runs it with QEMU
+FINCH_CC=aarch64-unknown-linux-gnu-gcc finch build tool.fch --target arm64   # another compiler name
 ```
+
+On Nix the compilers are `pkgsCross.mingwW64.buildPackages.gcc` and
+`pkgsCross.aarch64-multiplatform.buildPackages.gcc`.
 
 ### Putting `finch` on your PATH (optional)
 
@@ -137,12 +172,14 @@ Finch's small runtime library, which is kept in `~/.cache/finch`. Set `CC` to us
 finch run   <file.fch> [args...]    compile and run right away
 finch build <file.fch> [-o name]    compile into a program (default name: the file's name)
 finch ir    <file.fch>              print the LLVM IR (for the curious)
+finch lsp                          the language server, for editors
 finch version                      show the version
 
 options:
-  -l <lib>   link a C library, same as  link "lib"  in the file
-  -g         add debug info (for gdb / lldb)
-  -O0        skip optimizations
+  -l <lib>          link a C library, same as  link "lib"  in the file
+  --target <name>   build for another system: windows, linux, arm64, macos, or an LLVM triple
+  -g                add debug info (for gdb / lldb / Visual Studio)
+  -O0               skip optimizations
 ```
 
 Examples:
@@ -227,6 +264,7 @@ x += 1               // also -= *= /= %=
 | `char`  | one byte-sized character | `'A'`, `'\n'` |
 | `str`   | text | `"hello\tworld"` |
 | `[]T`   | a list (array) of `T` | `[1, 2, 3]` |
+| `map[K]V` | values of type `V` found by a key of type `K` | `["a": 1, "b": 2]` |
 | your structs | named groups of values | `Point(1, 2)` |
 
 String and char escapes: `\n` new line, `\t` tab, `\r`, `\0`, `\\`, `\"`, `\'`.
@@ -333,6 +371,14 @@ for i in 0..10 {          // i = 0, 1, …, 9  (the end is not included)
 for name in names {       // every element of an array (or every char of a str)
     print(name)
 }
+
+for i, name in names {    // with its index: 0, 1, 2, ...
+    print(i, name)
+}
+
+for key, value in ages {  // every entry of a map, in the order the keys were added
+    print(key, value)     // (for key in ages: just the keys)
+}
 ```
 
 - A condition must be a `bool`. `if x {` with a number is an error; write `if x != 0 {`.
@@ -375,11 +421,13 @@ fn no_result(str message) {       // no "->": returns nothing
   To change the caller's variable, pass a pointer: see [Pointers](#14-pointers).
 - A function with `-> type` must return a value on every path. Finch checks this.
 - A function cannot be defined inside another function.
+- A function that can fail is written `-> int!` (or `-> !` with no result); see
+  [Errors as values](#errors-as-values).
 - Long calls can be split over several lines inside the brackets; a comma after the last argument is fine.
 
 ---
 
-## 10. Arrays
+## 10. Arrays and maps
 
 ```c
 nums := [5, 3, 8]          // an array of int
@@ -407,6 +455,44 @@ grid := [[1, 2], [3, 4]]   // arrays of arrays
 | `print(a)` | prints `[1, 2, 3]` |
 
 **Assigning copies:** after `b := a`, changing `b` does not change `a`.
+
+### Maps
+
+A `map[K]V` finds values by a key. Keys can be whole numbers, `char`, `bool` or `str`; values can be
+anything (arrays, structs, other maps). Iterating goes in the order the keys were first added.
+
+```c
+ages := ["anna": 31, "bob": 25]     // a map literal: map[str]int
+map[str][]str groups                // an empty map
+map[int]str names = [:]             // [:] is an empty map where the type is known
+```
+
+| Operation | Meaning |
+|---|---|
+| `m[k]` | the value for `k`; a missing key stops the program with `the key "k" is not in the map` |
+| `m[k] = v` | add or replace |
+| `m[k] += 1`, `m[k].push(x)`, `m[k].field = …` | changing a missing key adds it first, with the value type's default (0, `""`, `[]`, …) |
+| `m.len` | the number of keys |
+| `m.has(k)` | is `k` there? |
+| `m.get(k, default)` | the value, or `default` (only computed when needed) |
+| `m.remove(k)` | removes `k`; `true` if it was there |
+| `m.clear()` | removes everything |
+| `m.keys()`, `m.values()` | new arrays, in insertion order |
+| `print(m)`, `str(m)` | `{"anna": 31, "bob": 25}` |
+
+```c
+map[str]int counts
+for word in text.split(" ") {
+    counts[word] += 1                 // counting: a new word starts at 0
+}
+for word, n in counts {
+    print(word, n)
+}
+```
+
+Lookups are hash-based (average constant time). Like arrays, maps own their keys and values,
+copy on assignment, and are freed at the end of their block. Don't add or remove keys of a map
+inside a `for` over that same map; collect them in an array and change the map after the loop.
 
 ---
 
@@ -437,7 +523,7 @@ to C as `char*` works.
 
 ---
 
-## 12. Structs
+## 12. Structs and methods
 
 ```c
 struct Player {
@@ -457,7 +543,34 @@ print(p)       // Player(name: "Ola", lives: 2, scores: [10], pos: Point(x: 5, y
 
 - Assigning or passing a struct copies it, together with its arrays and text.
 - A struct can't contain itself directly; use `ptr[Node]` or `[]Node` for that field (trees, lists).
-- Structs have no methods. Write functions that take the struct: `fn heal(Player p) -> Player`.
+
+### Methods
+
+A method is a function that belongs to a struct: `fn Struct.name(...)`. Inside, `self` is the struct
+it was called on, and it is the caller's value itself, not a copy: changes to `self` stay.
+
+```c
+fn Player.heal(int amount) {
+    self.lives += amount
+}
+
+fn Player.is_alive() -> bool {
+    return self.lives > 0
+}
+
+p := Player(name: "Ola")
+p.heal(2)                  // p.lives is now 5
+if p.is_alive() { ... }
+
+team[0].heal(1)            // on an array element, a field, m[key], through a ptr[Player] ...
+```
+
+- A method goes in the same file (module) as its struct, and is available wherever the struct is.
+- Methods can also be added to **structs from C headers**: `fn Vector2.length() -> f32 { ... }`.
+- A method can't have the name of a field.
+- Calling a method that changes `self` on a loop variable (`for p in team { p.heal(1) }`) is an error,
+  because the loop variable is read-only; use `for i in 0..team.len { team[i].heal(1) }`.
+- Like functions, methods can fail (`-> !`); see [Errors as values](#errors-as-values).
 
 ---
 
@@ -520,14 +633,16 @@ Using `.value`, `.field` or `[i]` on a `null` pointer **stops the program** with
 |---|---|
 | `print(a, b, ...)` | Prints all values separated by spaces, then a new line. Works with every type, including arrays and structs. |
 | `input()`, `input("question")` | Reads one line typed by the user (without the newline). Empty text at end of input. |
-| `read_file(path)` | The whole file as `str`. Stops the program with a clear message if it can't be read. |
-| `write_file(path, text)` | Writes (replaces) the file; gives back `true` if it worked. |
+| `read_file(path)` | The whole file as `str`. Stops the program with a clear message if it can't be read, unless handled: `read_file(p) or ...`. |
+| `write_file(path, text)` | Writes (replaces) the file; gives back `true` if it worked. With `or` / `try`, the failure carries the reason. |
 | `file_exists(path)` | `true` / `false` |
+| `delete_file(path)` | Deletes the file; `true` if it worked (or the reason, with `or` / `try`). |
+| `error(message)` | The failure a fallible function returns: `return error("...")`. |
 | `shell(command)` | Runs a shell command, gives back its exit code. |
 | `exit(code)` | Ends the program right away. |
 | `addr(x)` | A pointer to `x`; `addr(function)` gives C a function pointer (callback). |
 | `new(value)`, `free(p)` | Manual heap memory (see [Memory](#13-memory-who-frees-what)). |
-| `int(x)`, `str(x)`, `u8(x)`, … | Conversions (see [Conversions](#conversions)). |
+| `int(x)`, `str(x)`, `u8(x)`, … | Conversions (see [Conversions](#conversions)). `str(x)` works on every type and gives the same text `print` shows. `int(text) or 0` handles text that isn't a number. |
 
 ---
 
@@ -669,6 +784,54 @@ Both work directly; `examples/opengl.fch` and `examples/vulkan.fch` are complete
 
 ## 18. Errors
 
+### Errors as values
+
+Some failures are normal: the user types `abc`, a file is missing. Finch handles them without
+exceptions and without hidden control flow. A function that can fail says so with `!` after its result
+type, and fails with `return error("message")`:
+
+```c
+fn parse_port(str text) -> int! {
+    n := int(text) or { return error("'" + text + "' is not a number") }
+    if n < 1 || n > 65535 {
+        return error("port " + str(n) + " is out of range")
+    }
+    return n
+}
+
+fn save(str path, str text) -> ! {     // can fail, gives back nothing
+    try write_file(path, text)
+}
+```
+
+The caller **must** handle the failure, in one of three ways (forgetting is a compile error):
+
+| Code | On failure |
+|---|---|
+| `port := parse_port(s) or 8080` | use this value instead (it's only computed on failure; it can be another call with `or`) |
+| `port := parse_port(s) or { print(err); return }` | run the block; `err` is the message (a `str`). The block must leave (`return`, `break`, `continue`, `exit`) unless the result isn't used. |
+| `port := try parse_port(s)` | fail the current function with the same error (it must be fallible too) |
+
+```c
+fn load(str path) -> Config! {
+    text := try read_file(path)
+    port := try parse_port(text.trim())
+    return Config(port: port)
+}
+
+fn main() -> ! {                // main can fail too: the error is printed, and the exit code is 1
+    config := try load("app.conf")
+    ...
+}
+```
+
+Built-ins that can fail work the same way: `int(text)`, `float(text)`, `read_file`, `write_file`,
+`delete_file`. Without `or` / `try` they behave as before (`int("x")` stops the program,
+`write_file` gives back a `bool`).
+
+Under the hood a fallible function returns its value plus a flag and the message: no allocation on
+success, no unwinding, and the cost of a failure is building its message.
+
 ### Compile errors
 
 ```
@@ -691,11 +854,30 @@ Instead of undefined behavior (as in C), Finch stops with a message and exit cod
 | `runtime error: pop() on an empty array` | |
 | `runtime error: used .value on a null pointer` | also `.field` and `[i]` through `null` |
 | `runtime error: can't turn "x" into int` | `int(...)` / `float(...)` on text that isn't a number |
-| `runtime error: can't read the file "…"` | `read_file` on a missing or unreadable file |
+| `runtime error: can't read the file "…"` | `read_file` on a missing or unreadable file (handle it with `or`) |
+| `runtime error: the key "x" is not in the map …` | `m["x"]` when the map has no such key (use `.has` or `.get`) |
+| `runtime error: called .f() on a null pointer` | a method called through a `null` `ptr[T]` |
 
 ---
 
-## 19. Editor: VS Code
+## 19. Editors: VS Code, Kate and others
+
+Every editor feature comes from the same language server, `finch lsp`, which uses the real compiler:
+errors as you type, types and docs on hover, go to definition, completion (fields, methods, map and array
+methods after `.`, module members, names from C headers), the file's outline, and parameter hints.
+
+### Kate (and KWrite, KDevelop)
+
+```sh
+editors/kate/install.sh
+```
+
+It installs the highlighting (`~/.local/share/org.kde.syntax-highlighting/syntax/finch.xml`) and adds `finch`
+to Kate's LSP client settings, keeping your other servers. Restart Kate and enable the **LSP Client** plugin.
+To run programs, add `finch run %f` as a target in the **Build & Run** plugin; Finch's
+`file:line:column: error:` messages are then clickable. Details: `editors/kate/README.md`.
+
+### VS Code
 
 The **Finch** extension (`editors/vscode`, also attached to each release as a `.vsix` file) gives you:
 highlighting, errors as you type, completion (also fields and methods after `.`), types on hover,
@@ -703,8 +885,12 @@ go to definition (F12), an outline of the file, parameter hints, snippets, and a
 (`Ctrl+F5`). Errors from **Finch: Build This File** appear in the Problems panel.
 
 Install: Extensions → `…` → *Install from VSIX…* → pick `finch-lang-*.vsix`. The extension runs `finch`
-from your PATH; if it is somewhere else, set **Finch: Path** in the settings. Other editors that speak the
-Language Server Protocol (Neovim, Helix, Zed, Emacs, Sublime) can use `finch lsp` directly.
+from your PATH; if it is somewhere else, set **Finch: Path** in the settings.
+
+### Others
+
+Neovim, Helix, Zed, Emacs, Sublime and any other editor that speaks the Language Server Protocol:
+run `finch lsp` for files ending in `.fch` (stdin/stdout, no options).
 
 ## 20. Debugging
 
@@ -737,6 +923,9 @@ Visual Studio debugger and WinDbg read.
 | A library is not found when the program starts | It was linked from a folder the system doesn't search. Run inside the same `nix-shell`, or install it system-wide. |
 | Windows: `finch` can't link (`LNK…` errors about `libcmt`, `kernel32`) | Install Visual Studio Build Tools with *Desktop development with C++*. |
 | Windows: `finch.exe` doesn't start (missing `libclang.dll`) | Keep `libclang.dll` next to `finch.exe`. |
+| macOS: `finch` doesn't start (`Library not loaded: …libLLVM…`) | `brew install llvm@21`. |
+| macOS: `can't find the C header 'stdio.h'` | Install the command line tools: `xcode-select --install`. |
+| `--target arm64`: `no C compiler found to link with` | Install `aarch64-linux-gnu-gcc` (Debian: `gcc-aarch64-linux-gnu`), or set `FINCH_CC`. |
 | `clang` inside `nix-shell` can't find `stdio.h` | You have an old `shell.nix`: `llvmPackages.clang` must be listed before `llvmPackages.libclang`. |
 | A program never ends | A loop condition never becomes false. Press Ctrl+C. |
 
@@ -755,17 +944,18 @@ Finch/
 │   ├── fail/       programs that must fail, with the expected error in line 1
 │   ├── run.sh      the test runner (MEMCHECK=1 also checks memory with valgrind)
 │   └── boot.sh     builds the self-hosted compiler with itself and compares
-├── editors/vscode/ the VS Code extension
+├── editors/        the VS Code extension (vscode/), Kate highlighting and LSP setup (kate/)
 ├── docs/           this documentation (en, pl), including the cheat sheet
 ├── shell.nix       the Nix development environment
 └── CMakeLists.txt
 ```
 
 ```sh
-tests/run.sh                 # → 59 passed, 0 failed
+tests/run.sh                 # → 74 passed, 0 failed
 MEMCHECK=1 tests/run.sh      # the same under valgrind: no leaks, no bad memory access
 tests/boot.sh                # the self-hosting check (needs clang)
-tests/windows.sh             # every test built for Windows and run with Wine
+tests/cross.sh windows       # every test built for Windows and run with Wine
+tests/cross.sh arm64         # every test built for ARM64 Linux and run with QEMU
 python3 tests/lsp_test.py    # the language server
 ```
 
@@ -773,12 +963,11 @@ python3 tests/lsp_test.py    # the language server
 
 ## 23. Current limits
 
-Finch 2.0 is a complete small language, but not a finished one. Not there yet:
+Not there yet:
 
-- Methods on structs, generics, maps/dictionaries, `match`. (Use arrays of structs and functions.)
-- Error values: errors in `int("x")` or `read_file` stop the program. Check first (`file_exists`).
+- Generics (your own `List[T]`), interfaces, `match`, enums written in Finch.
 - Unicode-aware text: `.len`, `s[i]` and `upper()` work on bytes / ASCII.
 - Threads.
-- Platforms other than Linux and Windows on x86-64 (macOS, ARM).
+- Windows on ARM64, 32-bit systems, WebAssembly.
 
 See the [roadmap in the README](../../README.md#roadmap).

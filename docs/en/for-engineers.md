@@ -38,9 +38,9 @@ For the language from a user's point of view, see the [technicians' guide](for-t
 20. [Semantics vs. C](#20-semantics-vs-c)
 21. [Function reference](#21-function-reference)
 22. [Extending the compiler](#22-extending-the-compiler)
-23. [Targets and Windows](#23-targets-and-windows)
+23. [Targets: Windows, macOS, ARM64](#23-targets-windows-macos-arm64)
 24. [The language server](#24-the-language-server)
-25. [The VS Code extension](#25-the-vs-code-extension)
+25. [Editor integrations](#25-editor-integrations)
 26. [Known limitations](#26-known-limitations)
 
 ---
@@ -90,20 +90,24 @@ Design decisions that shape the rest:
 
 | File | Lines | Responsibility |
 |---|---|---|
-| `src/error.h` | 40 | `g_files` (all sources), `failAt(file, line, col, msg)`, `fail(line, col, msg)` |
+| `src/error.h` | 50 | `g_files` (all sources), `failAt(file, line, col, msg)`, `fail(line, col, msg)`, `FinchError` |
 | `src/lexer.h/.cpp` | 250 | `Tok`, `Token`, `lex(fileIndex)`, `tokName()` |
-| `src/ast.h` | 310 | `Type` (incl. Array, Fixed, Struct, Named), all `Expr`/`Stmt` nodes, `FnDecl`, `StructDecl`, `Import`, `Link`, `Program` |
-| `src/parser.h/.cpp` | 540 | Recursive-descent `Parser`, `typeFromName()` |
-| `src/cimport.h/.cpp` | 420 | libclang import: functions, C structs (fields, offsets), constants, globals |
+| `src/ast.h` | 360 | `Type` (incl. Array, Map, Fixed, Struct, Named), all `Expr`/`Stmt` nodes, `FnDecl`, `StructDecl`, `Import`, `Link`, `Program` |
+| `src/parser.h/.cpp` | 610 | Recursive-descent `Parser`, `typeFromName()` |
+| `src/loader.h/.cpp` | 90 | Reading files and modules (`Loader`), `FINCH_PATH` |
+| `src/target.h/.cpp` | 210 | `g_target`: triple, C compiler, processes, paths; backend initialisation |
+| `src/cimport.h/.cpp` | 430 | libclang import: functions, C structs (fields, offsets), constants, globals |
 | `src/codegen.h` | 15 | `generate()` |
-| `src/codegen_impl.h` | 265 | The `Codegen` class and its helper structs, shared by the four files below |
-| `src/codegen.cpp` | 1090 | Program, declarations, scopes and cleanups, statements, expressions, places (`ref`), operators, mutation analysis |
-| `src/codegen_types.cpp` | 500 | LLVM types, type resolution, struct layout, coercions, ownership (copy/drop helpers), printing, DWARF types |
-| `src/codegen_builtins.cpp` | 710 | Calls, constructors, built-ins, conversions, array and str methods, runtime declarations, panics |
-| `src/abi.cpp` | 310 | System V x86-64 classification, C calls with structs by value, C-callable thunks |
-| `src/main.cpp` | 390 | Driver: CLI, loader, target machine, O2, object emission, runtime cache, linking, link-error advice, `run` |
-| `runtime/finch_rt.c` | 440 | The runtime library (§12) |
-| `boot/*.fch` | 3080 | The self-hosted compiler (§17) |
+| `src/codegen_impl.h` | 310 | The `Codegen` class and its helper structs, shared by the files below |
+| `src/codegen.cpp` | 1460 | Program, declarations (functions, methods), scopes and cleanups, statements, expressions, places (`ref`), operators, errors as values, mutation analysis |
+| `src/codegen_types.cpp` | 580 | LLVM types, type resolution, struct layout, coercions, ownership (copy/drop helpers), text formatting, debug types |
+| `src/codegen_builtins.cpp` | 890 | Calls, methods, constructors, built-ins, conversions, array and str methods, runtime declarations, panics |
+| `src/codegen_map.cpp` | 240 | Maps: indexing, literals, methods, iteration |
+| `src/abi.cpp` | 370 | C calling conventions (System V x86-64, Microsoft x64, AAPCS64), C calls with structs by value, C-callable thunks |
+| `src/lsp.cpp`, `src/index.h`, `src/builtins_doc.h` | 700 | The language server (§24) |
+| `src/main.cpp` | 350 | Driver: CLI, target machine, O2, object emission, runtime cache, linking, link-error advice, `run` |
+| `runtime/finch_rt.c` | 740 | The runtime library (§12) |
+| `boot/*.fch` | 3100 | The self-hosted compiler (§17) |
 
 ---
 
@@ -120,7 +124,8 @@ struct Token { Tok kind; std::string text; int line, col; bool newlineBefore; };
 - **Positions:** 1-based; `col` counts characters (UTF-8 continuation bytes don't advance it), so
   carets line up under `"Błąd"`. A stray non-ASCII character is reported whole, with a hint that names are ASCII-only.
 - **Identifiers / keywords:** `[A-Za-z_][A-Za-z0-9_]*`. Keywords:
-  `fn return if else while for in break continue true false null import link struct defer`.
+  `fn return if else while for in break continue true false null import link struct defer or try`.
+  (`self` and `map` are ordinary identifiers with a meaning in context: inside a method, before `[`.)
   **Type names are not keywords**: `int`, `u8`, `ptr`… are `Ident`s recognised by the parser through
   `typeFromName()`, so `u8(x)` is an ordinary call and the lexer doesn't depend on the type list.
 - **Numbers:** decimal or `0x` hex with `_` separators. No octal (`010` is 10). A `.` belongs to a number
@@ -142,27 +147,31 @@ program     = { import | link | struct | function } ;
 import      = "import" ( STRING | IDENT ) ;                 (* "x.h" = C header, name = Finch module *)
 link        = "link" STRING ;                               (* "glfw" | "file.c" | "file.o" | "lib.a" *)
 struct      = "struct" IDENT "{" { type IDENT [ "=" expr ] NEWLINE } "}" ;
-function    = "fn" IDENT "(" [ param { "," param } ] ")" [ "->" type ] block ;
+function    = "fn" IDENT [ "." IDENT ] "(" [ param { "," param } ] ")" [ "->" ( type [ "!" ] | "!" ) ] block ;
+                                                             (* fn Point.move: a method; "!": can fail *)
 param       = type IDENT ;
-type        = "[" "]" type | "ptr" [ "[" type "]" ] | TYPENAME | IDENT [ "." IDENT ] ;
+type        = "[" "]" type | "map" "[" type "]" type | "ptr" [ "[" type "]" ]
+            | TYPENAME | IDENT [ "." IDENT ] ;
 
 block       = "{" { statement TERMINATOR } "}" ;
 statement   = if | while | for | return | "break" | "continue" | "defer" statement | block
             | type IDENT [ "=" expr ]                        (* declaration, see atDeclaration *)
             | IDENT ":=" expr
             | target assignop expr                           (* target: var, field, element, p.value *)
-            | call | method ;
-for         = "for" IDENT "in" expr ( ".." expr block | block ) ;   (* range | for-each *)
+            | call | method | try | orelse ;
+for         = "for" IDENT [ "," IDENT ] "in" expr ( ".." expr block | block ) ;   (* range | for-each *)
 assignop    = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
 
-expr        = or ;            or = and { "||" and } ;       and = cmp { "&&" cmp } ;
+expr        = or [ "or" ( block | expr ) ] ;                 (* f(x) or 0,  f(x) or { ... }: lowest, right to left *)
+or          = and { "||" and } ;       and = cmp { "&&" cmp } ;
 cmp         = add { ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) add } ;
 add         = mul { ( "+" | "-" | "|" | "^" ) mul } ;
 mul         = unary { ( "*" | "/" | "%" | "<<" | ">>" | "&" ) unary } ;
-unary       = ( "-" | "!" | "~" ) unary | postfix ;
+unary       = ( "-" | "!" | "~" ) unary | "try" postfix | postfix ;
 postfix     = primary { "." IDENT [ args ] | "[" expr "]" } ;
 primary     = INT | FLOAT | STRING | CHAR | "true" | "false" | "null"
-            | IDENT [ args ] | "(" expr ")" | "[" [ expr { "," expr } [","] ] "]" ;
+            | IDENT [ args ] | "(" expr ")" | "[" [ expr { "," expr } [","] ] "]"
+            | "[" ":" "]" | "[" expr ":" expr { "," expr ":" expr } [","] "]" ;   (* maps *)
 args        = "(" [ arg { "," arg } [","] ] ")" ;  arg = [ IDENT ":" ] expr ;
 ```
 
@@ -201,11 +210,16 @@ All nodes are in `src/ast.h`: small class hierarchies with an explicit `kind`, d
 | `Member` | `MemberExpr` | `obj`, `field` (`.x`, `.len`, `.ptr`, `.value`) |
 | `Index` | `IndexExpr` | `obj`, `index` |
 | `ArrayLit` | `ArrayLitExpr` | `elems` |
-| `Method` | `MethodExpr` | `obj`, `name`, `args`, `argNames`; also `module.fch(...)` |
+| `Method` | `MethodExpr` | `obj`, `name`, `args`, `argNames`; also `module.fn(...)` and `p.method(...)` |
+| `MapLit` | `MapLitExpr` | `keys`, `values` (`[:]` has none) |
+| `Try` | `TryExpr` | `call` |
+| `OrElse` | `OrElseExpr` | `call`, and either `fallback` (an expression) or `block` |
 
 | StmtKind | Node |
 |---|---|
-| `Block` `VarDecl` `Assign` `Expr` `If` `While` `For` `ForEach` `Return` `Break` `Continue` `Defer` | as named; `ForEachStmt` has `var`, `list`, `body`; `DeferStmt` holds one statement |
+| `Block` `VarDecl` `Assign` `Expr` `If` `While` `For` `ForEach` `Return` `Break` `Continue` `Defer` | as named; `ForEachStmt` has `var`, `var2` (`for i, x` / `for k, v`), `list`, `body`; `DeferStmt` holds one statement |
+
+`FnDecl` has `recv` (the struct of a method, `""` otherwise) and `fallible` (`-> T!`).
 
 `math.sqrt(x)` parses as a `MethodExpr` on `VarExpr("math")`; whether `math` is a module or a variable
 is decided during code generation. Calls name their callee instead of holding an expression: Finch has
@@ -220,9 +234,10 @@ There is no "load" node: whether `x` means its address or its value depends on c
 ```cpp
 struct Type {
     enum Kind { Void, Bool, Char, I8, I16, I32, I64, U8, U16, U32, U64, F32, F64,
-                Str, Ptr, Null, Array, Fixed, Struct, Named };
+                Str, Ptr, Null, Array, Map, Fixed, Struct, Named };
     Kind kind;
-    std::shared_ptr<Type> elem;   // Ptr (null = untyped `ptr`), Array, Fixed
+    std::shared_ptr<Type> elem;   // Ptr (null = untyped `ptr`), Array, Fixed; Map: the value
+    std::shared_ptr<Type> key;    // Map
     long long count;              // Fixed
     std::string name, module;     // Named (as written) / Struct (resolved)
     StructInfo *info;             // Struct
@@ -299,9 +314,12 @@ type names (conversion) → function of the current module → struct of the cur
 | `char` `i8` `u8` / `i16` `u16` / `i32` `u32` / `int` `u64` | `i8` / `i16` / `i32` / `i64` |
 | `f32` / `float` | `float` / `double` |
 | `str`, `[]T` | `{ ptr, i64, i64 }` (pointer, length, capacity) |
+| `map[K]V` | `{ ptr, i64, i64, i64, ptr, i64 }` (entries, len, used, cap, index, icap; §10.12) |
 | `ptr`, `ptr[T]`, `null` | `ptr` (opaque) |
 | `[N]T` | `[N x T]` |
 | Finch struct | named struct type, natural layout |
+| a method's `self` | `ptr` (the first parameter) |
+| the result of `-> T!` | `{ i1 ok, T value, str error }` (`i8` in place of `T` for `-> !`) |
 | C struct | named **packed** struct with explicit padding bytes (§13.2) |
 
 Signedness lives only in the Finch type and selects `sdiv/udiv`, `ashr/lshr`, `icmp s*/u*`,
@@ -375,6 +393,8 @@ value when it goes away. There is no reference counting and no garbage collector
 | a temporary nobody keeps (`print(a + b)`, `f(g())`, an expression statement) | **`release(v)`**: dropped right after use |
 | `a.pop()`, `a.remove(i)` | the element is moved out (fresh) |
 | `for x in list` | `x` borrows each element; if the body may change `list`, each element is copied instead |
+| a method call `v.m()` | `self` **is** `v` (its address is passed): no copy; changes are visible to the caller |
+| maps | own their keys and values like arrays own elements; `m[k] = v` moves/copies `v` in and drops the old value |
 
 A string literal is a fresh value with `cap = 0`: moving it costs nothing, dropping it is skipped
 (`release()` ignores constants), and writing into it (`s[i] = c`) first makes a heap copy
@@ -388,6 +408,11 @@ method on it (`push pop insert remove clear resize sort reverse`), or `addr(…)
 parameters are borrowed (`Fn::borrowParam`); changed ones are copied once at entry. The analysis is
 syntactic and conservative: anything that *might* change the parameter makes a copy, which is always correct.
 The same analysis decides whether `for x in list` must copy elements.
+
+Methods take part: `declareFns()` first finds which methods change `self` (`mutates("self", body)`),
+repeating until nothing changes, because calling a changing method on `self` changes `self` too. Their
+names go into `mutatingMethods`, which `mutatesExpr()` treats like `push`: `p.move(1)` changes `p`.
+Only then is `borrowParam` computed for every function and method.
 
 ### 9.3 Copy and drop
 
@@ -507,7 +532,9 @@ one. Compound `x += v`: evaluate `v`, load the target, `arith()`, store, drop th
 ### 10.4 Functions and `main`
 
 Functions are `internal` with their natural LLVM signature (aggregates by value). Owning parameters are
-copied at entry only if `borrowParam` is false. `fn main` is the internal `finch.main`; a separate
+copied at entry only if `borrowParam` is false. Methods (§10.10) get `self`'s address as an extra first
+parameter; fallible functions (§10.11) return `{ i1, T, str }`. `fn main() -> !` / `-> int!` makes the
+wrapper print `error: <message>` to stderr and exit with 1 on failure. `fn main` is the internal `finch.main`; a separate
 external `i32 main(i32, ptr)` (`defineMainWrapper`) builds `[]str args` with `finch_args` if requested,
 calls it, drops the arguments and returns the exit code. A function that falls off its end gets the
 scope cleanups and `ret void`, or the error `can reach its end without returning T`.
@@ -537,9 +564,12 @@ scopes swapped out, or zero). C calls are in §13.
 
 ### 10.8 Printing
 
-`print` emits `printf` per argument with a format chosen by type (`%lld`, `%llu`, `%g`, `%c`, `%.*s` for
-`str` with its length, `%p`), separated by spaces, then `\n`. Arrays, fixed arrays and structs call
-generated helpers `finch.print.<key>` that print `[1, 2]` / `Point(x: 1, y: 2)`, quoting strings and chars inside.
+`print` emits `printf` per scalar argument with a format chosen by type (`%lld`, `%llu`, `%g`, `%c`,
+`%.*s` for `str` with its length), separated by spaces, then `\n`. Everything else (pointers, arrays,
+fixed arrays, maps, structs) is first **formatted** into a heap `str` buffer by `emitFormat()` and
+printed with `finch_buf_print`. Composite types get a generated helper `finch.format.<key>(buf, value*)`
+that appends `[1, 2]` / `{"a": 1}` / `Point(x: 1, y: 2)`, quoting strings and chars inside. `str(x)` of
+an array, map or struct runs the same helper, so `str(x)` is always what `print(x)` shows.
 
 ### 10.9 Array and str methods
 
@@ -549,6 +579,65 @@ Arrays: `push` (`finch_arr_reserve` + store + len++), `pop`/`remove` (move out, 
 (swap loop), `sort` (libc `qsort` with a generated comparator `finch.cmp.<key>`), `join` (runtime).
 Methods that change the array require an address (a variable/field/element).
 Strings: `sub find contains starts_with ends_with split trim upper lower replace repeat bytes`, all in the runtime.
+`for i, x in list` adds a read-only `int` index variable next to the element.
+
+### 10.10 Methods
+
+`fn Point.move(int dx)` is declared like a function named `finch.[module.]Point.move` with a leading
+`ptr` parameter and stored in `Codegen::methods[StructInfo*]` (so methods follow the struct into every
+module that uses it, and C structs can have methods too). In `define()`, `self` is a `Var` whose `slot`
+**is that pointer argument**: `self.x` is a GEP from the caller's own struct, and `self = …` writes the
+caller's value. No copy happens, ever.
+
+At a call `obj.m(args)` (`structMethod()`), `ref(obj)` gives an address when `obj` is a place (a variable,
+field, element, `m[key]`), the loaded pointer for a `ptr[T]` (null-checked), or a stack temporary for a
+value (`Point(1, 2).length()`), which is dropped after the call. Two safety rules come from the mutation
+analysis: a method that changes `self` can't be called on a read-only loop variable, and if such a method
+is given an argument that lives inside the receiver (`c.merge(c)`, `p.add(p.items)`), the argument is
+copied first, so `self` can't free memory the argument still points to.
+
+### 10.11 Errors as values
+
+A fallible function (`-> T!`) returns `{ i1 ok, T value, str error }`; on failure `value` is zero, so the
+caller never has to drop it. `return v` wraps `{1, v, zero}` (`retValue()`); `return error(msg)` evaluates
+the message, runs the cleanups and returns `{0, zero, msg}` (`retError()`).
+
+Calling a fallible function is only allowed as the operand of `or` / `try`. `fallible(call)` sets
+`fallibleTarget` to the call expression; `callFinch()` (and the fallible built-ins) compare their own
+`CallExpr`/`MethodExpr` against it, and if it matches, leave `fallibleFailed` (`i1`) and `fallibleMsg`
+(`str`) for the caller; if a fallible call doesn't match, it's the compile error *'f' can fail, so say what
+happens then*. Nested handlers save and restore the three fields.
+
+| Form | Lowering |
+|---|---|
+| `f(x) or fallback` | `br failed, or.failed, or.ok`; the failed block drops the message and evaluates the fallback (only there); a φ joins the two values |
+| `f(x) or { … }` | the failed block declares `err` (owning the message) and runs the block. If the value is used, the block must end in a terminator; as a statement it may fall through, and the success path releases the unused value |
+| `try f(x)` | the failed block runs `emitCleanups(0)` and returns `{0, zero, msg}` from the current function, which must be fallible |
+
+Built-ins with a failure mode check `&call == fallibleTarget` and switch to `finch_str_try_int`,
+`finch_str_try_float`, `finch_try_read_file`, `finch_try_write_file`, `finch_try_delete_file`, which
+return 1 / 0 and fill an error `str` instead of panicking. The cost on success is one predictable branch;
+nothing is allocated unless a failure happens.
+
+### 10.12 Maps
+
+The runtime (§12) keeps an insertion-ordered hash table, in the style of CPython's `dict`: an `entries`
+array of `{ i64 hash, K key, V value }` slots in insertion order (hash 0 = removed), plus an `index` of
+`icap` slots (power of two, ≥ 2 × cap) with linear probing (−1 empty, −2 removed, else an entry number).
+The runtime only hashes (FNV-1a + a 64-bit mix; text keys by content, others by bytes), finds and places
+entries; the compiler stores, copies and drops keys and values, exactly like array elements.
+
+| Code | Lowering |
+|---|---|
+| `m[k]` read | `finch_map_find`; −1 → `finch_map_missing` (noreturn, with the key as text); else a place at `entry.value` |
+| `m[k]` write (`=`, `+=`, a changing method, `addr`) | `mapSlot()`: `finch_map_slot` returns the entry, adding it if missing; a new entry gets a copy of the key and the value type's default |
+| `["a": 1, …]` | a zeroed map + `mapSlot` per entry (the first entry decides the types; number values are all `float` if one has a dot) |
+| `has`, `get`, `remove`, `clear`, `keys`, `values` | `codegen_map.cpp`; `get`'s default is evaluated only when the key is missing |
+| `for k, v in m` | a loop over `0..used` that skips removed slots, re-reading `entries` and `used` every round |
+| copy / drop / format | helpers like arrays': `finch_map_clone_raw` then deep copies of owning keys and values; drop each live entry, then `finch_map_free` |
+
+Removing marks the slot (and the index entry) removed; slots are packed when the table would grow while
+at least a quarter of them are removed. Removing the last key resets the table.
 
 ---
 
@@ -565,7 +654,9 @@ well-predicted branch. LLVM removes checks it can prove (constant indexes in ran
 | array/str/fixed-array index out of range (`icmp uge`, so negative indexes too) | `boundsCheck()` |
 | `.value`, `.field`, `[i]` through null | `member()`, `index()` |
 | `pop()` on empty, `slice()`/`sub()` out of range | methods, runtime |
-| bad text in `int(s)`/`float(s)`, unreadable file in `read_file` | runtime |
+| bad text in `int(s)`/`float(s)`, unreadable file in `read_file` (without `or` / `try`) | runtime |
+| `m[key]` read with a missing key | `mapIndex()` |
+| a method called through a null `ptr[T]` | `structMethod()` |
 
 A 20-million-element sieve with a bounds check on every access runs as fast as the same C (≈0.09 s):
 the checks are hoisted or folded.
@@ -591,8 +682,11 @@ Functions take and return these **by pointer**, so their C ABI is trivial (no st
 string building (`concat`, `from_int/uint/float/char/bool`, `sub`, `trim`, `upper`, `lower`, `replace`,
 `split`, `join`, `repeat`, `from_bytes`), comparison (`eq`, `cmp`, `find`, `starts`, `ends`), ownership
 (`copy`, `own`, `drop`, `from_c`), arrays (`reserve`, `make`, `resize`, `clone_raw`, `free`,
-`insert_gap`, `remove_gap`), `args`, `input`, files, `shell`, and the panics. Allocation failure prints
-`out of memory` and exits.
+`insert_gap`, `remove_gap`), maps (`map_find`, `map_slot`, `map_remove_at`, `map_clear`, `map_free`,
+`map_clone_raw`, `map_missing`; §10.12), text buffers for `print`/`str` (`buf_add`, `buf_int`, …,
+`buf_print`), the fallible variants (`str_try_int`, `str_try_float`, `try_read_file`, `try_write_file`,
+`try_delete_file`, `report_error`), `args`, `input`, files, `shell`, and the panics. Allocation failure
+prints `out of memory` and exits.
 
 ---
 
@@ -749,7 +843,7 @@ with the expected one. It takes about 2.3 s for the self-hosted compiler to comp
 - libclang: `find_path(clang-c/Index.h)` + `find_library(clang)`.
 - `runtime/finch_rt.c` is read at configure time into `build/rt_source.inc` as a raw string literal;
   `CMAKE_CONFIGURE_DEPENDS` re-runs the configure step when it changes.
-- `FINCH_VERSION` from `project(VERSION 2.3.0)`. C++17, `-Wall -Wextra` (MSVC: `/W3`), warning-free.
+- `FINCH_VERSION` from `project(VERSION 2.4.0)`. C++17, `-Wall -Wextra` (MSVC: `/W3`), warning-free.
 - `shell.nix` lists `llvmPackages.clang` before `llvmPackages.libclang`: the latter also ships an
   unwrapped `clang` that can't find the system headers.
 
@@ -759,9 +853,12 @@ with the expected one. It takes about 2.3 s for the self-hosted compiler to comp
 
 - `tests/run.sh`: every `tests/run/*.fch` with `fn main` must print exactly its `.out` (stdin from `.in`
   if present); files without `main` are modules or helpers. Every `tests/fail/*.fch` must fail with the text
-  from its `// expect:` line. Currently **59 passed, 0 failed**.
+  from its `// expect:` line. Currently **74 passed, 0 failed**.
 - `MEMCHECK=1 tests/run.sh`: the same, plus valgrind on every program (no leaks, no invalid access).
 - `tests/boot.sh`: the self-hosting fixpoint and the subset run (§17).
+- `tests/cross.sh windows|arm64`: every test built with `--target` and run under Wine / QEMU.
+- `python3 tests/lsp_test.py`: the language server, driven like an editor.
+- CI (`.github/workflows/ci.yml`) runs all of it on Linux x86-64, Linux ARM64, macOS ARM64 and Windows.
 
 ---
 
@@ -850,11 +947,14 @@ with the expected one. It takes about 2.3 s for the self-hosted compiler to comp
 | Function | Does |
 |---|---|
 | `call` / `method` | resolve a call / a method or module-qualified call |
-| `callFinch` / `construct` / `callC` | Finch function / struct constructor / C function |
+| `callFinch` / `construct` / `callC` | Finch function or method / struct constructor / C function |
+| `structMethod` | `obj.m(...)`: the receiver's address, safety checks, the call |
 | `print`, `addrOf`, `convert`, `arrayMethod` | built-ins |
+| `fallible`, `tryExpr`, `orElse`, `retValue`, `retError` (`codegen.cpp`) | errors as values (§10.11) |
+| `mapIndex`, `mapLit`, `mapMethod`, `mapSlot`, `forEachEntry` (`codegen_map.cpp`) | maps (§10.12) |
 | `rt` / `libc` | declare a runtime / libc function |
 | `fileName`, `panicIf`, `boundsCheck`, `checkDivisor` | runtime checks |
-| `classify`, `makePlan`, `declareC`, `emitCCall`, `cThunk` | System V classification, register plan, declaration, call, callback thunk |
+| `classify`, `makePlan`, `declareC`, `emitCCall`, `cThunk` | ABI classification (System V, Microsoft x64, AAPCS64), register plan, declaration, call, callback thunk |
 
 ---
 
@@ -877,12 +977,15 @@ emission in `arithOp`/`compare`, an explanation in `badOperands`.
 
 ---
 
-## 23. Targets and Windows
+## 23. Targets: Windows, macOS, ARM64
 
-`src/target.h` holds `g_target`: the LLVM triple, `windows` / `msvc` / `cross` flags, the C compiler (`cc`)
-and the executable suffix. `setTarget()` picks the C compiler: `FINCH_CC`, else `CC` (not when
-cross-compiling), else `x86_64-w64-mingw32-gcc` for `--target windows` from Linux, `clang` on Windows,
-`cc` on Unix. Everything platform-dependent goes through it:
+`src/target.h` holds `g_target`: the LLVM triple, `windows` / `msvc` / `darwin` / `cross` flags, the C
+compiler (`cc`) and the executable suffix. `setTarget()` maps `windows`, `linux`, `arm64`, `macos` (or a full
+triple) to a triple and picks the C compiler: `FINCH_CC`, else `CC` (not when cross-compiling), else
+`x86_64-w64-mingw32-gcc` / `aarch64-linux-gnu-gcc` for Windows / ARM64 Linux from another system,
+`clang --target=<triple>` for other cross targets, `clang` on Windows, `cc` on Unix. `initTargets()`
+registers the X86 and AArch64 backends (whichever this LLVM has; CMake defines `FINCH_TARGET_X86` /
+`FINCH_TARGET_AARCH64` and links their libraries). Everything platform-dependent goes through it:
 
 - **Headers:** libclang parses with `--target=<triple>` (so `long` is 32 bits on Windows and the right
   headers are used) and, on Windows, `-D_USE_MATH_DEFINES`. Include folders come from `<cc> -E -v`.
@@ -893,7 +996,12 @@ cross-compiling), else `x86_64-w64-mingw32-gcc` for `--target windows` from Linu
 - **Linking:** no `-lm` with MSVC; `.exe` names; the runtime cache key includes the triple and the C compiler.
   MSVC linker messages (`LNK2019 unresolved external symbol`, `LNK1104`/`LNK1181 cannot open file`) are
   translated like GNU ld's.
-- **Running:** a Windows program built on Linux runs with `wine`.
+- **Running:** `runPrefix()`: a Windows program built on Linux runs with `wine`, an ARM64 Linux one
+  elsewhere with `qemu-aarch64`.
+- **macOS:** `<cc> -E -v` lists `(framework directory)` entries; they become `-iframework` for libclang,
+  so `import "OpenGL/gl.h"` works. `link "Cocoa.framework"` becomes `-framework Cocoa`. Apple's linker
+  messages (`Undefined symbols for architecture arm64: "_f"`, `ld: library 'x' not found`,
+  `framework 'X' not found`) are translated like the others, without Mach-O's leading `_`.
 - **Debug info:** CodeView for MSVC targets, DWARF elsewhere.
 - **Runtime:** no `getline` or `sys/wait.h` on Windows; `stdin`/`stdout`/`stderr` are macros there, so
   `finch_std_stream(i)` gives them to Finch when a header has no `extern` variable for them.
@@ -908,9 +1016,29 @@ receives a plain pointer). Results of 1/2/4/8 bytes come back in `rax` as an int
 through a hidden `sret` pointer. Each argument takes one slot, so there is no register counting.
 `cThunk()` mirrors this for callbacks.
 
-`tests/windows.sh` builds every test with `--target windows`, runs it with Wine and compares the output:
+`tests/cross.sh windows` builds every test with `--target windows`, runs it with Wine and compares the output:
 all of them pass, including `c_structs` (which then exercises the Microsoft rules against a C library built
 with MinGW). CI additionally builds `finch.exe` with MSVC on Windows Server and runs `tests/run.sh` there.
+
+### AAPCS64 (ARM64 Linux and Apple)
+
+`classify()` mirrors clang's AArch64 lowering:
+
+- A **homogeneous floating-point aggregate** (1–4 members, all `float` or all `double`, nested structs
+  and arrays flattened) goes in vector registers: passed as `[n x float]` / `[n x double]`, returned as
+  `{ float, … }`. On Linux the argument also gets `alignstack(8)`, as clang does; Apple doesn't.
+- Any other struct of up to 16 bytes goes in general registers: `i64` (≤ 8 bytes) or `[2 x i64]`
+  (`i128` if its alignment is 16); it is returned as an integer of its exact size or `[2 x i64]`.
+- Bigger structs are **Indirect**: a copy on the caller's stack, passed by address (no `byval`); returned
+  through `sret`.
+- There is no register counting: the backend places each part.
+- C's plain `char` is **unsigned** on ARM64 Linux and signed on Apple and x86, which matters for the
+  sign/zero extension of `char` arguments and results (`charIsSigned()`).
+- Apple passes the variadic part of `printf(...)` on the stack; LLVM does that from the `...` in the
+  function type.
+
+`tests/cross.sh arm64` runs the whole suite (including the struct ABI test against a C library built by
+GCC) under QEMU, and CI runs it natively on ARM64 Linux and Apple Silicon.
 
 ### Building finch.exe
 
@@ -957,7 +1085,19 @@ signature help (and mirrored by the cheat sheets).
 
 ---
 
-## 25. The VS Code extension
+## 25. Editor integrations
+
+### Kate
+
+`editors/kate/finch.xml` is a KSyntaxHighlighting definition (the engine of Kate, KWrite and KDevelop):
+keyword lists that match `builtins_doc.h`, a context for `fn Type.method`, strings with escapes, and
+folding regions for `{ }` and block comments. `lspclient.json` is the entry for Kate's LSP
+client (`highlightingModeRegex: ^Finch$`); `install.sh` copies the definition and merges the entry into
+`~/.config/kate/lspclient/settings.json`. Kate sends more requests than VS Code (`documentHighlight`,
+`foldingRange`, …); the server answers every request it doesn't implement with `MethodNotFound`, so no
+client waits.
+
+### VS Code
 
 `editors/vscode` is a plain JavaScript extension: `extension.js` starts `finch lsp` through
 `vscode-languageclient` (path from the `finch.path` setting) and adds **Run** / **Build** as
@@ -969,10 +1109,15 @@ templates. CI packages it with `vsce` into `finch-lang.vsix`.
 
 ## 26. Known limitations
 
-- No methods on structs, generics, maps, `match`, closures, error values (`int("x")`, `read_file` panic).
+- No generics, interfaces, `match`, closures or Finch-side enums.
 - Strings are bytes: `.len`, `s[i]`, `upper()` are not Unicode-aware.
+- Changing a map's keys inside a `for` over the same map is not detected (it is memory-safe, but entries
+  may be skipped or seen twice).
+- A `try` / `or` failure in the middle of an expression doesn't release fresh temporaries computed
+  earlier in that expression (a small leak on the failure path only).
 - Dangling pointers (`addr` of a local that went away, use after `free`) are not detected.
 - Shift amounts and float→int conversions are not range-checked (LLVM poison, as in C).
 - C: unions and bit-field structs by value, function-like macros, `long double`.
-- Two systems: Linux and Windows, both x86-64 (System V and Microsoft x64 ABIs). No macOS or ARM yet.
-- The self-hosted compiler has no C imports, sized integers or `defer`, and doesn't free memory.
+- Targets: x86-64 and ARM64 (Linux, macOS, Windows on x86-64). No Windows on ARM64, 32-bit, or WebAssembly.
+- The self-hosted compiler has no C imports, sized integers, `defer`, maps, methods or errors as values,
+  and doesn't free memory.

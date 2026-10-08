@@ -8,9 +8,11 @@
 //          cap == 0 : a string literal, valid forever, never written to
 //          cap == -1: borrowed from C, must be copied before it is kept
 //   []T  = { T *ptr;   int64 len; int64 cap }    owns ptr when cap > 0
+//   map[K]V: see "maps" below
 
 #include <ctype.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -148,31 +150,85 @@ void finch_str_from_char(FStr *out, char c) { str_heap(out, &c, 1); }
 
 void finch_str_from_bool(FStr *out, int b) { str_static(out, b ? "true" : "false"); }
 
-static void bad_number(const FStr *s, const char *kind, const char *file, int64_t line) {
-    char msg[200];
-    snprintf(msg, sizeof msg, "can't turn \"%.*s\" into %s", (int)(s->len > 100 ? 100 : s->len), s->ptr, kind);
-    finch_panic(file, line, msg);
+static void number_error(char *msg, size_t size, const FStr *s, const char *kind) {
+    snprintf(msg, size, "can't turn \"%.*s\" into %s", (int)(s->len > 100 ? 100 : s->len), s->ptr ? s->ptr : "", kind);
 }
 
-int64_t finch_str_to_int(const FStr *s, const char *file, int64_t line) {
-    const char *p = s->ptr;
+static int parse_int(const FStr *s, int64_t *out) {
+    const char *p = s->ptr ? s->ptr : "";
     while (isspace((unsigned char)*p)) p++;
     char *end;
     errno = 0;
     long long v = strtoll(p, &end, 10);
     while (isspace((unsigned char)*end)) end++;
-    if (end == p || *end || errno == ERANGE) bad_number(s, "int", file, line);
-    return v;
+    *out = v;
+    return !(end == p || *end || errno == ERANGE);
 }
 
-double finch_str_to_float(const FStr *s, const char *file, int64_t line) {
-    const char *p = s->ptr;
+static int parse_float(const FStr *s, double *out) {
+    const char *p = s->ptr ? s->ptr : "";
     while (isspace((unsigned char)*p)) p++;
     char *end;
     double v = strtod(p, &end);
     while (isspace((unsigned char)*end)) end++;
-    if (end == p || *end) bad_number(s, "float", file, line);
+    *out = v;
+    return !(end == p || *end);
+}
+
+int64_t finch_str_to_int(const FStr *s, const char *file, int64_t line) {
+    int64_t v;
+    if (!parse_int(s, &v)) {
+        char msg[200];
+        number_error(msg, sizeof msg, s, "int");
+        finch_panic(file, line, msg);
+    }
     return v;
+}
+
+double finch_str_to_float(const FStr *s, const char *file, int64_t line) {
+    double v;
+    if (!parse_float(s, &v)) {
+        char msg[200];
+        number_error(msg, sizeof msg, s, "float");
+        finch_panic(file, line, msg);
+    }
+    return v;
+}
+
+// ---------- errors as values: int(s) or 0, try read_file(p) ... ----------
+// Each gives back 1 on success; on failure 0, with the message in *err.
+
+static void set_error(FStr *err, const char *msg) { str_heap(err, msg, (int64_t)strlen(msg)); }
+
+int finch_str_try_int(const FStr *s, int64_t *out, FStr *err) {
+    if (parse_int(s, out)) return 1;
+    char msg[200];
+    number_error(msg, sizeof msg, s, "int");
+    set_error(err, msg);
+    *out = 0;
+    return 0;
+}
+
+int finch_str_try_float(const FStr *s, double *out, FStr *err) {
+    if (parse_float(s, out)) return 1;
+    char msg[200];
+    number_error(msg, sizeof msg, s, "float");
+    set_error(err, msg);
+    *out = 0;
+    return 0;
+}
+
+static void file_error(FStr *err, const char *what, const FStr *path) {
+    char msg[300];
+    snprintf(msg, sizeof msg, "can't %s the file \"%.*s\": %s", what, (int)(path->len > 200 ? 200 : path->len),
+             path->ptr ? path->ptr : "", strerror(errno));
+    set_error(err, msg);
+}
+
+// when `fn main() -> !` fails
+void finch_report_error(const FStr *msg) {
+    fflush(stdout);
+    fprintf(stderr, "error: %.*s\n", (int)msg->len, msg->ptr ? msg->ptr : "");
 }
 
 void finch_str_sub(FStr *out, const FStr *s, int64_t start, int64_t end, const char *file, int64_t line) {
@@ -303,6 +359,58 @@ void finch_str_repeat(FStr *out, const FStr *s, int64_t n) {
 
 void finch_str_from_bytes(FStr *out, const FArr *bytes) { str_heap(out, bytes->ptr, bytes->len); }
 
+// ---------- building text: print(x) and str(x) of arrays, maps and structs ----------
+// A buffer starts as an empty str and grows on the heap.
+
+void finch_buf_add(FStr *b, const char *p, int64_t n) {
+    if (b->len + n + 1 > b->cap) {
+        int64_t cap = b->cap > 0 ? b->cap * 2 : 32;
+        while (cap < b->len + n + 1) cap *= 2;
+        b->ptr = must(realloc(b->cap > 0 ? b->ptr : NULL, (size_t)cap));
+        b->cap = cap;
+    }
+    if (n) memcpy(b->ptr + b->len, p, (size_t)n);
+    b->len += n;
+    b->ptr[b->len] = 0;
+}
+
+static void buf_fmt(FStr *b, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+static void buf_fmt(FStr *b, const char *fmt, ...) {
+    char t[64];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(t, sizeof t, fmt, ap);
+    va_end(ap);
+    finch_buf_add(b, t, n);
+}
+
+void finch_buf_int(FStr *b, int64_t v) { buf_fmt(b, "%lld", (long long)v); }
+void finch_buf_uint(FStr *b, uint64_t v) { buf_fmt(b, "%llu", (unsigned long long)v); }
+void finch_buf_float(FStr *b, double v) { buf_fmt(b, "%g", v); }
+void finch_buf_bool(FStr *b, int v) { finch_buf_add(b, v ? "true" : "false", v ? 4 : 5); }
+void finch_buf_ptr(FStr *b, const void *p) {
+    if (p) buf_fmt(b, "0x%llx", (unsigned long long)(uintptr_t)p);
+    else finch_buf_add(b, "null", 4);
+}
+
+void finch_buf_char(FStr *b, char c, int quoted) {
+    if (quoted) finch_buf_add(b, "'", 1);
+    finch_buf_add(b, &c, 1);
+    if (quoted) finch_buf_add(b, "'", 1);
+}
+
+void finch_buf_str(FStr *b, const FStr *s, int quoted) {
+    if (quoted) finch_buf_add(b, "\"", 1);
+    finch_buf_add(b, s->ptr, s->len);
+    if (quoted) finch_buf_add(b, "\"", 1);
+}
+
+// print the buffer and free it
+void finch_buf_print(FStr *b) {
+    if (b->len) fwrite(b->ptr, 1, (size_t)b->len, stdout);
+    if (b->cap > 0) free(b->ptr);
+}
+
 // ---------- arrays ----------
 
 void finch_arr_reserve(FArr *a, int64_t need, int64_t es) {
@@ -409,8 +517,27 @@ int finch_file_exists(const FStr *path) {
     return f != NULL;
 }
 
+int finch_try_read_file(FStr *out, const FStr *path, FStr *err) {
+    FILE *f = fopen(path->ptr ? path->ptr : "", "rb");
+    if (!f) {
+        file_error(err, "read", path);
+        return 0;
+    }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *m = finch_alloc(size + 1);
+    size_t got = fread(m, 1, (size_t)size, f);
+    fclose(f);
+    m[got] = 0;
+    out->ptr = m;
+    out->len = (int64_t)got;
+    out->cap = size + 1;
+    return 1;
+}
+
 void finch_read_file(FStr *out, const FStr *path, const char *file, int64_t line) {
-    FILE *f = fopen(path->ptr, "rb");
+    FILE *f = fopen(path->ptr ? path->ptr : "", "rb");
     if (!f) {
         char msg[300];
         snprintf(msg, sizeof msg, "can't read the file \"%.*s\": %s", (int)(path->len > 200 ? 200 : path->len),
@@ -444,12 +571,174 @@ int64_t finch_shell(const FStr *cmd) {
 
 int finch_delete_file(const FStr *path) { return remove(path->ptr ? path->ptr : "") == 0; }
 
+int finch_try_delete_file(const FStr *path, FStr *err) {
+    if (remove(path->ptr ? path->ptr : "") == 0) return 1;
+    file_error(err, "delete", path);
+    return 0;
+}
+
 // stdin/stdout/stderr are macros on some systems (Windows), so Finch asks for them here
 void *finch_std_stream(int i) { return i == 0 ? (void *)stdin : i == 1 ? (void *)stdout : (void *)stderr; }
 
 int finch_write_file(const FStr *path, const FStr *text) {
-    FILE *f = fopen(path->ptr, "wb");
+    FILE *f = fopen(path->ptr ? path->ptr : "", "wb");
     if (!f) return 0;
-    size_t put = fwrite(text->ptr, 1, (size_t)text->len, f);
+    size_t put = text->len ? fwrite(text->ptr, 1, (size_t)text->len, f) : 0;
     return fclose(f) == 0 && put == (size_t)text->len;
+}
+
+int finch_try_write_file(const FStr *path, const FStr *text, FStr *err) {
+    errno = 0;
+    if (finch_write_file(path, text)) return 1;
+    if (!errno) errno = EIO;
+    file_error(err, "write", path);
+    return 0;
+}
+
+// ---------- maps ----------
+// map[K]V = { entries; len; used; cap; index; icap }
+//   entries: `used` slots of es bytes, each { uint64 hash; K key; V value }, in insertion order.
+//            A removed entry keeps its slot (hash 0) until the next resize packs the slots.
+//   index:   icap slots (a power of two, at least 2 * cap): -1 empty, -2 removed, else an entry number.
+// The compiler stores, copies and drops keys and values; the runtime only finds and places entries.
+// Keys are compared byte for byte (numbers, chars, bools) or as text (kstr).
+
+typedef struct {
+    char *entries;
+    int64_t len, used, cap;
+    int64_t *index;
+    int64_t icap;
+} FMap;
+
+static uint64_t map_hash(const void *key, int64_t ks, int kstr) {
+    const unsigned char *p;
+    size_t n;
+    if (kstr) {
+        const FStr *s = key;
+        p = (const unsigned char *)s->ptr;
+        n = (size_t)s->len;
+    } else {
+        p = key;
+        n = (size_t)ks;
+    }
+    uint64_t h = 1469598103934665603ULL;  // FNV-1a, then mixed so the low bits spread well
+    for (size_t i = 0; i < n; i++) {
+        h ^= p[i];
+        h *= 1099511628211ULL;
+    }
+    h ^= h >> 31;
+    h *= 0xbf58476d1ce4e5b9ULL;
+    h ^= h >> 29;
+    return h | 1;  // 0 marks a removed entry
+}
+
+static int map_key_eq(const char *a, const void *b, int64_t ks, int kstr) {
+    if (!kstr) return memcmp(a, b, (size_t)ks) == 0;
+    const FStr *x = (const FStr *)a, *y = b;
+    return x->len == y->len && (x->len == 0 || memcmp(x->ptr, y->ptr, (size_t)x->len) == 0);
+}
+
+static void map_reindex(FMap *m, int64_t es) {
+    if (m->len != m->used) {  // pack the slots of removed entries away
+        int64_t j = 0;
+        for (int64_t i = 0; i < m->used; i++) {
+            char *e = m->entries + i * es;
+            if (*(uint64_t *)e == 0) continue;
+            if (i != j) memmove(m->entries + j * es, e, (size_t)es);
+            j++;
+        }
+        m->used = j;
+    }
+    int64_t icap = 16;
+    while (icap < m->cap * 2) icap *= 2;
+    free(m->index);
+    m->index = finch_alloc(icap * (int64_t)sizeof(int64_t));
+    memset(m->index, 0xff, (size_t)icap * sizeof(int64_t));
+    m->icap = icap;
+    for (int64_t i = 0; i < m->used; i++) {
+        uint64_t h = *(uint64_t *)(m->entries + i * es);
+        int64_t s = (int64_t)(h & (uint64_t)(icap - 1));
+        while (m->index[s] != -1) s = (s + 1) & (icap - 1);
+        m->index[s] = i;
+    }
+}
+
+// the entry number of `key`, or -1
+int64_t finch_map_find(const FMap *m, const void *key, int64_t es, int64_t ks, int32_t kstr) {
+    if (m->len == 0) return -1;
+    uint64_t h = map_hash(key, ks, kstr);
+    for (int64_t s = (int64_t)(h & (uint64_t)(m->icap - 1));; s = (s + 1) & (m->icap - 1)) {
+        int64_t i = m->index[s];
+        if (i == -1) return -1;
+        if (i < 0) continue;
+        char *e = m->entries + i * es;
+        if (*(uint64_t *)e == h && map_key_eq(e + 8, key, ks, kstr)) return i;
+    }
+}
+
+// The entry for `key`. A new one is zeroed except its hash (*added = 1); the compiler then stores the key.
+int64_t finch_map_slot(FMap *m, const void *key, int64_t es, int64_t ks, int32_t kstr, int32_t *added) {
+    int64_t i = finch_map_find(m, key, es, ks, kstr);
+    *added = i < 0;
+    if (i >= 0) return i;
+    if (m->used == m->cap) {
+        if (m->len * 4 < m->cap * 3) {  // many removed slots: pack them instead of growing
+            map_reindex(m, es);
+        } else {
+            m->cap = m->cap ? m->cap * 2 : 8;
+            m->entries = must(realloc(m->entries, (size_t)(m->cap * es)));
+            map_reindex(m, es);
+        }
+    }
+    uint64_t h = map_hash(key, ks, kstr);
+    i = m->used++;
+    char *e = m->entries + i * es;
+    memset(e, 0, (size_t)es);
+    *(uint64_t *)e = h;
+    int64_t s = (int64_t)(h & (uint64_t)(m->icap - 1));
+    while (m->index[s] >= 0) s = (s + 1) & (m->icap - 1);
+    m->index[s] = i;
+    m->len++;
+    return i;
+}
+
+// Forget entry i (its key and value were already dropped by the compiler).
+void finch_map_remove_at(FMap *m, int64_t i, int64_t es) {
+    char *e = m->entries + i * es;
+    uint64_t h = *(uint64_t *)e;
+    int64_t s = (int64_t)(h & (uint64_t)(m->icap - 1));
+    while (m->index[s] != i) s = (s + 1) & (m->icap - 1);
+    m->index[s] = -2;
+    *(uint64_t *)e = 0;
+    if (--m->len == 0) {
+        m->used = 0;
+        memset(m->index, 0xff, (size_t)m->icap * sizeof(int64_t));
+    }
+}
+
+void finch_map_clear(FMap *m) {
+    m->len = m->used = 0;
+    if (m->index) memset(m->index, 0xff, (size_t)m->icap * sizeof(int64_t));
+}
+
+void finch_map_free(FMap *m) {
+    free(m->entries);
+    free(m->index);
+}
+
+// A copy of the slots and the index; the compiler then copies the keys and values that own memory.
+void finch_map_clone_raw(FMap *out, const FMap *m, int64_t es) {
+    *out = *m;
+    if (!m->cap) return;
+    out->entries = finch_alloc(m->cap * es);
+    memcpy(out->entries, m->entries, (size_t)(m->used * es));
+    out->index = finch_alloc(m->icap * (int64_t)sizeof(int64_t));
+    memcpy(out->index, m->index, (size_t)m->icap * sizeof(int64_t));
+}
+
+__attribute__((noreturn, cold)) void finch_map_missing(const char *file, int64_t line, const FStr *key) {
+    char msg[200];
+    snprintf(msg, sizeof msg, "the key %.*s is not in the map (check with .has(key), or use .get(key, default))",
+             (int)(key->len > 100 ? 100 : key->len), key->ptr ? key->ptr : "");
+    finch_panic(file, line, msg);
 }

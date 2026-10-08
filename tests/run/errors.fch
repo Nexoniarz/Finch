@@ -1,0 +1,86 @@
+struct Config {
+    str name
+    int port = 8080
+}
+
+fn parse_port(str text) -> int! {
+    n := int(text) or { return error("the port '" + text + "' is not a number") }
+    if n < 1 || n > 65535 {
+        return error("the port " + str(n) + " is out of range")
+    }
+    return n
+}
+
+fn parse_config(str line) -> Config! {
+    parts := line.split("=")
+    if parts.len != 2 {
+        return error("expected name=port, got '" + line + "'")
+    }
+    port := try parse_port(parts[1].trim())   // a failure here fails parse_config too
+    return Config(parts[0].trim(), port)
+}
+
+fn save(str path, str text) -> ! {
+    if path.len == 0 {
+        return error("no file name")
+    }
+    try write_file(path, text)
+}
+
+struct Account {
+    int balance
+}
+
+fn Account.withdraw(int amount) -> ! {
+    if amount > self.balance {
+        return error("not enough money: " + str(self.balance) + " < " + str(amount))
+    }
+    self.balance -= amount
+}
+
+fn first_number([]str words) -> int! {
+    for w in words {
+        n := int(w) or { continue }
+        return n
+    }
+    return error("no numbers")
+}
+
+fn main() -> ! {
+    print(parse_port("80") or 0)
+    print(parse_port("abc") or -1)
+    print(parse_port("99999") or -1)
+
+    for line in ["web = 80", "db=5432", "bad", "x = y", "big = 70000"] {
+        c := parse_config(line) or {
+            print("skipped:", err)
+            continue
+        }
+        print(c)
+    }
+
+    print(int("12") or 0, int(" 7 ") or 0, int("seven") or 0, float("2.5") or 0, float("") or -1.0)
+
+    text := read_file("does/not/exist.txt") or "default text"
+    print(text)
+    read_file("does/not/exist.txt") or { print("read failed:", err.starts_with("can't read the file")) }
+
+    save("", "x") or { print("save failed:", err) }
+    try save("errors_tmp.txt", "saved")
+    print(try read_file("errors_tmp.txt"))
+    try delete_file("errors_tmp.txt")
+    delete_file("errors_tmp.txt") or { print("second delete failed") }
+
+    a := Account(100)
+    a.withdraw(30) or { print("no") }
+    a.withdraw(500) or { print(err) }
+    print(a.balance)
+
+    print(first_number(["a", "b", "42", "7"]) or 0, first_number(["x"]) or -1)
+
+    // nested: the fallback can be another call that may fail
+    print(parse_port("x") or parse_port("443") or 0)
+
+    try parse_port("not a port")   // main fails: prints the error, exit code 1
+    print("never printed")
+}

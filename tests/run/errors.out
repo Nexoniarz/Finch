@@ -1,0 +1,19 @@
+80
+-1
+-1
+Config(name: "web", port: 80)
+Config(name: "db", port: 5432)
+skipped: expected name=port, got 'bad'
+skipped: the port 'y' is not a number
+skipped: the port 70000 is out of range
+12 7 0 2.5 -1
+default text
+read failed: true
+save failed: no file name
+saved
+second delete failed
+not enough money: 70 < 500
+70
+42 -1
+443
+error: the port 'not a port' is not a number

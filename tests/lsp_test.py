@@ -131,6 +131,61 @@ check("error shown while typing", diags and "must be int, but this is str" in di
 c.notify("textDocument/didChange", {"textDocument": {"uri": uri, "version": 7}, "contentChanges": [{"text": src}]})
 check("error cleared after the fix", c.diagnostics(uri) == [])
 
+# methods, maps, errors as values
+src2 = """struct Counter {
+    int count
+}
+
+fn Counter.add(int n) {
+    self.count += n
+}
+
+fn parse(str s) -> int! {
+    return int(s) or { return error("bad") }
+}
+
+fn main() {
+    c := Counter(0)
+    c.add(2)
+    map[str]int m
+    n := parse("4") or 0
+    print(c, m, n)
+}
+"""
+lines2 = src2.split("\n")
+path2 = os.path.join(d, "more.fch")
+open(path2, "w").write(src2)
+uri2 = pathlib.Path(path2).resolve().as_uri()
+td2 = {"uri": uri2}
+c.notify("textDocument/didOpen", {"textDocument": {"uri": uri2, "languageId": "finch", "version": 1, "text": src2}})
+check("methods, maps and errors compile", c.diagnostics(uri2) == [])
+h = c.request("textDocument/hover", {"textDocument": td2, "position": {"line": 14, "character": lines2[14].index("add")}})
+check("hover: method signature", h and "fn Counter.add(int n)" in h["contents"]["value"], h)
+h = c.request("textDocument/hover", {"textDocument": td2, "position": {"line": 16, "character": lines2[16].index("parse")}})
+check("hover: fallible signature", h and "-> int!" in h["contents"]["value"], h)
+defn = c.request("textDocument/definition", {"textDocument": td2, "position": {"line": 14, "character": lines2[14].index("add")}})
+check("definition: method", defn and defn["range"]["start"]["line"] == 4, defn)
+
+for text, line, col, want, what in [
+        ("    c.\n", 18, 6, ["add", "count"], "completion: methods and fields after c."),
+        ("    m.\n", 18, 6, ["has", "get", "keys", "remove"], "completion: map methods"),
+]:
+    e2 = src2.replace("    print(c, m, n)\n", "    print(c, m, n)\n" + text)
+    c.notify("textDocument/didChange", {"textDocument": {"uri": uri2, "version": 2}, "contentChanges": [{"text": e2}]})
+    comp = c.request("textDocument/completion", {"textDocument": td2, "position": {"line": line, "character": col}})
+    labels = [i["label"] for i in comp["items"]]
+    check(what, all(x in labels for x in want), labels)
+
+e2 = src2.replace("    print(c, m, n)\n", "    print(c, m, n)\n    c.add(\n")
+c.notify("textDocument/didChange", {"textDocument": {"uri": uri2, "version": 3}, "contentChanges": [{"text": e2}]})
+sig = c.request("textDocument/signatureHelp", {"textDocument": td2, "position": {"line": 18, "character": 10}})
+check("signature help: method", sig and sig["signatures"][0]["label"].startswith("fn Counter.add"), sig)
+
+e2 = src2.replace('n := parse("4") or 0', 'n := parse("4")')
+c.notify("textDocument/didChange", {"textDocument": {"uri": uri2, "version": 4}, "contentChanges": [{"text": e2}]})
+diags = c.diagnostics(uri2)
+check("error: unhandled failure", diags and "can fail" in diags[0]["message"], diags)
+
 c.request("shutdown", None)
 c.notify("exit", None)
 c.p.wait(timeout=5)

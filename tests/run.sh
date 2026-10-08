@@ -27,7 +27,8 @@ for f in run/*.fch; do
     if [ "${MEMCHECK:-0}" = 1 ]; then
         exe="$tmp/$(basename "${f%.fch}")"
         "$FINCH" build "$f" -o "$exe" >/dev/null 2>&1
-        if ! valgrind -q --leak-check=full --errors-for-leak-kinds=all --error-exitcode=99 "$exe" < "$input" >/dev/null 2>"$tmp/vg"; then
+        valgrind -q --leak-check=full --errors-for-leak-kinds=all --error-exitcode=99 "$exe" < "$input" >/dev/null 2>"$tmp/vg"
+        if [ $? -eq 99 ]; then  # (other exit codes are the program's own)
             failed=$((failed + 1))
             echo "MEMCHECK FAIL $f"
             head -20 "$tmp/vg"

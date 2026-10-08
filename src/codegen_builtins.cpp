@@ -9,7 +9,7 @@ namespace finch {
 
 bool Codegen::isBuiltin(const std::string &n) {
     static const std::set<std::string> names = {"print", "addr", "input", "new", "free", "read_file", "write_file",
-                                                "file_exists", "delete_file", "exit", "shell"};
+                                                "file_exists", "delete_file", "exit", "shell", "error"};
     FType t;
     return names.count(n) || typeFromName(n, t);
 }
@@ -95,6 +95,28 @@ Function *Codegen::rt(const std::string &name) {
         {"finch_shell", {I, {P}}},
         {"finch_delete_file", {I32, {P}}},
         {"finch_std_stream", {P, {I32}}},
+        {"finch_str_try_int", {I32, {P, P, P}}},
+        {"finch_str_try_float", {I32, {P, P, P}}},
+        {"finch_try_read_file", {I32, {P, P, P}}},
+        {"finch_try_write_file", {I32, {P, P, P}}},
+        {"finch_try_delete_file", {I32, {P, P}}},
+        {"finch_report_error", {V, {P}}},
+        {"finch_map_find", {I, {P, P, I, I, I32}}},
+        {"finch_map_slot", {I, {P, P, I, I, I32, P}}},
+        {"finch_map_remove_at", {V, {P, I, I}}},
+        {"finch_map_clear", {V, {P}}},
+        {"finch_map_free", {V, {P}}},
+        {"finch_map_clone_raw", {V, {P, P, I}}},
+        {"finch_map_missing", {V, {P, I, P}}},
+        {"finch_buf_add", {V, {P, P, I}}},
+        {"finch_buf_int", {V, {P, I}}},
+        {"finch_buf_uint", {V, {P, I}}},
+        {"finch_buf_float", {V, {P, D}}},
+        {"finch_buf_bool", {V, {P, I32}}},
+        {"finch_buf_ptr", {V, {P, P}}},
+        {"finch_buf_char", {V, {P, b.getInt8Ty(), I32}}},
+        {"finch_buf_str", {V, {P, P, I32}}},
+        {"finch_buf_print", {V, {P}}},
     };
     auto it = sigs.find(name);
     if (it == sigs.end()) {
@@ -103,11 +125,11 @@ Function *Codegen::rt(const std::string &name) {
     }
     Function *f = Function::Create(FunctionType::get(it->second.ret, it->second.params, false), Function::ExternalLinkage,
                                    name, mod.get());
-    if (name == "finch_panic" || name == "finch_panic_index") {
+    if (name == "finch_panic" || name == "finch_panic_index" || name == "finch_map_missing") {
         f->addFnAttr(Attribute::NoReturn);
         f->addFnAttr(Attribute::Cold);
     }
-    if (name == "finch_str_from_char") f->addParamAttr(1, Attribute::SExt);
+    if (name == "finch_str_from_char" || name == "finch_buf_char") f->addParamAttr(1, Attribute::SExt);
     return f;
 }
 
@@ -185,6 +207,14 @@ Value_ Codegen::call(const CallExpr &c) {
         return *c.args[0];
     };
 
+    bool canFail = &c == fallibleTarget;  // inside `... or ...` / `try ...`: report failures instead of stopping
+    // a failure: set the flag and message that `or` / `try` look at
+    auto failedIf = [&](Value *ok, Value *errSlot) {
+        fallibleFailed = b.CreateICmpEQ(ok, b.getInt32(0));
+        fallibleMsg = b.CreateLoad(ty(FType::Str), errSlot);
+    };
+    if (n == "error")
+        failAt(p.file, p.line, p.col, "error(...) makes an error to return from a function that can fail: return error(\"...\")");
     if (n == "print") {
         checkArgs(c.args, c.argNames, 0, p, n, true);
         return print(c.args, p);
@@ -237,6 +267,13 @@ Value_ Codegen::call(const CallExpr &c) {
         Value_ path = coerce(expr(one("path")), FType::Str, c.args[0]->pos, "the file name");
         Value *ss = tmpOf(ty(FType::Str));
         b.CreateCall(rt("finch_str_copy"), {ss, tmp(path.v)});  // NUL-terminated copy
+        if (canFail) {
+            Value *err = tmp(zero(FType::Str));
+            failedIf(b.CreateCall(rt("finch_try_delete_file"), {ss, err}), err);
+            dropAt(ss, FType::Str);
+            release(path);
+            return {nullptr, FType::Void};
+        }
         Value *r = b.CreateCall(rt("finch_delete_file"), {ss});
         dropAt(ss, FType::Str);
         release(path);
@@ -248,6 +285,10 @@ Value_ Codegen::call(const CallExpr &c) {
         Value_ res;
         if (n == "file_exists") {
             res = {b.CreateICmpNE(b.CreateCall(rt("finch_file_exists"), {pp}), b.getInt32(0)), FType::Bool};
+        } else if (canFail) {
+            Value *out = tmp(zero(FType::Str)), *err = tmp(zero(FType::Str));
+            failedIf(b.CreateCall(rt("finch_try_read_file"), {out, pp, err}), err);
+            res = {b.CreateLoad(ty(FType::Str), out), FType::Str, false, true};
         } else {
             Value *out = tmpOf(ty(FType::Str));
             b.CreateCall(rt("finch_read_file"), {out, pp, fileName(p), b.getInt64(p.line)});
@@ -269,6 +310,13 @@ Value_ Codegen::call(const CallExpr &c) {
         checkArgs(c.args, c.argNames, 2, p, n);
         Value_ path = coerce(expr(*c.args[0]), FType::Str, c.args[0]->pos, "the file name");
         Value_ text = coerce(expr(*c.args[1]), FType::Str, c.args[1]->pos, "the text");
+        if (canFail) {
+            Value *err = tmp(zero(FType::Str));
+            failedIf(b.CreateCall(rt("finch_try_write_file"), {tmp(path.v), tmp(text.v), err}), err);
+            release(path);
+            release(text);
+            return {nullptr, FType::Void};
+        }
         Value *ok = b.CreateCall(rt("finch_write_file"), {tmp(path.v), tmp(text.v)});
         release(path);
         release(text);
@@ -277,13 +325,13 @@ Value_ Codegen::call(const CallExpr &c) {
     FType target;
     if (typeFromName(n, target)) {
         checkArgs(c.args, c.argNames, 1, p, n);
-        return convert(target, c.args, p, n);
+        return convert(target, c.args, p, n, canFail);
     }
 
     ModuleScope &m = modules[curModule];
     if (auto it = m.fns.find(n); it != m.fns.end()) {
         note(p, n.size(), "```finch\n" + signature(it->second) + "\n```", it->second.decl->namePos);
-        return callFinch(it->second, c.args, c.argNames, p, n);
+        return callFinch(it->second, c.args, c.argNames, p, n, &c);
     }
     if (StructInfo *s = findStruct("", n, false)) {
         note(p, n.size(), structHover(s), s->decl ? s->decl->namePos : Pos{});
@@ -303,20 +351,33 @@ Value_ Codegen::call(const CallExpr &c) {
 }
 
 Value_ Codegen::callFinch(const Fn &fn, const std::vector<ExprPtr> &args, const std::vector<std::string> &names, Pos p,
-                          const std::string &shown) {
+                          const std::string &shown, const Expr *site, Value *self, const std::string &selfRoot) {
     const FnDecl &d = *fn.decl;
-    if (fn.module.empty() && d.name == "main") failAt(p.file, p.line, p.col, "main can't be called, it is where the program starts");
+    if (fn.module.empty() && d.name == "main" && !fn.recv) failAt(p.file, p.line, p.col, "main can't be called, it is where the program starts");
+    if (fn.fallible && site != fallibleTarget)
+        failAt(p.file, p.line, p.col, "'" + shown + "' can fail, so say what happens then:  " + shown + "(...) or <value>,  " + shown +
+                                          "(...) or { ... },  or  try " + shown + "(...)");
     checkArgs(args, names, fn.params.size(), p, shown);
     std::vector<Value *> vals;
     std::vector<Value_> fresh;
+    if (self) vals.push_back(self);
     for (size_t i = 0; i < args.size(); i++) {
         Value_ v = coerce(exprWant(*args[i], fn.params[i]), fn.params[i], args[i]->pos, "argument '" + d.params[i].name + "'");
+        // a method that changes self gets its own copy of anything that lives inside self (p.add(p.items))
+        if (fn.mutatesSelf && !selfRoot.empty() && owning(v.type) && !v.fresh && rootVar(*args[i]) == selfRoot)
+            v = {copyValue(v.v, v.type), v.type, false, true};
         vals.push_back(v.v);  // owning values are lent: the function never drops them
         if (v.fresh) fresh.push_back(v);
     }
     setLoc(p);
     Value *r = b.CreateCall(fn.llvm, vals);
     for (auto &v : fresh) release(v);
+    if (fn.fallible) {
+        fallibleFailed = b.CreateNot(b.CreateExtractValue(r, 0));
+        fallibleMsg = b.CreateExtractValue(r, 2);
+        if (fn.ret.kind == FType::Void) return {nullptr, FType::Void};
+        return {b.CreateExtractValue(r, 1), fn.ret, false, owning(fn.ret)};
+    }
     if (fn.ret.kind == FType::Void) return {nullptr, FType::Void};
     return {r, fn.ret, false, owning(fn.ret)};
 }
@@ -433,7 +494,7 @@ Value_ Codegen::addrOf(const std::vector<ExprPtr> &args, Pos p) {
 }
 
 // Explicit conversions: int(x), u8(x), float(x), char(x), bool(x), str(x), ptr(x) ...
-Value_ Codegen::convert(const FType &to, const std::vector<ExprPtr> &args, Pos, const std::string &name) {
+Value_ Codegen::convert(const FType &to, const std::vector<ExprPtr> &args, Pos, const std::string &name, bool canFail) {
     Value_ v = expr(*args[0]);
     const FType &from = v.type;
     Pos p = args[0]->pos;
@@ -449,12 +510,28 @@ Value_ Codegen::convert(const FType &to, const std::vector<ExprPtr> &args, Pos, 
         else if (from.kind == FType::Array && (from.elem->kind == FType::U8 || from.elem->kind == FType::Char)) {
             b.CreateCall(rt("finch_str_from_bytes"), {out, tmp(v.v)});
             release(v);
+        } else if (from.kind == FType::Array || from.kind == FType::Fixed || from.kind == FType::Map || from.kind == FType::Struct) {
+            b.CreateStore(zero(FType::Str), out);  // the same text print(...) shows
+            emitFormat(out, v.v, from, false);
+            release(v);
         } else {
             failAt(p.file, p.line, p.col, "can't turn " + from.show() + " into str");
         }
         return {b.CreateLoad(ty(FType::Str), out), FType::Str, false, true};
     }
     if (from == to) return v;
+    if (from.kind == FType::Str && (to.isInt() || to.isFloat()) && canFail) {  // int(text) or 0
+        Value *sp = tmp(v.v), *err = tmp(zero(FType::Str));
+        Value *out = tmp(to.isInt() ? (Value *)b.getInt64(0) : ConstantFP::get(b.getDoubleTy(), 0));
+        Value *ok = b.CreateCall(rt(to.isInt() ? "finch_str_try_int" : "finch_str_try_float"), {sp, out, err});
+        fallibleFailed = b.CreateICmpEQ(ok, b.getInt32(0));
+        fallibleMsg = b.CreateLoad(ty(FType::Str), err);
+        Value_ r;
+        if (to.isInt()) r = {intCast(b.CreateLoad(b.getInt64Ty(), out), FType::I64, to), to};
+        else r = {b.CreateFPCast(b.CreateLoad(b.getDoubleTy(), out), ty(to)), to};
+        release(v);
+        return r;
+    }
     if (from.kind == FType::Str && (to.isInt() || to.isFloat())) {
         Value *sp = tmp(v.v);
         Value_ r;
@@ -494,7 +571,7 @@ Value_ Codegen::method(const MethodExpr &m) {
             Pos namePos{p.line, p.col + 1, p.file};
             if (auto it = mi->second.fns.find(m.name); it != mi->second.fns.end()) {
                 note(namePos, m.name.size(), "```finch\n" + signature(it->second) + "\n```", it->second.decl->namePos);
-                return callFinch(it->second, m.args, m.argNames, p, mn + "." + m.name);
+                return callFinch(it->second, m.args, m.argNames, p, mn + "." + m.name, &m);
             }
             if (auto it = mi->second.structs.find(m.name); it != mi->second.structs.end()) {
                 note(namePos, m.name.size(), structHover(it->second), it->second->decl->namePos);
@@ -507,8 +584,20 @@ Value_ Codegen::method(const MethodExpr &m) {
                    "there is no variable or module named '" + mn + "' (to use a module, add  import " + mn + "  at the top)");
     }
     static const std::set<std::string> changing = {"push", "pop", "insert", "remove", "clear", "resize", "sort", "reverse"};
-    LRef r = ref(*m.obj, changing.count(m.name) > 0);
+    // writing through a map's m[key] adds the key if it's missing: groups[k].push(x)
+    LRef r = ref(*m.obj, changing.count(m.name) > 0 || mutatingMethods.count(m.name) > 0);
     FType t = r.isPlace ? r.pl.type : r.val.type;
+    if (t.kind == FType::Struct || (t.isPtr() && t.elem && t.elem->kind == FType::Struct)) return structMethod(m, r, t);
+    if (changing.count(m.name) && (t.kind == FType::Array || t.kind == FType::Map)) {
+        std::string root = rootVar(*m.obj);
+        if (Var *v = root.empty() ? nullptr : lookup(root); v && v->readonly) failAt(p.file, p.line, p.col, v->readonlyWhy);
+    }
+    if (t.kind == FType::Map) {
+        Value_ recv = r.isPlace ? Value_{r.pl.addr, t} : Value_{tmp(r.val.v), t, false, r.val.fresh};
+        Value_ out = mapMethod(m, &recv);
+        if (!r.isPlace && r.val.fresh) dropAt(recv.v, t);
+        return out;
+    }
     if (g_index && (t.kind == FType::Array || t.kind == FType::Str)) {
         auto look = [&](const BuiltinDoc *first, const BuiltinDoc *last) {
             for (; first != last; ++first)
@@ -589,9 +678,45 @@ Value_ Codegen::method(const MethodExpr &m) {
         if (!r.isPlace) release(sv);
         return res;
     }
-    if (t.kind == FType::Struct)
-        failAt(p.file, p.line, p.col, "structs don't have methods; write a function and call it: " + m.name + "(value, ...)");
     failAt(p.file, p.line, p.col, t.show() + " has no methods");
+}
+
+// p.move(1, 2): a method of a struct (also through a ptr[Struct]); self is passed by address
+Value_ Codegen::structMethod(const MethodExpr &m, LRef &r, const FType &t) {
+    Pos p = m.pos;
+    FType st = t.isPtr() ? *t.elem : t;
+    auto ms = methods.find(st.info);
+    const Fn *fn = nullptr;
+    if (ms != methods.end())
+        if (auto it = ms->second.find(m.name); it != ms->second.end()) fn = &it->second;
+    if (!fn) {
+        std::string names;
+        if (ms != methods.end())
+            for (auto &[n, f] : ms->second) names += (names.empty() ? "" : ", ") + n;
+        if (names.empty())
+            failAt(p.file, p.line, p.col, "the struct " + st.show() + " has no methods; add one with  fn " + st.name + "." + m.name + "(...) { ... }");
+        failAt(p.file, p.line, p.col, "the struct " + st.show() + " has no method '" + m.name + "' (it has: " + names + ")");
+    }
+    note(Pos{p.line, p.col + 1, p.file}, m.name.size(), "```finch\n" + signature(*fn) + "\n```", fn->decl->namePos);
+    std::string root = rootVar(*m.obj);
+    if (fn->mutatesSelf && !root.empty() && !t.isPtr())
+        if (Var *v = lookup(root); v && v->readonly) failAt(p.file, p.line, p.col, v->readonlyWhy);
+
+    Value *self;
+    bool temp = false;
+    if (t.isPtr()) {
+        self = r.isPlace ? b.CreateLoad(b.getPtrTy(), r.pl.addr) : r.val.v;
+        panicIf(b.CreateIsNull(self), "called ." + m.name + "() on a null pointer", p);
+        root.clear();  // self lives somewhere else
+    } else if (r.isPlace) {
+        self = r.pl.addr;
+    } else {
+        self = tmp(r.val.v);  // a temporary struct: Point(1, 2).length()
+        temp = true;
+    }
+    Value_ out = callFinch(*fn, m.args, m.argNames, p, st.name + "." + m.name, &m, self, root);
+    if (temp && r.val.fresh && owning(st)) dropAt(self, st);
+    return out;
 }
 
 // An element compare for find/contains/sort: -1, 0, 1 (only numbers, chars, bools and str)

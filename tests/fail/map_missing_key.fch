@@ -1,0 +1,5 @@
+// expect: the key "zoe" is not in the map
+fn main() {
+    ages := ["anna": 31]
+    print(ages["zoe"])
+}

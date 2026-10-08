@@ -77,7 +77,7 @@ Jeśli ostatnia linijka skończy się bez słowa `error`, Finch jest gotowy.
 ./build/finch version
 ```
 
-Powinieneś zobaczyć coś w stylu `finch 2.3.0`.
+Powinieneś zobaczyć coś w stylu `finch 2.4.0`.
 
 ---
 
@@ -510,8 +510,68 @@ fn main() {
 }
 ```
 
+Jeśli chcesz też wiedzieć, *w którym miejscu* listy jesteś, daj `for` dwie nazwy: pierwsza liczy
+0, 1, 2…, druga to wartość:
+
+```c
+fn main() {
+    for i, owoc in ["jabłko", "banan", "wiśnia"] {
+        print(i + 1, owoc)
+    }
+}
+```
+
+```
+1 jabłko
+2 banan
+3 wiśnia
+```
+
 Listy umieją więcej: `contains` (czy zawiera), `find` (znajdź), `insert` (wstaw), `remove` (usuń),
-`sort` (sortuj), `reverse` (odwróć), `join` (połącz). Wszystkie opisuje [przewodnik dla techników](dla-technikow.md#tablice).
+`sort` (sortuj), `reverse` (odwróć), `join` (połącz). Wszystkie opisuje [przewodnik dla techników](dla-technikow.md#10-tablice-i-mapy).
+
+### Szukanie po nazwie: mapy
+
+Lista znajduje rzeczy po miejscu: `owoce[0]`. Czasem chcesz znaleźć coś po **nazwie**, tak jak
+słowo w słowniku albo numer w książce telefonicznej. Do tego służy **mapa** (`map`): każdy
+**klucz** (nazwa) ma swoją **wartość**:
+
+```c
+fn main() {
+    telefon := ["Ola": "555-1234", "Jan": "555-9876"]
+    print(telefon["Ola"])          // 555-1234
+
+    telefon["Ewa"] = "555-0000"    // nowa osoba
+    print(telefon.len)             // 3
+
+    if telefon.has("Tomek") {
+        print("Tomek jest")
+    } else {
+        print("nie ma Tomka")
+    }
+
+    for imie, numer in telefon {   // każde imię z jego numerem
+        print(imie, numer)
+    }
+}
+```
+
+- `["klucz": wartość, ...]` tworzy mapę. Klucze to zwykle tekst, ale mogą być też liczby.
+- `telefon["Ola"]` daje wartość dla klucza. Pytanie o klucz, którego nie ma, zatrzymuje program,
+  więc najpierw sprawdź `telefon.has("Tomek")` (czy ma) albo użyj `telefon.get("Tomek", "nie wiem")`.
+- `for imie, numer in telefon` odwiedza każdy klucz z wartością, w kolejności dodawania.
+
+Mapy świetnie nadają się do **liczenia**. Nowy klucz zaczyna od 0, więc `+= 1` po prostu działa:
+
+```c
+fn main() {
+    map[str]int glosy             // pusta mapa: klucze to tekst, wartości to liczby
+    for g in ["kot", "pies", "kot", "kot", "rybka"] {
+        glosy[g] += 1
+    }
+    print(glosy)                  // {"kot": 3, "pies": 1, "rybka": 1}
+}
+```
 
 ---
 
@@ -625,6 +685,36 @@ fn main() {
 
 Możesz też trzymać wiele struktur na liście: `[]Ksiazka polka`, a potem `polka.push(k)`.
 
+### Polecenia twojej struktury: metody
+
+Struktura może mieć własne polecenia (**metody**). Napisz nazwę struktury, kropkę i nazwę polecenia.
+W środku `self` (ang. „sam”) to struktura, na której użyto polecenia:
+
+```c
+struct Gracz {
+    str imie
+    int zycia = 3
+}
+
+fn Gracz.trafiony() {
+    self.zycia -= 1
+    print(self.imie, "ma jeszcze", self.zycia, "życia")
+}
+
+fn Gracz.zyje() -> bool {
+    return self.zycia > 0
+}
+
+fn main() {
+    g := Gracz(imie: "Ola")
+    g.trafiony()             // Ola ma jeszcze 2 życia
+    g.trafiony()             // Ola ma jeszcze 1 życia
+    print(g.zyje())          // true
+}
+```
+
+`g.trafiony()` zmienia samo `g`, więc po dwóch trafieniach `g.zycia` naprawdę wynosi 1.
+
 ---
 
 ## 15. Zapisywanie do pliku
@@ -688,6 +778,57 @@ Tutaj po prostu źle napisaliśmy `wiek`. Komunikat znaczy: „nie ma zmiennej o
 | `index 5 is out of range (the length is 3)` | Zapytałeś listę o miejsce, którego nie ma | Pamiętaj, że liczymy od 0; sprawdź `.len` |
 | `can't turn "abc" into int` | `int(...)` dostał tekst, który nie jest liczbą | Sprawdź, co wpisał użytkownik |
 | `can't use '+' on str and int` | Tekst plus liczba | Zamień liczbę na tekst przez `str(...)` |
+| `'f' can fail, so say what happens then` | Użyłeś polecenia, które może się nie udać, i nie napisałeś, co wtedy | Dopisz `or ...` (niżej) |
+
+### Rzeczy, które mogą się nie udać: `or` i `try`
+
+Niektóre rzeczy mogą pójść źle *w trakcie działania programu*: ktoś wpisze `abc` zamiast liczby
+albo pliku nie ma. Zamiast zatrzymywać program, możesz powiedzieć, co wtedy zrobić, słowem **`or`** („albo”):
+
+```c
+fn main() {
+    wiek := int(input("Ile masz lat? ")) or 0      // to nie liczba? weź 0
+    print("Za rok będziesz mieć", wiek + 1)
+
+    notatka := read_file("notatka.txt") or "(jeszcze brak notatki)"
+    print(notatka)
+}
+```
+
+Po `or` może też być blok. W środku `err` to komunikat, co poszło nie tak:
+
+```c
+fn main() {
+    while true {
+        n := int(input("Podaj liczbę: ")) or {
+            print("To nie jest liczba, spróbuj jeszcze raz")
+            continue
+        }
+        print("Wybrałeś", n)
+        break
+    }
+}
+```
+
+Twoje własne funkcje też mogą się nie udać. Dopisz `!` po typie wyniku i użyj `return error("...")`:
+
+```c
+fn bezpieczne_dzielenie(int a, int b) -> int! {
+    if b == 0 {
+        return error("nie można dzielić przez zero")
+    }
+    return a / b
+}
+
+fn main() {
+    print(bezpieczne_dzielenie(10, 2) or -1)     // 5
+    print(bezpieczne_dzielenie(10, 0) or -1)     // -1
+}
+```
+
+Finch nie pozwoli ci zapomnieć: wywołanie `bezpieczne_dzielenie(10, 0)` bez `or` to błąd, który
+przypomina, żeby to obsłużyć. (Można też przekazać problem dalej przez `try`; wyjaśnia to
+[przewodnik dla techników](dla-technikow.md#błędy-jako-wartości).)
 
 ---
 
@@ -889,10 +1030,13 @@ struct Zwierzak {                 // własny rodzaj wartości
     int wiek = 1
 }
 
-// listy:  liczby := [1, 2, 3]   liczby.push(4)   liczby[0]   liczby.len   for n in liczby { }
+// listy:  liczby := [1, 2, 3]   liczby.push(4)   liczby[0]   liczby.len   for n in liczby { }   for i, n in liczby { }
+// mapy:   wiek := ["Ola": 9]   wiek["Jan"] = 10   wiek["Ola"]   wiek.has("Tomek")   for imie, lata in wiek { }
 // tekst:  "a" + "b"   str(42)   int("42")   s.len   s.upper()   s.contains("x")
 // pytanie: imie := input("Imię? ")
 // pliki:  write_file("p.txt", tekst)   read_file("p.txt")
+// metody: fn Zwierzak.urosnij() { self.wiek += 1 }    z.urosnij()
+// porażki: n := int(tekst) or 0      x := read_file("p.txt") or { print(err) ... }
 ```
 
 ---
@@ -913,6 +1057,8 @@ struct Zwierzak {                 // własny rodzaj wartości
 | **lista / tablica** | Wiele wartości po kolei, np. `[1, 2, 3]` |
 | **indeks** | Pozycja wartości na liście, liczona od 0 |
 | **struktura** (struct) | Własny rodzaj wartości złożony z nazwanych części |
+| **metoda** | Polecenie należące do struktury, np. `g.trafiony()` |
+| **mapa** (map) | Wartości znajdowane po kluczu (nazwie), jak w słowniku |
 | **wejście** (input) | To, co użytkownik wpisuje do programu |
 | **błąd** (error) | Komunikat, że coś jest nie tak, i gdzie |
 | **bug** | Pomyłka w programie |
@@ -934,6 +1080,11 @@ struct Zwierzak {                 // własny rodzaj wartości
 | `input` | wejście (pytanie) |
 | `len` (od *length*) | długość |
 | `error` | błąd |
+| `or` | albo (co zrobić, gdy się nie uda) |
+| `try` | spróbuj (a jak się nie uda, przekaż błąd dalej) |
+| `self` | sam (struktura, na której użyto metody) |
+| `map` | mapa (słownik) |
+| `has` / `get` | ma / weź |
 
 ---
 

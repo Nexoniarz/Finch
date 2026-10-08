@@ -1,0 +1,4 @@
+// expect: error(...) makes an error to return from a function that can fail
+fn main() {
+    e := error("oops")
+}

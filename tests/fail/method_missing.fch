@@ -1,0 +1,8 @@
+// expect: the struct Point has no methods; add one with  fn Point.norm(...) { ... }
+struct Point {
+    int x
+}
+fn main() {
+    p := Point(1)
+    print(p.norm())
+}

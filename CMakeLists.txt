@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(finch VERSION 2.3.0 LANGUAGES C CXX)  # C: LLVM's CMake config checks C headers on some systems
+project(finch VERSION 2.4.0 LANGUAGES C CXX)  # C: LLVM's CMake config checks C headers on some systems
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,6 +15,7 @@ add_executable(finch
     src/codegen.cpp
     src/codegen_types.cpp
     src/codegen_builtins.cpp
+    src/codegen_map.cpp
     src/abi.cpp
     src/cimport.cpp
     src/target.cpp

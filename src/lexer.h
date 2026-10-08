@@ -9,6 +9,7 @@ enum class Tok {
 
     // keywords
     Fn, Return, If, Else, While, For, In, Break, Continue, True, False, Null, Import, Link, Struct, Defer,
+    OrElse, Try,  // or, try
 
     // punctuation
     LParen, RParen, LBrace, RBrace, LBracket, RBracket, Comma, Colon, Dot, DotDot, Arrow,

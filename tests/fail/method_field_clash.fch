@@ -1,0 +1,9 @@
+// expect: the struct Point already has a field named 'x'
+struct Point {
+    int x
+}
+fn Point.x() -> int {
+    return 1
+}
+fn main() {
+}

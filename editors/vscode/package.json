@@ -2,7 +2,7 @@
   "name": "finch-lang",
   "displayName": "Finch",
   "description": "The Finch programming language: highlighting, errors as you type, completion, hover, go to definition, and a Run button.",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "publisher": "nexoniarz",
   "license": "Apache-2.0",
   "icon": "images/icon.png",

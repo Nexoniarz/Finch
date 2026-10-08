@@ -1,0 +1,10 @@
+// expect: try passes the error on, so 'twice' must be able to fail too (-> int!)
+fn parse(str s) -> int! {
+    return int(s) or { return error("bad") }
+}
+fn twice(str s) -> int {
+    return try parse(s) * 2
+}
+fn main() {
+    print(twice("2"))
+}

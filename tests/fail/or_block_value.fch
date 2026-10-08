@@ -1,0 +1,5 @@
+// expect: this block must leave with return, break, continue or exit
+fn main() {
+    n := int("x") or { print("not a number") }
+    print(n)
+}

@@ -11,18 +11,19 @@ struct BuiltinDoc {
 inline const BuiltinDoc kBuiltins[] = {
     {"print", "print(a, b, ...)", "Prints the values separated by spaces, then a new line. Works with every type."},
     {"input", "input(str question = \"\") -> str", "Shows the question and reads one line typed by the user, without the newline."},
-    {"read_file", "read_file(str path) -> str", "The whole file as text. Stops the program if it can't be read."},
-    {"write_file", "write_file(str path, str text) -> bool", "Writes (replaces) the file. true if it worked."},
+    {"read_file", "read_file(str path) -> str", "The whole file as text. Stops the program if it can't be read, unless handled: read_file(p) or { ... }, try read_file(p)."},
+    {"write_file", "write_file(str path, str text) -> bool", "Writes (replaces) the file. true if it worked; with or / try, the reason it didn't."},
     {"file_exists", "file_exists(str path) -> bool", "Is there a file at this path?"},
-    {"delete_file", "delete_file(str path) -> bool", "Deletes the file. true if it worked."},
+    {"delete_file", "delete_file(str path) -> bool", "Deletes the file. true if it worked; with or / try, the reason it didn't."},
+    {"error", "error(str message)", "The failure a fallible function returns: return error(\"...\"). The caller handles it with or / try."},
     {"shell", "shell(str command) -> int", "Runs a command in the system's shell and gives back its exit code."},
     {"exit", "exit(int code)", "Ends the program right away with this exit code."},
     {"addr", "addr(x) -> ptr[T]", "A pointer to a variable, field or element. addr(function) gives C a callback."},
     {"new", "new(value) -> ptr[T]", "Puts a copy of the value on the heap. Give it back with free(...)."},
     {"free", "free(ptr p)", "Gives back memory from new(...) (or from C), freeing what the value owns."},
     {"str", "str(x) -> str", "Turns a number, bool, char, []u8 or C char pointer into text."},
-    {"int", "int(x) -> int", "Converts to a whole number: cuts off fractions, parses text (stops the program if it isn't a number)."},
-    {"float", "float(x) -> float", "Converts to a decimal number; parses text."},
+    {"int", "int(x) -> int", "Converts to a whole number: cuts off fractions, parses text (stops the program if it isn't a number, unless handled: int(s) or 0)."},
+    {"float", "float(x) -> float", "Converts to a decimal number; parses text (int(s) or 0.0 handles bad text)."},
     {"char", "char(int n) -> char", "The character with this code."},
     {"bool", "bool(int n) -> bool", "true for any number but 0."},
     {"ptr", "ptr(x) -> ptr", "An untyped pointer: from a typed pointer, or from a number (an address or offset for C)."},
@@ -62,8 +63,18 @@ inline const BuiltinDoc kStrMethods[] = {
     {"bytes", "bytes() -> []u8", "The bytes of the text."},
 };
 
-inline const char *kKeywords[] = {"fn", "return", "if", "else", "while", "for", "in", "break", "continue", "true",
-                                  "false", "null", "import", "link", "struct", "defer"};
+inline const BuiltinDoc kMapMethods[] = {
+    {"len", ".len -> int", "The number of keys."},
+    {"has", "has(K key) -> bool", "Is the key in the map?"},
+    {"get", "get(K key, V default) -> V", "The value for key, or default if the key isn't there."},
+    {"remove", "remove(K key) -> bool", "Removes the key and its value; true if it was there."},
+    {"clear", "clear()", "Removes everything."},
+    {"keys", "keys() -> []K", "The keys, in the order they were added."},
+    {"values", "values() -> []V", "The values, in the order their keys were added."},
+};
 
-inline const char *kTypeNames[] = {"int", "float", "bool", "char", "str", "ptr", "i8", "i16", "i32", "i64",
+inline const char *kKeywords[] = {"fn", "return", "if", "else", "while", "for", "in", "break", "continue", "true",
+                                  "false", "null", "import", "link", "struct", "defer", "or", "try", "self"};
+
+inline const char *kTypeNames[] = {"int", "float", "bool", "char", "str", "ptr", "map", "i8", "i16", "i32", "i64",
                                    "u8", "u16", "u32", "u64", "f32", "f64"};

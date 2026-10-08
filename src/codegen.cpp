@@ -39,6 +39,8 @@ std::unique_ptr<Module> Codegen::run() {
     if (!modules[""].fns.count("main")) failAt(0, 1, 1, "there is no main function (add 'fn main() { ... }')");
     for (auto &[name, m] : modules)
         for (auto &[fname, fn] : m.fns) define(fn);
+    for (auto &[s, ms] : methods)
+        for (auto &[mname, fn] : ms) define(fn);
     defineMainWrapper();
     if (di) di->finalize();
 
@@ -102,19 +104,72 @@ void Codegen::declareStructs() {
 void Codegen::declareFns() {
     for (const Program &p : progs)
         for (const FnDecl &fn : p.fns) declare(p, fn);
+
+    // Which methods change `self`? Calling one of them on something changes it too, so repeat until stable.
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (auto &[s, ms] : methods)
+            for (auto &[name, f] : ms)
+                if (!f.mutatesSelf && mutates("self", *f.decl->body)) {
+                    f.mutatesSelf = true;
+                    mutatingMethods.insert(name);
+                    changed = true;
+                }
+    }
+    // Owning parameters the function never changes are lent to it instead of copied.
+    auto borrow = [&](Fn &f) {
+        for (size_t i = 0; i < f.params.size(); i++)
+            f.borrowParam.push_back(owning(f.params[i]) && !mutates(f.decl->params[i].name, *f.decl->body));
+    };
+    for (auto &[name, m] : modules)
+        for (auto &[fname, f] : m.fns) borrow(f);
+    for (auto &[s, ms] : methods)
+        for (auto &[name, f] : ms) borrow(f);
+}
+
+FType Codegen::structType(StructInfo *s) {
+    FType t(FType::Struct);
+    t.info = s;
+    t.name = s->name;
+    t.module = s->module == "C" ? "" : s->module;
+    return t;
+}
+
+llvm::Type *Codegen::retType(const Fn &f) {
+    if (!f.fallible) return ty(f.ret);
+    llvm::Type *v = f.ret.kind == FType::Void ? (llvm::Type *)b.getInt8Ty() : ty(f.ret);
+    return StructType::get(ctx, {b.getInt1Ty(), v, ty(FType::Str)});
 }
 
 void Codegen::declare(const Program &p, const FnDecl &fn) {
     ModuleScope &m = modules[p.module];
     Pos pos = fn.pos;
-    if (m.fns.count(fn.name)) failAt(pos.file, pos.line, pos.col, "function '" + fn.name + "' is defined twice");
-    if (isBuiltin(fn.name)) failAt(pos.file, pos.line, pos.col, "'" + fn.name + "' is a built-in function, pick another name");
-    if (m.structs.count(fn.name)) failAt(pos.file, pos.line, pos.col, "'" + fn.name + "' is already the name of a struct");
-
     curModule = p.module;
+    StructInfo *recv = nullptr;
+    if (!fn.recv.empty()) {  // fn Point.move(...)
+        Pos rp = fn.recvPos;
+        recv = findStruct("", fn.recv, false);
+        if (!recv)
+            failAt(rp.file, rp.line, rp.col, "there is no struct named '" + fn.recv + "' here (a method goes in the same file as its struct, or on a struct from C)");
+        resolveStruct(recv);
+        for (auto &f : recv->fields)
+            if (f.name == fn.name && !f.hidden)
+                failAt(fn.namePos.file, fn.namePos.line, fn.namePos.col, "the struct " + recv->name + " already has a field named '" + fn.name + "'");
+        if (methods[recv].count(fn.name)) failAt(pos.file, pos.line, pos.col, "the method " + fn.recv + "." + fn.name + " is defined twice");
+        for (const Param &prm : fn.params)
+            if (prm.name == "self")
+                failAt(prm.namePos.file, prm.namePos.line, prm.namePos.col, "'self' is already the " + recv->name + " the method is called on");
+    } else {
+        if (m.fns.count(fn.name)) failAt(pos.file, pos.line, pos.col, "function '" + fn.name + "' is defined twice");
+        if (isBuiltin(fn.name)) failAt(pos.file, pos.line, pos.col, "'" + fn.name + "' is a built-in function, pick another name");
+        if (m.structs.count(fn.name)) failAt(pos.file, pos.line, pos.col, "'" + fn.name + "' is already the name of a struct");
+    }
+
     Fn f;
     f.decl = &fn;
     f.module = p.module;
+    f.recv = recv;
+    f.fallible = fn.fallible;
     f.ret = resolve(fn.ret, pos);
     for (const Param &prm : fn.params) f.params.push_back(resolve(prm.type, prm.pos));
 
@@ -128,14 +183,13 @@ void Codegen::declare(const Program &p, const FnDecl &fn) {
     }
 
     std::vector<llvm::Type *> params;
-    for (size_t i = 0; i < f.params.size(); i++) {
-        params.push_back(ty(f.params[i]));
-        f.borrowParam.push_back(owning(f.params[i]) && !mutates(fn.params[i].name, *fn.body));
-    }
+    if (recv) params.push_back(b.getPtrTy());  // self
+    for (size_t i = 0; i < f.params.size(); i++) params.push_back(ty(f.params[i]));
     // User functions get a prefix so they never clash with C library names.
-    std::string name = "finch." + (p.module.empty() ? "" : p.module + ".") + fn.name;
-    f.llvm = Function::Create(FunctionType::get(ty(f.ret), params, false), Function::InternalLinkage, name, mod.get());
-    m.fns[fn.name] = f;
+    std::string name = "finch." + (p.module.empty() ? "" : p.module + ".") + (recv ? recv->name + "." : "") + fn.name;
+    f.llvm = Function::Create(FunctionType::get(retType(f), params, false), Function::InternalLinkage, name, mod.get());
+    if (recv) methods[recv][fn.name] = f;
+    else m.fns[fn.name] = f;
 }
 
 // The real C `main` calls the Finch one and turns its result into an exit code.
@@ -155,6 +209,17 @@ void Codegen::defineMainWrapper() {
     }
     Value *r = b.CreateCall(fm.llvm, args);
     if (argsArr) dropValue(argsArr, fm.params[0]);
+    if (fm.fallible) {  // fn main() -> !: a failure is printed, and the exit code is 1
+        BasicBlock *bad = BasicBlock::Create(ctx, "main.failed", w), *good = BasicBlock::Create(ctx, "main.ok", w);
+        b.CreateCondBr(b.CreateExtractValue(r, 0), good, bad);
+        b.SetInsertPoint(bad);
+        Value *msg = tmp(b.CreateExtractValue(r, 2));
+        b.CreateCall(rt("finch_report_error"), {msg});
+        b.CreateCall(rt("finch_str_drop"), {msg});
+        b.CreateRet(b.getInt32(1));
+        b.SetInsertPoint(good);
+        if (fm.ret.kind != FType::Void) r = b.CreateExtractValue(r, 1);
+    }
     if (fm.ret.kind == FType::Void) b.CreateRet(b.getInt32(0));
     else b.CreateRet(b.CreateIntCast(r, b.getInt32Ty(), true));
 }
@@ -164,7 +229,8 @@ void Codegen::define(Fn &fn) {
     curFn = &fn;
     curModule = fn.module;
     if (g_index) {
-        FnInfo fi{fn.module, d.name, signature(fn), "", {}, d.namePos.file, d.namePos.line, d.namePos.col, d.body->end.line};
+        std::string shown = fn.recv ? fn.recv->name + "." + d.name : d.name;
+        FnInfo fi{fn.module, shown, signature(fn), "", {}, d.namePos.file, d.namePos.line, d.namePos.col, d.body->end.line};
         for (size_t i = 0; i < fn.params.size(); i++) fi.params.push_back(fn.params[i].show() + " " + d.params[i].name);
         g_index->fns.push_back(fi);
         note(d.namePos, d.name.size(), "```finch\n" + signature(fn) + "\n```", d.namePos);
@@ -186,12 +252,33 @@ void Codegen::define(Fn &fn) {
     varOrder = 0;
     pushScope();
     unsigned i = 0;
-    for (Argument &arg : f->args()) {
+    auto argIt = f->arg_begin();
+    if (fn.recv) {  // `self` is the caller's struct itself, reached through its address
+        Argument &selfArg = *argIt++;
+        selfArg.setName("self");
+        Var v;
+        v.slot = &selfArg;
+        v.type = structType(fn.recv);
+        v.order = ++varOrder;
+        v.pos = d.recvPos;
+        scopes.back().vars["self"] = v;
+        if (g_index) g_index->vars.push_back({"self", v.type.show(), d.pos.file, d.pos.line, d.pos.col, d.pos.file, d.pos.line, d.body->end.line});
+        if (di) {
+            FType pt = FType::ptrTo(v.type);
+            AllocaInst *a = slot(pt, "self.addr");
+            b.CreateStore(&selfArg, a);
+            DILocalVariable *dv = di->createParameterVariable(diFn, "self", 1, diFiles[d.pos.file], d.pos.line, diType(pt));
+            di->insertDeclare(a, dv, di->createExpression(), DILocation::get(ctx, d.pos.line, d.pos.col, diFn), b.GetInsertBlock());
+        }
+    }
+    for (; argIt != f->arg_end(); ++argIt) {
+        Argument &arg = *argIt;
         const Param &p = d.params[i];
         const FType &t = fn.params[i];
         arg.setName(p.name);
-        if (owning(t) && !fn.borrowParam[i]) addVar(p.namePos, p.name, t, copyValue(&arg, t), true, false, i + 1);  // changed inside: own a copy
-        else addVar(p.namePos, p.name, t, &arg, false, false, i + 1);
+        unsigned argNo = i + 1 + (fn.recv ? 1 : 0);
+        if (owning(t) && !fn.borrowParam[i]) addVar(p.namePos, p.name, t, copyValue(&arg, t), true, false, argNo);  // changed inside: own a copy
+        else addVar(p.namePos, p.name, t, &arg, false, false, argNo);
         i++;
     }
     blockBody(*d.body);
@@ -199,7 +286,7 @@ void Codegen::define(Fn &fn) {
         if (fn.ret.kind != FType::Void)
             failAt(d.pos.file, d.pos.line, d.pos.col, "function '" + d.name + "' can reach its end without returning " + fn.ret.show());
         emitCleanups(0);
-        b.CreateRetVoid();
+        retValue(nullptr);
     }
     scopes.clear();
     diFn = nullptr;
@@ -315,7 +402,11 @@ void Codegen::stmt(const Stmt &s) {
     case StmtKind::Block: block(static_cast<const BlockStmt &>(s)); break;
     case StmtKind::VarDecl: varDecl(static_cast<const VarDeclStmt &>(s)); break;
     case StmtKind::Assign: assign(static_cast<const AssignStmt &>(s)); break;
-    case StmtKind::Expr: release(expr(*static_cast<const ExprStmt &>(s).expr)); break;
+    case StmtKind::Expr: {
+        const Expr &x = *static_cast<const ExprStmt &>(s).expr;
+        release(x.kind == ExprKind::OrElse ? orElse(static_cast<const OrElseExpr &>(x), true) : expr(x));
+        break;
+    }
     case StmtKind::If: ifStmt(static_cast<const IfStmt &>(s)); break;
     case StmtKind::While: whileStmt(static_cast<const WhileStmt &>(s)); break;
     case StmtKind::For: forStmt(static_cast<const ForStmt &>(s)); break;
@@ -486,7 +577,8 @@ void Codegen::forStmt(const ForStmt &s) {
     popScope();
 }
 
-// for x in list: x is each element (or each char of a str)
+// for x in list: x is each element (or each char of a str); for i, x in list: also its index;
+// for key in map / for key, value in map: in the order the keys were added
 void Codegen::forEachStmt(const ForEachStmt &s) {
     pushScope();
     LRef r = ref(*s.list);
@@ -500,9 +592,50 @@ void Codegen::forEachStmt(const ForEachStmt &s) {
         lt = r.val.type;
         addr = addVar(s.pos, "$list" + std::to_string(varOrder), lt, own(r.val), true).slot;
     }
+    if (lt.kind == FType::Map) {
+        FType kt = *lt.key, vt = *lt.elem;
+        StructType *ET = mapEntryTy(lt);
+        llvm::Type *MT = ty(lt);
+        // if the loop changes the map, keys and values are copied, so they can't disappear under us
+        bool copyKV = live && mutates(rootVar(*s.list), *s.body);
+        Value *i = slot(FType::I64, "$i");
+        b.CreateStore(b.getInt64(0), i);
+        BasicBlock *condBB = newBlock("map.cond"), *check = newBlock("map.check"), *body = newBlock("map.body"),
+                   *step = newBlock("map.step"), *end = newBlock("map.end");
+        b.CreateBr(condBB);
+        b.SetInsertPoint(condBB);
+        Value *iv = b.CreateLoad(b.getInt64Ty(), i);
+        b.CreateCondBr(b.CreateICmpSLT(iv, b.CreateLoad(b.getInt64Ty(), b.CreateStructGEP(MT, addr, 2))), check, end);
+        b.SetInsertPoint(check);
+        Value *entry = b.CreateInBoundsGEP(ET, b.CreateLoad(b.getPtrTy(), b.CreateStructGEP(MT, addr, 0)), iv);
+        Value *hash = b.CreateLoad(b.getInt64Ty(), b.CreateStructGEP(ET, entry, 0));
+        b.CreateCondBr(b.CreateICmpEQ(hash, b.getInt64(0)), step, body);  // a removed entry
+        b.SetInsertPoint(body);
+        loops.push_back({step, end, scopes.size()});
+        pushScope();
+        std::string why = " can't be changed (to change the map, use m[key] = ...)";
+        Value *kv = b.CreateLoad(ty(kt), b.CreateStructGEP(ET, entry, 1));
+        Var &k = addVar(s.varPos, s.var, kt, copyKV ? copyValue(kv, kt) : kv, copyKV, true);
+        k.readonlyWhy = "the loop variable '" + s.var + "'" + why;
+        if (!s.var2.empty()) {
+            Value *vv = b.CreateLoad(ty(vt), b.CreateStructGEP(ET, entry, 2));
+            Var &v = addVar(s.var2Pos, s.var2, vt, copyKV ? copyValue(vv, vt) : vv, copyKV, true);
+            v.readonlyWhy = "the loop variable '" + s.var2 + "'" + why;
+        }
+        block(*s.body);
+        popScope();
+        loops.pop_back();
+        if (!terminated()) b.CreateBr(step);
+        b.SetInsertPoint(step);
+        b.CreateStore(b.CreateAdd(b.CreateLoad(b.getInt64Ty(), i), b.getInt64(1)), i);
+        b.CreateBr(condBB);
+        b.SetInsertPoint(end);
+        popScope();
+        return;
+    }
     if (lt.kind != FType::Array && lt.kind != FType::Str && lt.kind != FType::Fixed)
         failAt(s.list->pos.file, s.list->pos.line, s.list->pos.col,
-               "for ... in needs an array or a str, but this is " + lt.show() + " (for a range of numbers write 0..n)");
+               "for ... in needs an array, a str or a map, but this is " + lt.show() + " (for a range of numbers write 0..n)");
     FType et = lt.kind == FType::Str ? FType(FType::Char) : *lt.elem;
     // If the loop changes the list, each element is copied, so it can't disappear under us.
     bool copyElems = live && owning(et) && mutates(rootVar(*s.list), *s.body);
@@ -531,8 +664,16 @@ void Codegen::forEachStmt(const ForEachStmt &s) {
     Value *elem = b.CreateLoad(ty(et), elemAddr);
     loops.push_back({step, end, scopes.size()});
     pushScope();
-    Var &xv = addVar(s.varPos, s.var, et, copyElems ? copyValue(elem, et) : elem, copyElems, true);
-    xv.readonlyWhy = "the loop variable '" + s.var + "' can't be changed (to change the list, loop with for i in 0..list.len and use list[i])";
+    std::string elemVar = s.var;
+    Pos elemPos = s.varPos;
+    if (!s.var2.empty()) {  // for i, x in list
+        Var &index = addVar(s.varPos, s.var, FType::I64, iv, false, true);
+        index.readonlyWhy = "the loop variable '" + s.var + "' can't be changed";
+        elemVar = s.var2;
+        elemPos = s.var2Pos;
+    }
+    Var &xv = addVar(elemPos, elemVar, et, copyElems ? copyValue(elem, et) : elem, copyElems, true);
+    xv.readonlyWhy = "the loop variable '" + elemVar + "' can't be changed (to change the list, use list[i] = ...)";
     block(*s.body);
     popScope();
     loops.pop_back();
@@ -546,14 +687,46 @@ void Codegen::forEachStmt(const ForEachStmt &s) {
     popScope();
 }
 
+void Codegen::retValue(Value *v) {
+    if (!curFn->fallible) {
+        if (v) b.CreateRet(v);
+        else b.CreateRetVoid();
+        return;
+    }
+    Value *r = Constant::getNullValue(curFn->llvm->getReturnType());
+    r = b.CreateInsertValue(r, b.getInt1(true), 0);
+    if (v) r = b.CreateInsertValue(r, v, 1);
+    b.CreateRet(r);
+}
+
+void Codegen::retError(Value *msg) {
+    Value *r = Constant::getNullValue(curFn->llvm->getReturnType());
+    b.CreateRet(b.CreateInsertValue(r, msg, 2));
+}
+
 void Codegen::returnStmt(const ReturnStmt &s) {
     const FnDecl &d = *curFn->decl;
     if (inDefer) failAt(s.pos.file, s.pos.line, s.pos.col, "return can't be used inside defer");
+    // return error("...")
+    if (s.value && s.value->kind == ExprKind::Call && static_cast<const CallExpr &>(*s.value).callee == "error") {
+        auto &c = static_cast<const CallExpr &>(*s.value);
+        if (!curFn->fallible)
+            failAt(c.pos.file, c.pos.line, c.pos.col, "'" + d.name + "' can't fail, so it can't return an error (make it fallible: -> " +
+                                                      (curFn->ret.kind == FType::Void ? std::string("!") : curFn->ret.show() + "!") + ")");
+        if (g_index)
+            for (const BuiltinDoc &bd : kBuiltins)
+                if (std::string(bd.name) == "error") note(c.pos, 5, "```finch\n" + std::string(bd.signature) + "\n```\n" + bd.doc);
+        checkArgs(c.args, c.argNames, 1, c.pos, "error");
+        Value *msg = own(coerce(expr(*c.args[0]), FType::Str, c.args[0]->pos, "the error message"));
+        emitCleanups(0);
+        retError(msg);
+        return;
+    }
     if (curFn->ret.kind == FType::Void) {
         if (s.value)
             failAt(s.value->pos.file, s.value->pos.line, s.value->pos.col, "'" + d.name + "' doesn't return a value (it has no '-> type')");
         emitCleanups(0);
-        b.CreateRetVoid();
+        retValue(nullptr);
         return;
     }
     if (!s.value) failAt(s.pos.file, s.pos.line, s.pos.col, "'" + d.name + "' must return " + curFn->ret.show());
@@ -569,7 +742,7 @@ void Codegen::returnStmt(const ReturnStmt &s) {
                 it->second.moved = true;
                 emitCleanups(0);
                 scopes[idx].vars[name].moved = false;
-                b.CreateRet(v);
+                retValue(v);
                 return;
             }
             break;
@@ -578,7 +751,7 @@ void Codegen::returnStmt(const ReturnStmt &s) {
     Value_ v = coerce(exprWant(*s.value, curFn->ret), curFn->ret, s.value->pos, "the returned value");
     Value *out = own(v);
     emitCleanups(0);
-    b.CreateRet(out);
+    retValue(out);
 }
 
 // ---------- mutation analysis (does a function or loop change a variable?) ----------
@@ -595,6 +768,17 @@ std::string Codegen::rootVar(const Expr &e) {
 bool Codegen::mutatesExpr(const std::string &name, const Expr &e) {
     static const std::set<std::string> changing = {"push", "pop", "insert", "remove", "clear", "resize", "sort", "reverse"};
     switch (e.kind) {
+    case ExprKind::Try: return mutatesExpr(name, *static_cast<const TryExpr &>(e).call);
+    case ExprKind::OrElse: {
+        auto &x = static_cast<const OrElseExpr &>(e);
+        return mutatesExpr(name, *x.call) || (x.fallback && mutatesExpr(name, *x.fallback)) || (x.block && mutates(name, *x.block));
+    }
+    case ExprKind::MapLit: {
+        auto &x = static_cast<const MapLitExpr &>(e);
+        for (size_t k = 0; k < x.keys.size(); k++)
+            if (mutatesExpr(name, *x.keys[k]) || mutatesExpr(name, *x.values[k])) return true;
+        return false;
+    }
     case ExprKind::Unary: return mutatesExpr(name, *static_cast<const UnaryExpr &>(e).operand);
     case ExprKind::Binary: {
         auto &x = static_cast<const BinaryExpr &>(e);
@@ -618,7 +802,7 @@ bool Codegen::mutatesExpr(const std::string &name, const Expr &e) {
         return false;
     case ExprKind::Method: {
         auto &m = static_cast<const MethodExpr &>(e);
-        if (changing.count(m.name) && rootVar(*m.obj) == name) return true;
+        if ((changing.count(m.name) || mutatingMethods.count(m.name)) && rootVar(*m.obj) == name) return true;
         if (mutatesExpr(name, *m.obj)) return true;
         for (auto &a : m.args)
             if (mutatesExpr(name, *a)) return true;
@@ -667,7 +851,94 @@ bool Codegen::mutates(const std::string &name, const Stmt &s) {
 
 Value_ Codegen::exprWant(const Expr &e, const FType &want) {
     if (e.kind == ExprKind::ArrayLit) return arrayLit(static_cast<const ArrayLitExpr &>(e), &want);
+    if (e.kind == ExprKind::MapLit) return mapLit(static_cast<const MapLitExpr &>(e), &want);
     return expr(e);
+}
+
+// ---------- errors as values ----------
+
+// Emit a call that may fail; `failed` (i1) and `msg` (str) tell how it went.
+Value_ Codegen::fallible(const Expr &call, Value *&failed, Value *&msg) {
+    Pos p = call.pos;
+    if (call.kind != ExprKind::Call && call.kind != ExprKind::Method)
+        failAt(p.file, p.line, p.col, "only a function call can fail; 'or' and 'try' go after one, like  int(text) or 0");
+    const Expr *savedTarget = fallibleTarget;
+    Value *savedFailed = fallibleFailed, *savedMsg = fallibleMsg;
+    fallibleTarget = &call;
+    fallibleFailed = fallibleMsg = nullptr;
+    Value_ v = expr(call);
+    failed = fallibleFailed;
+    msg = fallibleMsg;
+    fallibleTarget = savedTarget;
+    fallibleFailed = savedFailed;
+    fallibleMsg = savedMsg;
+    if (!failed) failAt(p.file, p.line, p.col, "this call can't fail, so it needs no 'or' or 'try'");
+    return v;
+}
+
+// try f(x): on failure, the current function fails with the same error
+Value_ Codegen::tryExpr(const TryExpr &t) {
+    Pos p = t.pos;
+    if (inDefer) failAt(p.file, p.line, p.col, "try can't be used inside defer");
+    if (!curFn->fallible)
+        failAt(p.file, p.line, p.col, "try passes the error on, so '" + curFn->decl->name + "' must be able to fail too (-> " +
+                                          (curFn->ret.kind == FType::Void ? std::string("!") : curFn->ret.show() + "!") +
+                                          "); or handle it here: ... or <value>  /  ... or { ... }");
+    Value *failed, *msg;
+    Value_ v = fallible(*t.call, failed, msg);
+    BasicBlock *bad = newBlock("try.failed"), *ok = newBlock("try.ok");
+    b.CreateCondBr(failed, bad, ok);
+    b.SetInsertPoint(bad);
+    emitCleanups(0);
+    retError(msg);
+    b.SetInsertPoint(ok);
+    return v;
+}
+
+// f(x) or fallback  /  f(x) or { ... err ... }
+Value_ Codegen::orElse(const OrElseExpr &e, bool discard) {
+    Value *failed, *msg;
+    Value_ v = fallible(*e.call, failed, msg);
+    BasicBlock *bad = newBlock("or.failed"), *ok = newBlock("or.ok");
+    b.CreateCondBr(failed, bad, ok);
+    b.SetInsertPoint(bad);
+    if (e.block) {
+        pushScope();
+        addVar(e.block->pos, "err", FType::Str, msg, true);
+        blockBody(*e.block);
+        bool left = terminated();
+        if (!left && v.type.kind != FType::Void && !discard)
+            failAt(e.block->end.file, e.block->end.line, e.block->end.col,
+                   "this block must leave with return, break, continue or exit(...): after a failure there is no value to go on with (or give one: ... or <value>)");
+        popScope();
+        if (discard && v.type.kind != FType::Void) {  // read_file(p) or { ... } as a statement: drop the unused value
+            BasicBlock *join = newBlock("or.end");
+            if (!left) b.CreateBr(join);
+            b.SetInsertPoint(ok);
+            release(v);
+            b.CreateBr(join);
+            b.SetInsertPoint(join);
+            return {nullptr, FType::Void};
+        }
+        if (!left) b.CreateBr(ok);
+        b.SetInsertPoint(ok);
+        return v;
+    }
+    Pos fp = e.fallback->pos;
+    if (v.type.kind == FType::Void)
+        failAt(fp.file, fp.line, fp.col, "this call gives back no value, so there is nothing to replace; handle the failure with  or { ... }");
+    dropValue(msg, FType::Str);
+    Value *fv = own(coerce(exprWant(*e.fallback, v.type), v.type, fp, "the value after 'or'"));
+    BasicBlock *badEnd = b.GetInsertBlock();
+    BasicBlock *join = newBlock("or.end");
+    b.CreateBr(join);
+    b.SetInsertPoint(ok);
+    b.CreateBr(join);
+    b.SetInsertPoint(join);
+    PHINode *phi = b.CreatePHI(ty(v.type), 2);
+    phi->addIncoming(fv, badEnd);
+    phi->addIncoming(v.v, ok);
+    return {phi, v.type, false, owning(v.type)};
 }
 
 Value_ Codegen::expr(const Expr &e) {
@@ -711,6 +982,9 @@ Value_ Codegen::expr(const Expr &e) {
     case ExprKind::Call: return call(static_cast<const CallExpr &>(e));
     case ExprKind::Method: return method(static_cast<const MethodExpr &>(e));
     case ExprKind::ArrayLit: return arrayLit(static_cast<const ArrayLitExpr &>(e), nullptr);
+    case ExprKind::MapLit: return mapLit(static_cast<const MapLitExpr &>(e), nullptr);
+    case ExprKind::Try: return tryExpr(static_cast<const TryExpr &>(e));
+    case ExprKind::OrElse: return orElse(static_cast<const OrElseExpr &>(e));
     }
     return {nullptr, FType::Void};
 }
@@ -785,6 +1059,19 @@ LRef Codegen::member(const MemberExpr &m, bool forWrite) {
         t = *t.elem;
     }
 
+    if (t.kind == FType::Map) {
+        if (m.field != "len") failAt(p.file, p.line, p.col, "a map has .len (the number of keys), not '." + m.field + "'");
+        if (forWrite) failAt(p.file, p.line, p.col, ".len can't be changed directly (use m[key] = ..., remove or clear)");
+        note(Pos{p.line, p.col + 1, p.file}, 3, "`.len -> int`: the number of keys");
+        Value *len;
+        if (obj.isPlace) {
+            len = b.CreateLoad(b.getInt64Ty(), b.CreateStructGEP(ty(t), obj.pl.addr, 1));
+        } else {
+            len = b.CreateExtractValue(obj.val.v, 1);
+            release(obj.val);
+        }
+        return {false, {}, {len, FType::I64}};
+    }
     if (t.kind == FType::Array || t.kind == FType::Str || t.kind == FType::Fixed) {
         if (m.field == "len" || m.field == "ptr")
             note(Pos{p.line, p.col + 1, p.file}, m.field.size(),
@@ -839,6 +1126,7 @@ LRef Codegen::index(const IndexExpr &e, bool forWrite) {
     Pos p = e.pos;
     LRef obj = ref(*e.obj, forWrite);
     FType t = obj.isPlace ? obj.pl.type : obj.val.type;
+    if (t.kind == FType::Map) return mapIndex(e, obj, t, forWrite);
     Value *i = coerce(expr(*e.index), FType::I64, e.index->pos, "an index").v;
 
     if (t.isPtr()) {  // C-style: p[i], no bounds known
@@ -854,7 +1142,7 @@ LRef Codegen::index(const IndexExpr &e, bool forWrite) {
         return {false, {}, {b.CreateLoad(ty(*t.elem), b.CreateInBoundsGEP(ty(t), a, {b.getInt64(0), i})), *t.elem}};
     }
     if (t.kind != FType::Array && t.kind != FType::Str)
-        failAt(p.file, p.line, p.col, "[ ] works on arrays, str and pointers, not on " + t.show());
+        failAt(p.file, p.line, p.col, "[ ] works on arrays, maps, str and pointers, not on " + t.show());
     FType et = t.kind == FType::Str ? FType(FType::Char) : *t.elem;
     if (t.kind == FType::Str && forWrite) {
         if (!obj.isPlace) failAt(p.file, p.line, p.col, "this is a temporary str, it can't be changed");
@@ -1139,10 +1427,12 @@ void Codegen::note(Pos at, size_t len, const std::string &hover, Pos def) {
 }
 
 std::string Codegen::signature(const Fn &fn) {
-    std::string s = "fn " + (fn.module.empty() ? "" : fn.module + ".") + fn.decl->name + "(";
+    std::string owner = fn.recv ? fn.recv->name + "." : fn.module.empty() ? "" : fn.module + ".";
+    std::string s = "fn " + owner + fn.decl->name + "(";
     for (size_t i = 0; i < fn.params.size(); i++) s += (i ? ", " : "") + fn.params[i].show() + " " + fn.decl->params[i].name;
     s += ")";
-    if (fn.ret.kind != FType::Void) s += " -> " + fn.ret.show();
+    if (fn.ret.kind != FType::Void) s += " -> " + fn.ret.show() + (fn.fallible ? "!" : "");
+    else if (fn.fallible) s += " -> !";
     return s;
 }
 

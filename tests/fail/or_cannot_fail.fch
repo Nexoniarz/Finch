@@ -1,0 +1,4 @@
+// expect: this call can't fail, so it needs no 'or' or 'try'
+fn main() {
+    print(int(3.5) or 0)
+}

@@ -16,7 +16,7 @@ Everything in Finch on one page. For explanations, see the [guides](../../README
 | `finch lsp` | the language server (editors use it) |
 | `finch version` | version |
 | `-l lib` | link a C library (like `link "lib"`) |
-| `--target windows` / `linux` / triple | build for another system |
+| `--target windows` / `linux` / `arm64` / `macos` / triple | build for another system |
 | `-g` | debug info (gdb, lldb, Visual Studio) |
 | `-O0` | no optimizations |
 
@@ -71,6 +71,7 @@ One statement per line, no semicolons, `{` on the same line, no brackets around 
 | `u8 u16 u32 u64` | unsigned, sized |
 | `f32 f64` | floats |
 | `[]T` | array: `[1, 2, 3]`, `[]str names` |
+| `map[K]V` | map: `["a": 1]`, `map[str]int counts`, `[:]` |
 | `ptr[T]`, `ptr` | pointer, untyped pointer |
 | `Name` / `module.Name` | a struct |
 
@@ -100,6 +101,8 @@ if a > b { … } else if a == b { … } else { … }
 while x > 0 { … }
 for i in 0..10 { … }          // 0 … 9
 for item in list { … }        // every element (or char of a str)
+for i, item in list { … }     // with its index
+for key, value in m { … }     // every map entry, in insertion order
 break     continue     return value
 defer cleanup()               // runs when the block ends
 ```
@@ -118,6 +121,47 @@ fn greet(str name) {          // no result
 ```
 
 Parameters behave like copies. Order in the file doesn't matter. A comma after the last argument is allowed.
+
+---
+
+## Methods
+
+```c
+fn Point.move(int dx, int dy) {   // self is the Point it's called on (not a copy)
+    self.x += dx
+    self.y += dy
+}
+fn Point.dist() -> float { … }
+
+p.move(1, 2)       list[0].move(1, 1)       ptr_to_point.move(0, 1)
+```
+
+Also on structs from C: `fn Vector2.length() -> f32 { … }`.
+
+---
+
+## Errors as values
+
+```c
+fn parse(str s) -> int! {         // ! = can fail
+    if s.len == 0 {
+        return error("empty")
+    }
+    return int(s) or { return error("not a number: " + s) }
+}
+fn save(str p, str t) -> ! {      // can fail, no result
+    try write_file(p, t)
+}
+```
+
+| Code | On failure |
+|---|---|
+| `x := parse(s) or 0` | use 0 |
+| `x := parse(s) or { print(err); return }` | run the block (`err`: the message) |
+| `x := try parse(s)` | fail the current function too |
+| `fn main() -> !` | a failure prints `error: …`, exit code 1 |
+
+Fallible built-ins: `int(s)`, `float(s)`, `read_file`, `write_file`, `delete_file`.
 
 ---
 
@@ -155,6 +199,23 @@ Parameters behave like copies. Order in the file doesn't matter. A comma after t
 
 ---
 
+## Maps `map[K]V`
+
+| Code | Gives |
+|---|---|
+| `m := ["a": 1, "b": 2]` | a map (keys: numbers, char, bool, str) |
+| `m[k]` | value (missing key: the program stops) |
+| `m[k] = v` | add / replace |
+| `m[k] += 1`, `m[k].push(x)` | a missing key starts at the default (0, `[]`, …) |
+| `m.len` | number of keys |
+| `m.has(k)` | bool |
+| `m.get(k, default)` | value or default |
+| `m.remove(k)` | bool: was it there |
+| `m.clear()` | empty it |
+| `m.keys()`, `m.values()` | arrays, insertion order |
+
+---
+
 ## Text `str`
 
 | Code | Gives |
@@ -189,6 +250,8 @@ Parameters behave like copies. Order in the file doesn't matter. A comma after t
 | `char(66)` | `'B'` |
 | `bool(0)` | `false` |
 | `str(42)`, `str(1.5)`, `str(true)`, `str('c')` | text |
+| `str([1, 2])`, `str(m)`, `str(point)` | the same text `print` shows |
+| `int("x") or 0`, `float(s) or 0.0` | a number, or the fallback |
 | `str(bytes)` | `[]u8` → text |
 | `str(p)` | C `char*` → text |
 | `ptr(p)`, `ptr(16)` | untyped pointer, from a pointer or a number |
@@ -210,6 +273,7 @@ Automatic only when nothing is lost: smaller → bigger number, any int → floa
 | `delete_file(path)` | bool |
 | `shell(command)` | run a command, its exit code |
 | `exit(code)` | stop the program now |
+| `error(message)` | `return error("…")` in a `-> T!` function |
 | `addr(x)` | pointer to x; `addr(fn)` = C callback |
 | `new(value)` | value on the heap → `ptr[T]` |
 | `free(p)` | give it back |
@@ -281,11 +345,17 @@ shapes.Box other         // in declarations
 | `pop() on an empty array` | |
 | `used .value on a null pointer` | `.value` / `.field` / `[i]` through `null` |
 | `can't turn "x" into int` | `int("x")` |
-| `can't read the file "…"` | `read_file` |
+| `can't read the file "…"` | `read_file` (without `or`) |
+| `the key "x" is not in the map` | `m["x"]` |
 
 ---
 
-## VS Code (extension "Finch")
+## Editors
+
+Kate: `editors/kate/install.sh`, then enable the **LSP Client** plugin; run with **Build & Run** → `finch run %f`.
+Any LSP editor: `finch lsp`.
+
+### VS Code (extension "Finch")
 
 | Key / action | Does |
 |---|---|
@@ -295,11 +365,12 @@ shapes.Box other         // in declarations
 | hover | type / signature / docs |
 | `Ctrl+Space` | completion (after `.`: fields, methods, module members) |
 | `Ctrl+Shift+O` | functions and structs in the file |
-| `main`, `fn`, `fnr`, `struct`, `for`, `foreach`, `if`, `ife`, `while`, `input` + Tab | snippets |
+| `main`, `fn`, `fnr`, `fnf`, `method`, `struct`, `for`, `foreach`, `forkv`, `map`, `orb`, `if`, `ife`, `while`, `input` + Tab | snippets |
 | setting `finch.path` | where finch / finch.exe is |
 
 ---
 
 ## Keywords
 
-`fn return if else while for in break continue true false null import link struct defer`
+`fn return if else while for in break continue true false null import link struct defer or try`
+(and `self` inside methods)

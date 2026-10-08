@@ -77,7 +77,7 @@ To check it works, type:
 ./build/finch version
 ```
 
-You should see something like `finch 2.3.0`.
+You should see something like `finch 2.4.0`.
 
 ---
 
@@ -505,8 +505,68 @@ fn main() {
 }
 ```
 
+If you also want to know *where* you are in the list, give `for` two names: the first one counts
+0, 1, 2…, the second one is the value:
+
+```c
+fn main() {
+    for i, fruit in ["apple", "banana", "cherry"] {
+        print(i + 1, fruit)
+    }
+}
+```
+
+```
+1 apple
+2 banana
+3 cherry
+```
+
 Lists can do more: `contains`, `find`, `insert`, `remove`, `sort`, `reverse`, `join`.
-The [guide for technicians](for-technicians.md#arrays) lists them all.
+The [guide for technicians](for-technicians.md#10-arrays-and-maps) lists them all.
+
+### Looking things up by name: maps
+
+A list finds things by their place: `fruits[0]`. Sometimes you want to find things by a **name**
+instead, like looking up a word in a dictionary, or a phone number in a phone book.
+That's a **map**: each **key** (the name) has a **value**:
+
+```c
+fn main() {
+    phone := ["Ola": "555-1234", "Jan": "555-9876"]
+    print(phone["Ola"])          // 555-1234
+
+    phone["Ewa"] = "555-0000"    // add a new name
+    print(phone.len)             // 3
+
+    if phone.has("Tom") {
+        print("Tom is here")
+    } else {
+        print("no Tom")
+    }
+
+    for name, number in phone {  // every name with its number
+        print(name, number)
+    }
+}
+```
+
+- `["key": value, ...]` makes a map. Keys are often text, but numbers work too.
+- `phone["Ola"]` gets the value for a key. Asking for a key that isn't there stops the program,
+  so check first with `phone.has("Tom")`, or use `phone.get("Tom", "unknown")`.
+- `for name, number in phone` visits every key with its value, in the order you added them.
+
+Maps are great for **counting**. A new key starts at 0, so `+= 1` just works:
+
+```c
+fn main() {
+    map[str]int votes            // an empty map: text keys, whole-number values
+    for v in ["cat", "dog", "cat", "cat", "fish"] {
+        votes[v] += 1
+    }
+    print(votes)                 // {"cat": 3, "dog": 1, "fish": 1}
+}
+```
 
 ---
 
@@ -618,6 +678,36 @@ fn main() {
 
 And you can keep many of them in a list: `[]Book shelf`, then `shelf.push(b)`.
 
+### Commands for your struct: methods
+
+A struct can have its own commands. Write the struct's name, a dot, and the command's name.
+Inside, `self` is the struct the command was used on:
+
+```c
+struct Player {
+    str name
+    int lives = 3
+}
+
+fn Player.hit() {
+    self.lives -= 1
+    print(self.name, "has", self.lives, "lives left")
+}
+
+fn Player.is_alive() -> bool {
+    return self.lives > 0
+}
+
+fn main() {
+    p := Player(name: "Ola")
+    p.hit()                  // Ola has 2 lives left
+    p.hit()                  // Ola has 1 lives left
+    print(p.is_alive())      // true
+}
+```
+
+`p.hit()` changes `p` itself, so after two hits `p.lives` really is 1.
+
 ---
 
 ## 15. Saving to a file
@@ -680,6 +770,57 @@ Here we simply misspelled `age`.
 | `index 5 is out of range (the length is 3)` | You asked a list for a place it doesn't have | Remember counting starts at 0; check `.len` |
 | `can't turn "abc" into int` | `int(...)` got text that isn't a number | Check what the person typed |
 | `can't use '+' on str and int` | Text plus a number | Use `str(...)` on the number |
+| `'f' can fail, so say what happens then` | You used a command that can fail without saying what to do | Add `or ...` (see below) |
+
+### Things that can fail: `or` and `try`
+
+Some things can go wrong *while the program runs*: the person types `abc` where you wanted a number,
+or a file isn't there. Instead of stopping the program, you can say what to do then, with **`or`**:
+
+```c
+fn main() {
+    age := int(input("Your age? ")) or 0        // not a number? use 0
+    print("Next year you'll be", age + 1)
+
+    note := read_file("note.txt") or "(no note yet)"
+    print(note)
+}
+```
+
+`or` can also be followed by a block. Inside it, `err` is the message that says what went wrong:
+
+```c
+fn main() {
+    while true {
+        n := int(input("Pick a number: ")) or {
+            print("That's not a number, try again")
+            continue
+        }
+        print("You picked", n)
+        break
+    }
+}
+```
+
+Your own functions can fail too. Put `!` after the result type, and use `return error("...")`:
+
+```c
+fn safe_divide(int a, int b) -> int! {
+    if b == 0 {
+        return error("can't divide by zero")
+    }
+    return a / b
+}
+
+fn main() {
+    print(safe_divide(10, 2) or -1)     // 5
+    print(safe_divide(10, 0) or -1)     // -1
+}
+```
+
+Finch won't let you forget: calling `safe_divide(10, 0)` without `or` is an error that tells you
+to handle it. (You can also pass the problem on with `try`; the
+[guide for technicians](for-technicians.md#errors-as-values) explains it.)
 
 ---
 
@@ -882,10 +1023,13 @@ struct Pet {                      // your own kind of value
     int age = 1
 }
 
-// lists:  nums := [1, 2, 3]   nums.push(4)   nums[0]   nums.len   for n in nums { }
+// lists:  nums := [1, 2, 3]   nums.push(4)   nums[0]   nums.len   for n in nums { }   for i, n in nums { }
+// maps:   ages := ["Ola": 9]   ages["Jan"] = 10   ages["Ola"]   ages.has("Tom")   for name, age in ages { }
 // text:   "a" + "b"   str(42)   int("42")   s.len   s.upper()   s.contains("x")
 // ask:    name := input("Name? ")
 // files:  write_file("f.txt", text)   read_file("f.txt")
+// methods: fn Pet.grow() { self.age += 1 }    p.grow()
+// failing: n := int(text) or 0      x := read_file("f.txt") or { print(err) ... }
 ```
 
 ---
@@ -905,7 +1049,9 @@ struct Pet {                      // your own kind of value
 | **condition** | A yes/no question, like `x > 5` |
 | **list / array** | Many values kept in order, like `[1, 2, 3]` |
 | **index** | The position of a value in a list, starting at 0 |
-| **struct** | Your own kind of value, made of named parts |
+| **struct** | Your own kind of value made of named parts |
+| **method** | A command that belongs to a struct, like `p.hit()` |
+| **map** | Values you find by a key (a name), like a dictionary |
 | **input** | What the person types into the program |
 | **error** | A message saying something is wrong, and where |
 | **bug** | A mistake in a program |

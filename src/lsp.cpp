@@ -412,17 +412,34 @@ json::Value Server::completion(const std::string &path, int line, int col) {
             if (v.name == name && v.line <= line && line <= v.fnEnd + 1) type = v.type;
         if (element && type.rfind("[]", 0) == 0) type = type.substr(2);
         if (element && type == "str") type = "char";
+        if (element && type.rfind("map[", 0) == 0) {  // m[key].  -> the value type
+            int depth = 0;
+            for (size_t k = 3; k < type.size(); k++) {
+                if (type[k] == '[') depth++;
+                else if (type[k] == ']' && --depth == 0) {
+                    type = type.substr(k + 1);
+                    break;
+                }
+            }
+        }
         if (type.rfind("ptr[", 0) == 0) type = type.substr(4, type.size() - 5);  // fields through a pointer
         if (type == "str") {
             for (const BuiltinDoc &d : kStrMethods) items.push_back(item(d.name, d.name[0] == 'l' || d.name[0] == 'p' ? KField : KMethod, d.signature, d.doc));
         } else if (type.rfind("[]", 0) == 0) {
             for (const BuiltinDoc &d : kArrayMethods) items.push_back(item(d.name, std::string(d.name) == "len" || std::string(d.name) == "ptr" ? KField : KMethod, d.signature, d.doc));
+        } else if (type.rfind("map[", 0) == 0) {
+            for (const BuiltinDoc &d : kMapMethods) items.push_back(item(d.name, std::string(d.name) == "len" ? KField : KMethod, d.signature, d.doc));
         } else if (!type.empty()) {
             std::string mod, sname = type;
             if (size_t dot = type.find('.'); dot != std::string::npos) mod = type.substr(0, dot), sname = type.substr(dot + 1);
             for (const StructIndex &s2 : a->index.structs)
                 if (s2.name == sname && (mod.empty() || s2.module == mod))
                     for (auto &[fname, ftype] : s2.fields) items.push_back(item(fname, KField, ftype + " " + fname));
+            std::set<std::string> seen;
+            for (const FnInfo &f : a->index.fns)  // methods: indexed as Struct.name
+                if (f.name.size() > sname.size() + 1 && f.name.compare(0, sname.size() + 1, sname + ".") == 0 &&
+                    seen.insert(f.name).second)
+                    items.push_back(item(f.name.substr(sname.size() + 1), KMethod, f.signature));
             if (type.rfind("ptr", 0) == 0 || items.empty()) items.push_back(item("value", KField, "the value the pointer points to"));
         }
         return json::Object{{"isIncomplete", false}, {"items", std::move(items)}};
@@ -511,9 +528,12 @@ json::Value Server::signatureHelp(const std::string &path, int line, int col) {
     std::string label, doc;
     std::vector<std::string> params;
     if (a) {
-        for (const FnInfo &f : a->index.fns)
-            if (f.name == name && (f.module == mod || (mod.empty() && f.module.empty()) || !a->modules.count(mod)))
+        for (const FnInfo &f : a->index.fns) {
+            bool method = f.name.size() > name.size() && f.name.compare(f.name.size() - name.size() - 1, name.size() + 1, "." + name) == 0;
+            if ((f.name == name && (f.module == mod || (mod.empty() && f.module.empty()) || !a->modules.count(mod))) ||
+                (method && !mod.empty() && !a->modules.count(mod)))  // p.move(  -> Point.move
                 label = f.signature, params = f.params;
+        }
         if (label.empty())
             for (const StructIndex &s : a->index.structs)
                 if (s.name == name) {
@@ -544,6 +564,7 @@ json::Value Server::signatureHelp(const std::string &path, int line, int col) {
         if (!mod.empty()) {
             look(std::begin(kArrayMethods), std::end(kArrayMethods));
             look(std::begin(kStrMethods), std::end(kStrMethods));
+            look(std::begin(kMapMethods), std::end(kMapMethods));
         }
     }
     if (label.empty()) return nullptr;

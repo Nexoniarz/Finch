@@ -20,16 +20,16 @@ kompilator działa w środku. Do tego służy [przewodnik dla inżynierów](dla-
 7. [Operatory](#7-operatory)
 8. [Sterowanie przebiegiem](#8-sterowanie-przebiegiem)
 9. [Funkcje](#9-funkcje)
-10. [Tablice](#10-tablice)
+10. [Tablice i mapy](#10-tablice-i-mapy)
 11. [Tekst (str)](#11-tekst-str)
-12. [Struktury](#12-struktury)
+12. [Struktury i metody](#12-struktury-i-metody)
 13. [Pamięć: kto co zwalnia](#13-pamięć-kto-co-zwalnia)
 14. [Wskaźniki](#14-wskaźniki)
 15. [Funkcje wbudowane](#15-funkcje-wbudowane)
 16. [Moduły](#16-moduły)
 17. [Biblioteki z C](#17-biblioteki-z-c)
 18. [Błędy](#18-błędy)
-19. [Edytor: VS Code](#19-edytor-vs-code)
+19. [Edytory: VS Code, Kate i inne](#19-edytory-vs-code-kate-i-inne)
 20. [Debugowanie](#20-debugowanie)
 21. [Rozwiązywanie problemów](#21-rozwiązywanie-problemów)
 22. [Struktura projektu i testy](#22-struktura-projektu-i-testy)
@@ -60,7 +60,9 @@ i komunikaty błędów, które mówią, jak problem naprawić.
 
 ## 2. Instalacja
 
-Finch działa na **Linuksie i Windowsie, x86-64**, i jest budowany z **LLVM 21**.
+Finch działa na **Linuksie** (x86-64 i ARM64), **macOS** (Apple Silicon i Intel) i **Windowsie** (x86-64),
+i jest budowany z **LLVM 21**. Każde [wydanie](https://github.com/Nexoniarz/Finch/releases) ma gotowy
+`finch` dla Windowsa, Linuksa x86-64, Linuksa ARM64 i macOS ARM64.
 
 ### Windows
 
@@ -75,8 +77,30 @@ Finch działa na **Linuksie i Windowsie, x86-64**, i jest budowany z **LLVM 21**
 Programy to zwykłe pliki `.exe`. Żeby zbudować Fincha ze źródeł na Windowsie, idź za `.github/workflows/ci.yml`
 (Visual Studio 2022 + pakiet `clang+llvm-21.x-x86_64-pc-windows-msvc` z wydań LLVM).
 
+### macOS
+
+```sh
+brew install llvm@21                # LLVM dla Fincha; programy linkuje clang od Apple
+```
+
+Potem rozpakuj **`finch-macos-arm64.tar.gz`** z wydań (korzysta z `llvm@21` z Homebrew)
+albo zbuduj go sam (narzędzia wiersza poleceń Xcode: `xcode-select --install`):
+
+```sh
+git clone https://github.com/Nexoniarz/Finch.git && cd Finch
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR="$(brew --prefix llvm@21)/lib/cmake/llvm"
+ninja -C build
+./build/finch version
+```
+
+Frameworki Apple linkuje się przez `link "Cocoa.framework"` (`-framework Cocoa`), a ich nagłówki importuje
+się normalnie: `import "OpenGL/gl.h"`.
+
 ### Linux
 
+Gotowe `finch-linux-x64.tar.gz` / `finch-linux-arm64.tar.gz` potrzebują bibliotek LLVM 21
+(Debian/Ubuntu: `libllvm21 libclang1-21` z [apt.llvm.org](https://apt.llvm.org)) i kompilatora C (`cc`).
+Samodzielne budowanie wygląda tak samo na x86-64 i ARM64 (Raspberry Pi 4/5, Graviton, …).
 Z innymi wersjami LLVM Finch prawdopodobnie się nie skompiluje, bo API C++ LLVM zmienia się między wydaniami.
 
 ### Opcja A: Nix (zalecana, nic nie instalujesz ręcznie)
@@ -87,7 +111,7 @@ cd Finch
 nix-shell                        # pobiera LLVM, libclang, clang, cmake, ninja, pkg-config
 cmake -S . -B build -G Ninja
 ninja -C build
-./build/finch version            # finch 2.3.0 (LLVM 21.x)
+./build/finch version            # finch 2.4.0 (LLVM 21.x)
 ```
 
 ### Opcja B: pakiety z twojej dystrybucji
@@ -108,15 +132,26 @@ cmake -S . -B build -G Ninja -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm
 ninja -C build
 ```
 
-### Budowanie programów na Windowsa pod Linuksem
+### Budowanie na inny system
 
-Z zainstalowanym kompilatorem krzyżowym MinGW-w64 (`x86_64-w64-mingw32-gcc`; na Niksie
-`pkgsCross.mingwW64.buildPackages.gcc`):
+`--target` buduje program na inny system. Do linkowania Finch potrzebuje kompilatora C dla tego systemu:
+
+| `--target` | Buduje | Kompilator C | `finch run` używa |
+|---|---|---|---|
+| `windows` | `.exe` dla Windowsa | `x86_64-w64-mingw32-gcc` (MinGW-w64) | Wine |
+| `arm64` | program dla Linuksa ARM64 | `aarch64-linux-gnu-gcc` | `qemu-aarch64` |
+| `linux` | program dla Linuksa x86-64 | `clang --target=…` | |
+| `macos` | program dla macOS (na Macu: dla drugiego procesora) | `clang --target=…` | |
+| dowolny triple LLVM | np. `aarch64-unknown-linux-gnu` | `clang --target=<triple>` | |
 
 ```sh
 finch build gra.fch --target windows       # gra.exe
-finch run gra.fch --target windows         # uruchamia ją w Wine, jeśli jest zainstalowane
+finch run gra.fch --target arm64           # buduje na ARM64 i uruchamia w QEMU
+FINCH_CC=aarch64-unknown-linux-gnu-gcc finch build narzedzie.fch --target arm64   # inna nazwa kompilatora
 ```
+
+Na Niksie te kompilatory to `pkgsCross.mingwW64.buildPackages.gcc` i
+`pkgsCross.aarch64-multiplatform.buildPackages.gcc`.
 
 ### Dodanie `finch` do PATH (opcjonalnie)
 
@@ -137,12 +172,14 @@ Inny kompilator wskażesz zmienną `CC`.
 finch run   <plik.fch> [argumenty...]   skompiluj i od razu uruchom
 finch build <plik.fch> [-o nazwa]       skompiluj do programu (domyślna nazwa: nazwa pliku)
 finch ir    <plik.fch>                  pokaż LLVM IR (dla ciekawskich)
+finch lsp                              serwer języka, dla edytorów
 finch version                          pokaż wersję
 
 opcje:
-  -l <lib>   dolinkuj bibliotekę C, to samo co  link "lib"  w pliku
-  -g         dodaj informacje dla debuggera (gdb / lldb)
-  -O0        bez optymalizacji
+  -l <lib>          dolinkuj bibliotekę C, to samo co  link "lib"  w pliku
+  --target <nazwa>  zbuduj na inny system: windows, linux, arm64, macos albo triple LLVM
+  -g                dodaj informacje dla debuggera (gdb / lldb / Visual Studio)
+  -O0               bez optymalizacji
 ```
 
 Przykłady:
@@ -226,6 +263,7 @@ x += 1               // także -= *= /= %=
 | `char`  | jeden znak wielkości bajtu | `'A'`, `'\n'` |
 | `str`   | tekst | `"cześć\tświecie"` |
 | `[]T`   | lista (tablica) elementów `T` | `[1, 2, 3]` |
+| `map[K]V` | wartości typu `V` znajdowane po kluczu typu `K` | `["a": 1, "b": 2]` |
 | twoje struktury | nazwane grupy wartości | `Punkt(1, 2)` |
 
 Znaki specjalne w tekstach: `\n` nowa linia, `\t` tabulator, `\r`, `\0`, `\\`, `\"`, `\'`.
@@ -332,6 +370,14 @@ for i in 0..10 {          // i = 0, 1, …, 9  (koniec nie jest wliczany)
 for imie in imiona {      // każdy element tablicy (albo każdy znak str)
     print(imie)
 }
+
+for i, imie in imiona {   // razem z indeksem: 0, 1, 2, ...
+    print(i, imie)
+}
+
+for klucz, wartosc in wiek {  // każdy wpis mapy, w kolejności dodawania kluczy
+    print(klucz, wartosc)     // (for klucz in wiek: same klucze)
+}
 ```
 
 - Warunek musi być typu `bool`. `if x {` z liczbą to błąd; napisz `if x != 0 {`.
@@ -375,11 +421,13 @@ fn bez_wyniku(str wiadomosc) {    // bez "->": nic nie zwraca
   Żeby zmienić zmienną wywołującego, przekaż wskaźnik, zobacz [Wskaźniki](#14-wskaźniki).
 - Funkcja z `-> typ` musi zwrócić wartość na każdej ścieżce. Finch to sprawdza.
 - Funkcji nie można definiować wewnątrz innej funkcji.
+- Funkcję, która może się nie udać, zapisuje się `-> int!` (albo `-> !` bez wyniku); zobacz
+  [Błędy jako wartości](#błędy-jako-wartości).
 - Długie wywołania możesz rozbić na kilka linijek wewnątrz nawiasów; przecinek po ostatnim argumencie jest dozwolony.
 
 ---
 
-## 10. Tablice
+## 10. Tablice i mapy
 
 ```c
 liczby := [5, 3, 8]        // tablica int
@@ -407,6 +455,45 @@ siatka := [[1, 2], [3, 4]] // tablice tablic
 | `print(a)` | wypisuje `[1, 2, 3]` |
 
 **Przypisanie kopiuje:** po `b := a` zmiana `b` nie zmienia `a`.
+
+### Mapy
+
+`map[K]V` znajduje wartości po kluczu. Kluczem może być liczba całkowita, `char`, `bool` albo `str`;
+wartością cokolwiek (tablice, struktury, inne mapy). Przechodzenie pętlą idzie w kolejności, w jakiej
+klucze zostały dodane po raz pierwszy.
+
+```c
+wiek := ["anna": 31, "bob": 25]     // literał mapy: map[str]int
+map[str][]str grupy                 // pusta mapa
+map[int]str nazwy = [:]             // [:] to pusta mapa tam, gdzie typ jest znany
+```
+
+| Operacja | Znaczenie |
+|---|---|
+| `m[k]` | wartość dla `k`; brak klucza zatrzymuje program komunikatem `the key "k" is not in the map` |
+| `m[k] = v` | dodaj albo zastąp |
+| `m[k] += 1`, `m[k].push(x)`, `m[k].pole = …` | zmiana brakującego klucza najpierw go dodaje, z wartością domyślną typu (0, `""`, `[]`, …) |
+| `m.len` | liczba kluczy |
+| `m.has(k)` | czy `k` jest w mapie? |
+| `m.get(k, domyslna)` | wartość albo `domyslna` (liczona tylko w razie potrzeby) |
+| `m.remove(k)` | usuwa `k`; `true`, jeśli był |
+| `m.clear()` | usuwa wszystko |
+| `m.keys()`, `m.values()` | nowe tablice, w kolejności dodawania |
+| `print(m)`, `str(m)` | `{"anna": 31, "bob": 25}` |
+
+```c
+map[str]int ile
+for slowo in tekst.split(" ") {
+    ile[slowo] += 1                   // liczenie: nowe słowo zaczyna od 0
+}
+for slowo, n in ile {
+    print(slowo, n)
+}
+```
+
+Wyszukiwanie używa haszowania (średnio stały czas). Tak jak tablice, mapy są właścicielami kluczy
+i wartości, kopiują się przy przypisaniu i zwalniają na końcu bloku. Nie dodawaj ani nie usuwaj kluczy
+mapy wewnątrz `for` po tej samej mapie; zbierz je do tablicy i zmień mapę po pętli.
 
 ---
 
@@ -437,7 +524,7 @@ przekazanie go do C jako `char*` działa.
 
 ---
 
-## 12. Struktury
+## 12. Struktury i metody
 
 ```c
 struct Gracz {
@@ -457,7 +544,34 @@ print(g)      // Gracz(imie: "Ola", zycia: 2, wyniki: [10], pozycja: Punkt(x: 5,
 
 - Przypisanie albo przekazanie struktury ją kopiuje, razem z jej tablicami i tekstami.
 - Struktura nie może zawierać samej siebie wprost; dla takiego pola użyj `ptr[Wezel]` albo `[]Wezel` (drzewa, listy).
-- Struktury nie mają metod. Pisz funkcje, które je przyjmują: `fn wylecz(Gracz g) -> Gracz`.
+
+### Metody
+
+Metoda to funkcja należąca do struktury: `fn Struktura.nazwa(...)`. W środku `self` to struktura,
+na której ją wywołano, i to jest sama wartość wywołującego, nie kopia: zmiany w `self` zostają.
+
+```c
+fn Gracz.wylecz(int ile) {
+    self.zycia += ile
+}
+
+fn Gracz.zyje() -> bool {
+    return self.zycia > 0
+}
+
+g := Gracz(imie: "Ola")
+g.wylecz(2)                // g.zycia wynosi teraz 5
+if g.zyje() { ... }
+
+druzyna[0].wylecz(1)       // na elemencie tablicy, polu, m[klucz], przez ptr[Gracz] ...
+```
+
+- Metoda jest w tym samym pliku (module) co jej struktura i jest dostępna wszędzie, gdzie ta struktura.
+- Metody można też dopisywać do **struktur z nagłówków C**: `fn Vector2.length() -> f32 { ... }`.
+- Metoda nie może nazywać się tak jak pole.
+- Wywołanie metody zmieniającej `self` na zmiennej pętli (`for g in druzyna { g.wylecz(1) }`) to błąd,
+  bo zmienna pętli jest tylko do odczytu; użyj `for i in 0..druzyna.len { druzyna[i].wylecz(1) }`.
+- Tak jak funkcje, metody mogą się nie udać (`-> !`); zobacz [Błędy jako wartości](#błędy-jako-wartości).
 
 ---
 
@@ -520,14 +634,16 @@ Użycie `.value`, `.pole` albo `[i]` na wskaźniku `null` **zatrzymuje program**
 |---|---|
 | `print(a, b, ...)` | Wypisuje wszystkie wartości oddzielone spacjami i przechodzi do nowej linii. Działa z każdym typem, także z tablicami i strukturami. |
 | `input()`, `input("pytanie")` | Czyta jedną linijkę wpisaną przez użytkownika (bez znaku nowej linii). Na końcu wejścia daje pusty tekst. |
-| `read_file(sciezka)` | Cały plik jako `str`. Jeśli nie da się go przeczytać, zatrzymuje program z czytelnym komunikatem. |
-| `write_file(sciezka, tekst)` | Zapisuje (zastępuje) plik; oddaje `true`, jeśli się udało. |
+| `read_file(sciezka)` | Cały plik jako `str`. Jeśli nie da się go przeczytać, zatrzymuje program z czytelnym komunikatem, chyba że obsłużysz to: `read_file(p) or ...`. |
+| `write_file(sciezka, tekst)` | Zapisuje (zastępuje) plik; oddaje `true`, jeśli się udało. Z `or` / `try` porażka niesie przyczynę. |
 | `file_exists(sciezka)` | `true` / `false` |
+| `delete_file(sciezka)` | Usuwa plik; `true`, jeśli się udało (albo przyczyna, z `or` / `try`). |
+| `error(komunikat)` | Porażka, którą zwraca funkcja mogąca się nie udać: `return error("...")`. |
 | `shell(polecenie)` | Uruchamia polecenie powłoki i oddaje jego kod wyjścia. |
 | `exit(kod)` | Natychmiast kończy program. |
 | `addr(x)` | Wskaźnik na `x`; `addr(funkcja)` daje C wskaźnik na funkcję (callback). |
 | `new(wartosc)`, `free(p)` | Ręczna pamięć na stercie (zobacz [Pamięć](#13-pamięć-kto-co-zwalnia)). |
-| `int(x)`, `str(x)`, `u8(x)`, … | Zamiany typów (zobacz [Zamiana typów](#zamiana-typów)). |
+| `int(x)`, `str(x)`, `u8(x)`, … | Zamiany typów (zobacz [Zamiana typów](#zamiana-typów)). `str(x)` działa na każdym typie i daje ten sam tekst, co `print`. `int(tekst) or 0` obsługuje tekst, który nie jest liczbą. |
 
 ---
 
@@ -669,6 +785,54 @@ Oba działają bezpośrednio; `examples/opengl.fch` i `examples/vulkan.fch` to k
 
 ## 18. Błędy
 
+### Błędy jako wartości
+
+Niektóre porażki są normalne: użytkownik wpisze `abc`, pliku nie ma. Finch obsługuje je bez wyjątków
+i bez ukrytych skoków. Funkcja, która może się nie udać, mówi to znakiem `!` po typie wyniku i kończy się
+porażką przez `return error("komunikat")`:
+
+```c
+fn port_z_tekstu(str tekst) -> int! {
+    n := int(tekst) or { return error("'" + tekst + "' to nie liczba") }
+    if n < 1 || n > 65535 {
+        return error("port " + str(n) + " jest poza zakresem")
+    }
+    return n
+}
+
+fn zapisz(str sciezka, str tekst) -> ! {   // może się nie udać, nic nie oddaje
+    try write_file(sciezka, tekst)
+}
+```
+
+Wywołujący **musi** obsłużyć porażkę, na jeden z trzech sposobów (zapomnienie to błąd kompilacji):
+
+| Kod | W razie porażki |
+|---|---|
+| `port := port_z_tekstu(s) or 8080` | użyj tej wartości (liczonej tylko przy porażce; może to być kolejne wywołanie z `or`) |
+| `port := port_z_tekstu(s) or { print(err); return }` | wykonaj blok; `err` to komunikat (`str`). Blok musi wyjść (`return`, `break`, `continue`, `exit`), chyba że wynik nie jest używany. |
+| `port := try port_z_tekstu(s)` | zakończ bieżącą funkcję tym samym błędem (musi też móc się nie udać) |
+
+```c
+fn wczytaj(str sciezka) -> Konfig! {
+    tekst := try read_file(sciezka)
+    port := try port_z_tekstu(tekst.trim())
+    return Konfig(port: port)
+}
+
+fn main() -> ! {                // main też może się nie udać: błąd zostanie wypisany, a kod wyjścia to 1
+    konfig := try wczytaj("app.conf")
+    ...
+}
+```
+
+Funkcje wbudowane, które mogą się nie udać, działają tak samo: `int(tekst)`, `float(tekst)`, `read_file`,
+`write_file`, `delete_file`. Bez `or` / `try` zachowują się jak wcześniej (`int("x")` zatrzymuje program,
+`write_file` oddaje `bool`).
+
+Pod spodem funkcja, która może się nie udać, zwraca wartość z flagą i komunikatem: bez alokacji przy
+sukcesie, bez zwijania stosu, a porażka kosztuje tyle, co zbudowanie komunikatu.
+
 ### Błędy kompilacji
 
 ```
@@ -692,11 +856,31 @@ Zamiast niezdefiniowanego zachowania (jak w C) Finch zatrzymuje się z komunikat
 | `runtime error: pop() on an empty array` | |
 | `runtime error: used .value on a null pointer` | także `.pole` i `[i]` przez `null` |
 | `runtime error: can't turn "x" into int` | `int(...)` / `float(...)` na tekście, który nie jest liczbą |
-| `runtime error: can't read the file "…"` | `read_file` na brakującym albo nieczytelnym pliku |
+| `runtime error: can't read the file "…"` | `read_file` na brakującym albo nieczytelnym pliku (obsłuż to przez `or`) |
+| `runtime error: the key "x" is not in the map …` | `m["x"]`, gdy mapa nie ma takiego klucza (użyj `.has` albo `.get`) |
+| `runtime error: called .f() on a null pointer` | metoda wywołana przez `null` w `ptr[T]` |
 
 ---
 
-## 19. Edytor: VS Code
+## 19. Edytory: VS Code, Kate i inne
+
+Wszystkie funkcje edytorów pochodzą z jednego serwera języka, `finch lsp`, który używa prawdziwego
+kompilatora: błędy na bieżąco, typy i opisy po najechaniu myszą, idź do definicji, podpowiedzi (pola,
+metody, metody map i tablic po `.`, zawartość modułów, nazwy z nagłówków C), konspekt pliku i podpowiedzi
+parametrów.
+
+### Kate (oraz KWrite, KDevelop)
+
+```sh
+editors/kate/install.sh
+```
+
+Instaluje podświetlanie (`~/.local/share/org.kde.syntax-highlighting/syntax/finch.xml`) i dopisuje `finch`
+do ustawień klienta LSP w Kate, zachowując twoje pozostałe serwery. Uruchom Kate ponownie i włącz wtyczkę
+**LSP Client**. Żeby uruchamiać programy, dodaj `finch run %f` jako cel we wtyczce **Build & Run**; komunikaty
+Fincha `plik:linia:kolumna: error:` są wtedy klikalne. Szczegóły: `editors/kate/README.md`.
+
+### VS Code
 
 Rozszerzenie **Finch** (`editors/vscode`, dołączane też do każdego wydania jako plik `.vsix`) daje:
 podświetlanie składni, błędy na bieżąco, podpowiedzi (także pola i metody po `.`), typy po najechaniu
@@ -704,8 +888,12 @@ myszą, idź do definicji (F12), konspekt pliku, podpowiedzi parametrów, szablo
 (`Ctrl+F5`). Błędy z **Finch: Build This File** trafiają do panelu Problems.
 
 Instalacja: Rozszerzenia → `…` → *Install from VSIX…* → wybierz `finch-lang-*.vsix`. Rozszerzenie uruchamia
-`finch` z PATH; jeśli jest gdzie indziej, ustaw **Finch: Path** w ustawieniach. Inne edytory obsługujące
-Language Server Protocol (Neovim, Helix, Zed, Emacs, Sublime) mogą używać `finch lsp` bezpośrednio.
+`finch` z PATH; jeśli jest gdzie indziej, ustaw **Finch: Path** w ustawieniach.
+
+### Inne
+
+Neovim, Helix, Zed, Emacs, Sublime i każdy inny edytor obsługujący Language Server Protocol:
+uruchamiaj `finch lsp` dla plików `.fch` (stdin/stdout, bez opcji).
 
 ## 20. Debugowanie
 
@@ -738,6 +926,9 @@ CodeView, który czyta debugger Visual Studio i WinDbg.
 | Biblioteka nie znajduje się przy starcie programu | Zlinkowano ją z folderu, którego system nie przeszukuje. Uruchamiaj w tym samym `nix-shell` albo zainstaluj ją systemowo. |
 | Windows: `finch` nie linkuje (błędy `LNK…` o `libcmt`, `kernel32`) | Zainstaluj Visual Studio Build Tools z *Desktop development with C++*. |
 | Windows: `finch.exe` się nie uruchamia (brak `libclang.dll`) | Trzymaj `libclang.dll` obok `finch.exe`. |
+| macOS: `finch` się nie uruchamia (`Library not loaded: …libLLVM…`) | `brew install llvm@21`. |
+| macOS: `can't find the C header 'stdio.h'` | Zainstaluj narzędzia wiersza poleceń: `xcode-select --install`. |
+| `--target arm64`: `no C compiler found to link with` | Zainstaluj `aarch64-linux-gnu-gcc` (Debian: `gcc-aarch64-linux-gnu`) albo ustaw `FINCH_CC`. |
 | `clang` w `nix-shell` nie widzi `stdio.h` | Masz stary `shell.nix`: `llvmPackages.clang` musi być przed `llvmPackages.libclang`. |
 | Program nigdy się nie kończy | Warunek pętli nigdy nie staje się fałszywy. Naciśnij Ctrl+C. |
 
@@ -756,17 +947,18 @@ Finch/
 │   ├── fail/       programy, które muszą się nie udać, z oczekiwanym błędem w 1. linijce
 │   ├── run.sh      uruchamia testy (MEMCHECK=1 sprawdza też pamięć valgrindem)
 │   └── boot.sh     buduje kompilator samohostujący nim samym i porównuje
-├── editors/vscode/ rozszerzenie VS Code
+├── editors/        rozszerzenie VS Code (vscode/), podświetlanie i konfiguracja LSP dla Kate (kate/)
 ├── docs/           ta dokumentacja (en, pl), łącznie ze ściągą
 ├── shell.nix       środowisko deweloperskie Nix
 └── CMakeLists.txt
 ```
 
 ```sh
-tests/run.sh                 # → 59 passed, 0 failed
+tests/run.sh                 # → 74 passed, 0 failed
 MEMCHECK=1 tests/run.sh      # to samo pod valgrindem: bez wycieków i złych dostępów do pamięci
 tests/boot.sh                # sprawdzenie samohostowania (wymaga clanga)
-tests/windows.sh             # każdy test zbudowany na Windowsa i uruchomiony w Wine
+tests/cross.sh windows       # każdy test zbudowany na Windowsa i uruchomiony w Wine
+tests/cross.sh arm64         # każdy test zbudowany na Linuksa ARM64 i uruchomiony w QEMU
 python3 tests/lsp_test.py    # serwer języka
 ```
 
@@ -774,12 +966,11 @@ python3 tests/lsp_test.py    # serwer języka
 
 ## 23. Obecne ograniczenia
 
-Finch 2.0 to kompletny mały język, ale nie skończony. Jeszcze nie ma:
+Jeszcze nie ma:
 
-- Metod w strukturach, typów generycznych, słowników (map), `match`. (Używaj tablic struktur i funkcji.)
-- Błędów jako wartości: błąd w `int("x")` albo `read_file` zatrzymuje program. Sprawdzaj wcześniej (`file_exists`).
+- Typów generycznych (własnego `Lista[T]`), interfejsów, `match`, enumów pisanych w Finchu.
 - Tekstu świadomego Unicode: `.len`, `s[i]` i `upper()` działają na bajtach / ASCII.
 - Wątków.
-- Platform innych niż Linux i Windows na x86-64 (macOS, ARM).
+- Windowsa na ARM64, systemów 32-bitowych, WebAssembly.
 
 Plan rozwoju jest w [README](../../README.pl.md#plan-rozwoju).

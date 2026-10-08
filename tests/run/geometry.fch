@@ -16,3 +16,8 @@ fn add(Vec a, Vec b) -> Vec {
 fn describe(Vec v) -> str {
     return "(" + str(v.x) + ", " + str(v.y) + ") of length " + str(length(v))
 }
+
+// a method in a module: callable as v.scaled(2) wherever Vec is used
+fn Vec.scaled(float k) -> Vec {
+    return Vec(self.x * k, self.y * k)
+}

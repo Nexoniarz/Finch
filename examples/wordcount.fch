@@ -1,0 +1,62 @@
+// Counts the words in a file: maps, methods and errors as values.
+//   finch run examples/wordcount.fch README.md
+
+struct Counter {
+    map[str]int counts
+    int total
+}
+
+// lower-case letters and digits only: "Hello," -> "hello"
+fn clean(str word) -> str {
+    out := ""
+    for c in word.lower() {
+        if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+            out += str(c)
+        }
+    }
+    return out
+}
+
+fn Counter.add(str text) {
+    for word in text.split(" ") {
+        w := clean(word)
+        if w.len > 0 {
+            self.counts[w] += 1        // a new word starts at 0
+            self.total += 1
+        }
+    }
+}
+
+// the n most frequent words, most frequent first
+fn Counter.top(int n) -> []str {
+    words := self.counts.keys()
+    for i in 0..words.len {
+        for j in i + 1..words.len {
+            if self.counts[words[j]] > self.counts[words[i]] {
+                w := words[i]
+                words[i] = words[j]
+                words[j] = w
+            }
+        }
+    }
+    if words.len > n {
+        words.resize(n)
+    }
+    return words
+}
+
+fn main([]str args) -> ! {
+    if args.len < 2 {
+        return error("usage: wordcount <file>")
+    }
+    text := try read_file(args[1])     // a missing file ends the program with a clear message
+
+    Counter c
+    for line in text.split("\n") {
+        c.add(line)
+    }
+    print(c.total, "words,", c.counts.len, "different")
+    for i, w in c.top(10) {
+        print(i + 1, w, c.counts[w])
+    }
+}

@@ -10,7 +10,7 @@ static const std::unordered_map<std::string, Tok> keywords = {
     {"in", Tok::In},       {"break", Tok::Break},   {"continue", Tok::Continue},
     {"true", Tok::True},   {"false", Tok::False},   {"null", Tok::Null},
     {"import", Tok::Import}, {"link", Tok::Link},   {"struct", Tok::Struct},
-    {"defer", Tok::Defer},
+    {"defer", Tok::Defer},  {"or", Tok::OrElse},     {"try", Tok::Try},
 };
 
 std::vector<Token> lex(int file) {
@@ -169,6 +169,8 @@ const char *tokName(Tok t) {
     case Tok::Link: return "'link'";
     case Tok::Struct: return "'struct'";
     case Tok::Defer: return "'defer'";
+    case Tok::OrElse: return "'or'";
+    case Tok::Try: return "'try'";
     case Tok::Colon: return "':'";
     case Tok::LParen: return "'('";
     case Tok::RParen: return "')'";

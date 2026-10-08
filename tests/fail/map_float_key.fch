@@ -1,0 +1,5 @@
+// expect: a map key must be a whole number, a char, a bool or a str, not float
+fn main() {
+    map[float]int m
+    print(m)
+}

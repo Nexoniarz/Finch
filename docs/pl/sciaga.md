@@ -16,7 +16,7 @@ Cały Finch na jednej stronie. Wyjaśnienia są w [przewodnikach](../../README.p
 | `finch lsp` | serwer języka (korzystają z niego edytory) |
 | `finch version` | wersja |
 | `-l lib` | dolinkuj bibliotekę C (jak `link "lib"`) |
-| `--target windows` / `linux` / triple | zbuduj dla innego systemu |
+| `--target windows` / `linux` / `arm64` / `macos` / triple | zbuduj dla innego systemu |
 | `-g` | informacje dla debuggera (gdb, lldb, Visual Studio) |
 | `-O0` | bez optymalizacji |
 
@@ -71,6 +71,7 @@ Jedna instrukcja na linijkę, bez średników, `{` w tej samej linijce, bez nawi
 | `u8 u16 u32 u64` | bez znaku, z rozmiarem |
 | `f32 f64` | zmiennoprzecinkowe |
 | `[]T` | tablica: `[1, 2, 3]`, `[]str imiona` |
+| `map[K]V` | mapa: `["a": 1]`, `map[str]int ile`, `[:]` |
 | `ptr[T]`, `ptr` | wskaźnik, wskaźnik bez typu |
 | `Nazwa` / `modul.Nazwa` | struktura |
 
@@ -100,6 +101,8 @@ if a > b { … } else if a == b { … } else { … }
 while x > 0 { … }
 for i in 0..10 { … }          // 0 … 9
 for el in lista { … }         // każdy element (albo znak str)
+for i, el in lista { … }      // razem z indeksem
+for klucz, wart in m { … }    // każdy wpis mapy, w kolejności dodawania
 break     continue     return wartosc
 defer sprzatanie()            // uruchomi się na końcu bloku
 ```
@@ -118,6 +121,47 @@ fn przywitaj(str imie) {      // bez wyniku
 ```
 
 Parametry zachowują się jak kopie. Kolejność w pliku nie ma znaczenia. Przecinek po ostatnim argumencie jest dozwolony.
+
+---
+
+## Metody
+
+```c
+fn Punkt.przesun(int dx, int dy) {   // self to Punkt, na którym wywołano (nie kopia)
+    self.x += dx
+    self.y += dy
+}
+fn Punkt.odleglosc() -> float { … }
+
+p.przesun(1, 2)       lista[0].przesun(1, 1)       wsk_na_punkt.przesun(0, 1)
+```
+
+Także na strukturach z C: `fn Vector2.length() -> f32 { … }`.
+
+---
+
+## Błędy jako wartości
+
+```c
+fn parsuj(str s) -> int! {           // ! = może się nie udać
+    if s.len == 0 {
+        return error("pusty")
+    }
+    return int(s) or { return error("to nie liczba: " + s) }
+}
+fn zapisz(str p, str t) -> ! {       // może się nie udać, bez wyniku
+    try write_file(p, t)
+}
+```
+
+| Kod | Przy porażce |
+|---|---|
+| `x := parsuj(s) or 0` | użyj 0 |
+| `x := parsuj(s) or { print(err); return }` | wykonaj blok (`err`: komunikat) |
+| `x := try parsuj(s)` | zakończ porażką też bieżącą funkcję |
+| `fn main() -> !` | porażka wypisuje `error: …`, kod wyjścia 1 |
+
+Funkcje wbudowane, które mogą się nie udać: `int(s)`, `float(s)`, `read_file`, `write_file`, `delete_file`.
 
 ---
 
@@ -155,6 +199,23 @@ Parametry zachowują się jak kopie. Kolejność w pliku nie ma znaczenia. Przec
 
 ---
 
+## Mapy `map[K]V`
+
+| Kod | Daje |
+|---|---|
+| `m := ["a": 1, "b": 2]` | mapa (klucze: liczby, char, bool, str) |
+| `m[k]` | wartość (brak klucza: program się zatrzymuje) |
+| `m[k] = v` | dodaj / zastąp |
+| `m[k] += 1`, `m[k].push(x)` | brakujący klucz zaczyna od wartości domyślnej (0, `[]`, …) |
+| `m.len` | liczba kluczy |
+| `m.has(k)` | czy jest |
+| `m.get(k, domyslna)` | wartość albo domyślna |
+| `m.remove(k)` | bool: czy był |
+| `m.clear()` | wyczyść |
+| `m.keys()`, `m.values()` | tablice, w kolejności dodawania |
+
+---
+
 ## Tekst `str`
 
 | Kod | Daje |
@@ -189,6 +250,8 @@ Parametry zachowują się jak kopie. Kolejność w pliku nie ma znaczenia. Przec
 | `char(66)` | `'B'` |
 | `bool(0)` | `false` |
 | `str(42)`, `str(1.5)`, `str(true)`, `str('c')` | tekst |
+| `str([1, 2])`, `str(m)`, `str(punkt)` | ten sam tekst, który pokazuje `print` |
+| `int("x") or 0`, `float(s) or 0.0` | liczba albo wartość zapasowa |
 | `str(bajty)` | `[]u8` → tekst |
 | `str(p)` | `char*` z C → tekst |
 | `ptr(p)`, `ptr(16)` | wskaźnik bez typu, ze wskaźnika albo liczby |
@@ -210,6 +273,7 @@ Automatycznie tylko wtedy, gdy nic nie ginie: mniejsza → większa liczba, dowo
 | `delete_file(sciezka)` | usuń plik |
 | `shell(polecenie)` | uruchom polecenie, jego kod wyjścia |
 | `exit(kod)` | zakończ program od razu |
+| `error(komunikat)` | `return error("…")` w funkcji `-> T!` |
 | `addr(x)` | wskaźnik na x; `addr(fn)` = callback dla C |
 | `new(wartosc)` | wartość na stercie → `ptr[T]` |
 | `free(p)` | oddaj ją |
@@ -281,11 +345,17 @@ ksztalty.Pudlo inne      // w deklaracjach
 | `pop() on an empty array` | `pop()` na pustej tablicy |
 | `used .value on a null pointer` | `.value` / `.pole` / `[i]` przez `null` |
 | `can't turn "x" into int` | `int("x")` |
-| `can't read the file "…"` | `read_file` |
+| `can't read the file "…"` | `read_file` (bez `or`) |
+| `the key "x" is not in the map` | `m["x"]` |
 
 ---
 
-## VS Code (rozszerzenie „Finch”)
+## Edytory
+
+Kate: `editors/kate/install.sh`, potem włącz wtyczkę **LSP Client**; uruchamianie przez **Build & Run** → `finch run %f`.
+Każdy edytor z LSP: `finch lsp`.
+
+### VS Code (rozszerzenie „Finch”)
 
 | Klawisz / akcja | Robi |
 |---|---|
@@ -295,7 +365,7 @@ ksztalty.Pudlo inne      // w deklaracjach
 | najechanie myszą | typ / sygnatura / opis |
 | `Ctrl+Spacja` | podpowiedzi (po `.`: pola, metody, zawartość modułu) |
 | `Ctrl+Shift+O` | funkcje i struktury w pliku |
-| `main`, `fn`, `fnr`, `struct`, `for`, `foreach`, `if`, `ife`, `while`, `input` + Tab | szablony |
+| `main`, `fn`, `fnr`, `fnf`, `method`, `struct`, `for`, `foreach`, `forkv`, `map`, `orb`, `if`, `ife`, `while`, `input` + Tab | szablony |
 | ustawienie `finch.path` | gdzie jest finch / finch.exe |
 
 ---
@@ -314,3 +384,7 @@ ksztalty.Pudlo inne      // w deklaracjach
 | `import` / `link` | zaimportuj / dolinkuj |
 | `struct` | struktura |
 | `defer` | odłóż (na koniec bloku) |
+| `or` | albo (co zrobić przy porażce) |
+| `try` | spróbuj (porażkę przekaż dalej) |
+| `self` | sam (w metodzie: struktura, na której ją wywołano) |
+| `map` | mapa |

@@ -1,0 +1,7 @@
+// expect: 'parse' can fail, so say what happens then
+fn parse(str s) -> int! {
+    return int(s) or { return error("bad") }
+}
+fn main() {
+    print(parse("1"))
+}

@@ -79,13 +79,20 @@ private:
     // A token can continue an expression only if it is on the same line (or we're inside brackets).
     bool sameLine() const { return parenDepth > 0 || !cur().newlineBefore; }
 
-    // int, u8, ptr, ptr[int], []str, Point, math.Vec ...
+    // int, u8, ptr, ptr[int], []str, map[str]int, Point, math.Vec ...
     Type type() {
         if (accept(Tok::LBracket)) {
             expect(Tok::RBracket, "']' (an array type looks like []int)");
             return Type::arrayOf(type());
         }
         if (!at(Tok::Ident)) unexpected("(expected a type like int, str, []int, ptr[int] or a struct name)");
+        if (cur().text == "map" && peekTok().kind == Tok::LBracket) {
+            next();
+            next();
+            Type k = type();
+            expect(Tok::RBracket, "']' (a map type looks like map[str]int)");
+            return Type::mapOf(k, type());
+        }
         std::string name = next().text;
         Type t;
         if (typeFromName(name, t)) {
@@ -111,7 +118,7 @@ private:
         if (!at(Tok::Ident)) return false;
         Tok n = peekTok().kind;
         if (n == Tok::Ident) return !peekTok().newlineBefore;
-        if (cur().text == "ptr" && n == Tok::LBracket) return true;
+        if ((cur().text == "ptr" || cur().text == "map") && n == Tok::LBracket) return true;
         return n == Tok::Dot && peekTok(2).kind == Tok::Ident && peekTok(3).kind == Tok::Ident &&
                !peekTok(3).newlineBefore;
     }
@@ -179,6 +186,12 @@ private:
 
         fn.namePos = pos();
         fn.name = expect(Tok::Ident, "a function name").text;
+        if (accept(Tok::Dot)) {  // fn Point.move(...): a method
+            fn.recv = fn.name;
+            fn.recvPos = fn.namePos;
+            fn.namePos = pos();
+            fn.name = expect(Tok::Ident, "a method name (fn Point.name(...))").text;
+        }
         expect(Tok::LParen);
         parenDepth++;
         if (!at(Tok::RParen)) {
@@ -193,7 +206,12 @@ private:
         }
         parenDepth--;
         expect(Tok::RParen);
-        fn.ret = accept(Tok::Arrow) ? type() : Type(Type::Void);
+        fn.ret = Type(Type::Void);
+        if (accept(Tok::Arrow)) {
+            if (!at(Tok::Not)) fn.ret = type();
+            fn.fallible = accept(Tok::Not);  // -> int!  or  -> !
+            if (!fn.fallible && fn.ret.kind == Type::Void) unexpected("(after '->' comes a type, or ! for a function that can fail)");
+        }
         fn.body = block();
         return fn;
     }
@@ -236,8 +254,15 @@ private:
             next();
             Pos varPos = pos();
             std::string var = expect(Tok::Ident, "a loop variable name").text;
+            std::string var2;
+            Pos var2Pos;
+            if (accept(Tok::Comma)) {  // for i, x in list  /  for key, value in map
+                var2Pos = pos();
+                var2 = expect(Tok::Ident, "a second loop variable name").text;
+            }
             expect(Tok::In);
             ExprPtr first = expr();
+            if (!var2.empty() && at(Tok::DotDot)) fail(var2Pos.line, var2Pos.col, "a range (for i in 0..n) has one loop variable");
             if (accept(Tok::DotDot)) {  // for i in 0..10
                 auto s = std::make_unique<ForStmt>(p);
                 s->var = var;
@@ -250,6 +275,8 @@ private:
             auto s = std::make_unique<ForEachStmt>(p);  // for x in list
             s->var = var;
             s->varPos = varPos;
+            s->var2 = var2;
+            s->var2Pos = var2Pos;
             s->list = std::move(first);
             s->body = block();
             return s;
@@ -323,7 +350,7 @@ private:
             return s;
         }
 
-        if (e->kind != ExprKind::Call && e->kind != ExprKind::Method)
+        if (e->kind != ExprKind::Call && e->kind != ExprKind::Method && e->kind != ExprKind::Try && e->kind != ExprKind::OrElse)
             fail(p.line, p.col, "this value is computed but never used");
         return std::make_unique<ExprStmt>(p, std::move(e));
     }
@@ -342,7 +369,17 @@ private:
 
     // ---------- expressions (lowest to highest precedence) ----------
 
-    ExprPtr expr() { return orExpr(); }
+    // f(x) or fallback  /  f(x) or { ... }: the lowest precedence, right to left
+    ExprPtr expr() {
+        ExprPtr l = orExpr();
+        if (!sameLine() || !at(Tok::OrElse)) return l;
+        Pos p = pos();
+        next();
+        auto e = std::make_unique<OrElseExpr>(p, std::move(l));
+        if (at(Tok::LBrace)) e->block = block();
+        else e->fallback = expr();
+        return e;
+    }
 
     ExprPtr orExpr() {
         ExprPtr l = andExpr();
@@ -429,6 +466,7 @@ private:
         if (accept(Tok::Minus)) return std::make_unique<UnaryExpr>(p, '-', unary());
         if (accept(Tok::Not)) return std::make_unique<UnaryExpr>(p, '!', unary());
         if (accept(Tok::Tilde)) return std::make_unique<UnaryExpr>(p, '~', unary());
+        if (accept(Tok::Try)) return std::make_unique<TryExpr>(p, postfix());
         return postfix();
     }
 
@@ -506,14 +544,37 @@ private:
             expect(Tok::RParen);
             return e;
         }
-        case Tok::LBracket: {  // [1, 2, 3]
+        case Tok::LBracket: {  // [1, 2, 3]  or a map: ["a": 1, "b": 2], [:]
             next();
-            auto a = std::make_unique<ArrayLitExpr>(p);
             parenDepth++;
-            while (!at(Tok::RBracket)) {
-                a->elems.push_back(expr());
-                if (!accept(Tok::Comma)) break;  // a trailing comma is fine
+            if (accept(Tok::Colon)) {
+                parenDepth--;
+                expect(Tok::RBracket, "']' (an empty map is [:])");
+                return std::make_unique<MapLitExpr>(p);
             }
+            if (!at(Tok::RBracket)) {
+                ExprPtr first = expr();
+                if (accept(Tok::Colon)) {
+                    auto m = std::make_unique<MapLitExpr>(p);
+                    m->keys.push_back(std::move(first));
+                    m->values.push_back(expr());
+                    while (accept(Tok::Comma) && !at(Tok::RBracket)) {  // a trailing comma is fine
+                        m->keys.push_back(expr());
+                        expect(Tok::Colon, "':' (every map entry is key: value)");
+                        m->values.push_back(expr());
+                    }
+                    parenDepth--;
+                    expect(Tok::RBracket);
+                    return m;
+                }
+                auto a = std::make_unique<ArrayLitExpr>(p);
+                a->elems.push_back(std::move(first));
+                while (accept(Tok::Comma) && !at(Tok::RBracket)) a->elems.push_back(expr());
+                parenDepth--;
+                expect(Tok::RBracket);
+                return a;
+            }
+            auto a = std::make_unique<ArrayLitExpr>(p);
             parenDepth--;
             expect(Tok::RBracket);
             return a;

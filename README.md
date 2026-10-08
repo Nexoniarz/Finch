@@ -38,6 +38,8 @@ fn main() {
 - **Safer than C, where it is cheap.** No silent narrowing and no signed/unsigned mixing. Out-of-range
   indexes, division by zero and null pointers stop with a clear runtime error instead of undefined behavior.
   Operator precedence that does not bite (`x & 1 == 0` means what it says).
+- **Practical.** Maps, methods, errors as values (`int(s) or 0`, `try read_file(p)`), modules, any C
+  library, and a language server for your editor. Runs on Linux, macOS and Windows, on x86-64 and ARM64.
 - **Errors that talk like a person:**
   ```
   game.fch:3:13: error: 'y' must be i32, but this is int (use i32(...) to convert)
@@ -51,11 +53,18 @@ fn main() {
 
 ## Quick start
 
-**Windows:** download `finch-windows-x64.zip` from the [releases](https://github.com/Nexoniarz/Finch/releases),
-install LLVM 21 and Visual Studio Build Tools (C++), and see the
-[install steps](docs/en/for-technicians.md#windows). **VS Code:** install the `finch-lang` `.vsix` from the same release.
+Ready builds are in the [releases](https://github.com/Nexoniarz/Finch/releases):
 
-**Linux** x86-64, LLVM 21:
+| System | Download | Also needs |
+|---|---|---|
+| Windows x64 | `finch-windows-x64.zip` | LLVM 21, Visual Studio Build Tools (C++); [steps](docs/en/for-technicians.md#windows) |
+| macOS (Apple Silicon) | `finch-macos-arm64.tar.gz` | `brew install llvm@21`; [steps](docs/en/for-technicians.md#macos) |
+| Linux x64 / ARM64 | `finch-linux-x64.tar.gz` / `finch-linux-arm64.tar.gz` | LLVM 21 libraries, a C compiler; [steps](docs/en/for-technicians.md#linux) |
+
+Editors: **Kate** (`editors/kate/install.sh`), **VS Code** (the `finch-lang` `.vsix` from the release), or any
+editor with LSP support (`finch lsp`).
+
+**Building it yourself** (Linux or macOS, LLVM 21):
 
 ```sh
 git clone https://github.com/Nexoniarz/Finch.git
@@ -66,7 +75,7 @@ ninja -C build
 
 ./build/finch run examples/hello.fch
 ./build/finch build examples/tour.fch -o tour && ./tour
-tests/run.sh                        # 59 passed, 0 failed
+tests/run.sh                        # 74 passed, 0 failed
 tests/boot.sh                       # the compiler written in Finch builds itself
 ```
 
@@ -86,17 +95,20 @@ Pick the guide that fits you:
 | | |
 |---|---|
 | Variables | `x := 5` (inferred) or `int x = 5` |
-| Types | `int` `float` `bool` `char` `str`, sized `i8`…`i64` `u8`…`u64` `f32` `f64`, arrays `[]T`, pointers `ptr[T]` |
+| Types | `int` `float` `bool` `char` `str`, sized `i8`…`i64` `u8`…`u64` `f32` `f64`, arrays `[]T`, maps `map[K]V`, pointers `ptr[T]` |
 | Functions | `fn add(int a, int b) -> int { return a + b }` |
 | Structs | `struct Point { … }` with one field per line (`int x`, `int y = 0`); create with `Point(1, 2)` or `Point(x: 1)` |
-| Arrays | `nums := [1, 2, 3]`, `nums.push(4)`, `nums[0]`, `nums.len`, `for n in nums { }` |
+| Methods | `fn Point.move(int dx) { self.x += dx }` → `p.move(3)` |
+| Arrays | `nums := [1, 2, 3]`, `nums.push(4)`, `nums[0]`, `nums.len`, `for i, n in nums { }` |
+| Maps | `ages := ["ann": 31]`, `ages["bob"] = 25`, `ages.has("cy")`, `counts[w] += 1`, `for k, v in ages { }` |
+| Errors | `fn parse(str s) -> int! { … return error("bad") }` → `parse(s) or 0`, `parse(s) or { … }`, `try parse(s)` |
 | Text | `"a" + "b"`, `str(42)`, `int("42")`, `s.split(",")`, `s.upper()`, `s[0]` |
 | Control | `if` / `else if` / `else`, `while`, `for i in 0..10`, `break`, `continue`, `defer` |
 | Memory | automatic for arrays, text and structs; `new(...)` / `free(...)` for your own heap structures |
 | Modules | `import shapes` → `shapes.area(b)` |
 | C interop | `import "stdio.h"`, `link "glfw"`, `link "mine.c"`, `addr(fn)` for callbacks |
 | I/O | `print(...)`, `input("? ")`, `read_file`, `write_file`, `shell` |
-| Tools | `finch run/build/ir`, `-g` for gdb, `-O0` |
+| Tools | `finch run/build/ir/lsp`, `--target windows/arm64/macos`, `-g` for gdb/lldb, `-O0` |
 
 ## Examples
 
@@ -106,6 +118,7 @@ Pick the guide that fits you:
 | [`examples/tour.fch`](examples/tour.fch) | variables, functions, conditions, loops |
 | [`examples/guess.fch`](examples/guess.fch) | a guessing game: input, loops, C's `rand` |
 | [`examples/todo.fch`](examples/todo.fch) | structs, arrays, strings and files |
+| [`examples/wordcount.fch`](examples/wordcount.fch) | maps, methods and errors as values: the most frequent words in a file |
 | [`examples/structs.fch`](examples/structs.fch) | structs, arrays of structs, a linked list with `new`/`free` |
 | [`examples/types.fch`](examples/types.fch) | sized numbers and pointers |
 | [`examples/c_import.fch`](examples/c_import.fch) | `printf`, `math.h`, `malloc`/`free`, `stderr` |
@@ -132,19 +145,20 @@ Pick the guide that fits you:
 - [x] Bootstrap: a Finch compiler written in Finch that builds itself
 - [x] Windows: `finch.exe`, `.exe` programs, the Microsoft x64 ABI; cross-building from Linux (`--target windows`)
 - [x] Language server (`finch lsp`) and a VS Code extension
-- [ ] Maps, methods on structs, `match`
-- [ ] Error values instead of stopping the program
-- [ ] More platforms (macOS, ARM64)
+- [x] macOS and ARM64 (Linux and Apple Silicon), with their C calling conventions; Kate support
+- [x] Methods on structs, maps, errors as values (`!`, `or`, `try`)
+- [ ] Generics, `match`, enums
+- [ ] A standard library in Finch (JSON, paths, time, processes)
 
 ## Layout
 
 ```
-src/        compiler: lexer, parser, AST, codegen, C import + ABI, driver (C++17, ~4.5k lines)
+src/        compiler: lexer, parser, AST, codegen, C import + ABI, language server, driver (C++17, ~7k lines)
 runtime/    the small C runtime linked into every program
 boot/       the Finch compiler written in Finch (~3k lines)
 examples/   example programs
-editors/    the VS Code extension
-tests/      run/ (golden output), fail/ (expected errors), run.sh, boot.sh, windows.sh, lsp_test.py
+editors/    VS Code extension, Kate highlighting and LSP setup
+tests/      run/ (golden output), fail/ (expected errors), run.sh, boot.sh, cross.sh, lsp_test.py
 docs/       en/ and pl/ guides for three audiences
 ```
 
