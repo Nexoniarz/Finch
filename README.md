@@ -1,4 +1,9 @@
-# Finch 🐦
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img alt="Finch" src="assets/logo.svg" width="460">
+  </picture>
+</p>
 
 **Small, quick, sharp.** A programming language on LLVM with C-like syntax, simple enough
 to learn in an hour and as fast as C.

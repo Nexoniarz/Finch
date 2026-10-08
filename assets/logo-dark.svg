@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 300" width="1000" height="300">
+  <title>Finch</title>
+  <g transform="translate(0 6) scale(0.56)">
+  <g transform="translate(0 -26)">
+    <!-- tail: two feathers -->
+    <path d="M178 316 L60 360 Q50 374 64 382 L192 348 Z" fill="#F5F3EF"/>
+    <path d="M182 334 L78 398 Q72 412 88 414 L200 360 Z" fill="#C9C4BC"/>
+    <!-- body -->
+    <path d="M150 330 C150 220 240 140 330 140 C400 140 440 190 440 245 C440 330 370 392 280 395 C220 398 168 372 150 330 Z" fill="#FF7A1A"/>
+    <!-- belly light -->
+    <path d="M236 390 C336 398 428 330 438 254 C432 300 404 330 372 350 C336 372 290 384 236 390 Z" fill="#FFA24D"/>
+    <!-- wing, swept back -->
+    <path d="M352 256 C306 232 228 256 160 340 C244 336 318 316 352 256 Z" fill="#1B1F2A"/>
+    <path d="M330 260 C292 252 246 270 206 306" fill="none" stroke="#FFFFFF" stroke-width="9" stroke-linecap="round"/>
+    <!-- beak -->
+    <path d="M434 212 L494 234 L434 254 Z" fill="#FFC145"/>
+    <!-- eye -->
+    <circle cx="382" cy="206" r="16" fill="#1B1F2A"/>
+    <circle cx="388" cy="200" r="5" fill="#FFFFFF"/>
+    <!-- legs and branch -->
+    <path d="M276 394 L270 420 M316 390 L318 420" stroke="#F5F3EF" stroke-width="10" stroke-linecap="round"/>
+    <path d="M120 424 L440 424" stroke="#F5F3EF" stroke-width="14" stroke-linecap="round"/>
+  </g>
+  </g>
+  <g transform="translate(330 20)">
+  <g fill="none" stroke="#F5F3EF" stroke-width="30" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M60 230 L60 112 C60 84 78 70 104 70"/>
+    <path d="M32 142 L98 142"/>
+    <path d="M150 146 L150 230"/>
+    <path d="M210 230 L210 146 M210 188 C210 162 230 142 258 142 C286 142 302 160 302 188 L302 230"/>
+    <path d="M428 162 C414 148 400 142 384 142 C356 142 336 162 336 187 C336 212 356 232 384 232 C400 232 414 226 428 212"/>
+    <path d="M478 230 L478 70 M478 188 C478 162 498 142 526 142 C554 142 570 160 570 188 L570 230"/>
+  </g>
+  <circle cx="150" cy="96" r="19" fill="#FF7A1A"/>
+  </g>
+</svg>

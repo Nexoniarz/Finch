@@ -1,4 +1,9 @@
-# Finch 🐦
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img alt="Finch" src="assets/logo.svg" width="460">
+  </picture>
+</p>
 
 **Mały, zwinny, skuteczny.** Język programowania na LLVM ze składnią podobną do C,
 na tyle prosty, że nauczysz się go w godzinę, i tak szybki jak C.
