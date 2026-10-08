@@ -3,6 +3,7 @@
 // either INTEGER (general registers) or SSE (xmm registers); bigger ones go through memory.
 
 #include "codegen_impl.h"
+#include "target.h"
 
 using namespace llvm;
 
@@ -44,6 +45,18 @@ AbiArg Codegen::classify(const FType &t) {
     AbiArg a;
     if (t.kind != FType::Struct) return a;  // Direct
     uint64_t size = dl->getTypeAllocSize(ty(t));
+    if (g_target.windows) {
+        // Microsoft x64: 1, 2, 4 or 8 bytes travel as one integer (even if they hold floats);
+        // anything else is copied by the caller and passed by address
+        if (size == 1 || size == 2 || size == 4 || size == 8) {
+            a.kind = AbiArg::Expand;
+            a.parts.push_back(b.getIntNTy(size * 8));
+            a.coerced = a.parts[0];
+        } else {
+            a.kind = AbiArg::Indirect;
+        }
+        return a;
+    }
     if (size > 16 || size == 0) {
         a.kind = AbiArg::Memory;
         return a;
@@ -96,6 +109,7 @@ static Plan makePlan(Codegen &cg, const FType &ret, const std::vector<FType> &pa
     llvm::Type *retTy = cg.ty(ret);
     if (ret.kind == FType::Str) retTy = cg.b.getPtrTy();
     pl.ret = cg.classify(ret);
+    if (pl.ret.kind == AbiArg::Indirect) pl.ret.kind = AbiArg::Memory;  // returned through a hidden pointer
     if (pl.ret.kind == AbiArg::Memory) {
         types.push_back(cg.b.getPtrTy());  // sret
         retTy = cg.b.getVoidTy();
@@ -108,7 +122,7 @@ static Plan makePlan(Codegen &cg, const FType &ret, const std::vector<FType> &pa
         if (a.kind == AbiArg::Expand) {
             int ni = 0, ns = 0;
             for (llvm::Type *p : a.parts) (p->isIntegerTy() ? ni : ns)++;
-            if (ni <= intRegs && ns <= sseRegs) {
+            if (g_target.windows || (ni <= intRegs && ns <= sseRegs)) {
                 intRegs -= ni;
                 sseRegs -= ns;
                 for (llvm::Type *p : a.parts) types.push_back(p);
@@ -116,7 +130,7 @@ static Plan makePlan(Codegen &cg, const FType &ret, const std::vector<FType> &pa
                 a.kind = AbiArg::Memory;  // out of registers: the whole struct goes on the stack
             }
         }
-        if (a.kind == AbiArg::Memory) types.push_back(cg.b.getPtrTy());
+        if (a.kind == AbiArg::Memory || a.kind == AbiArg::Indirect) types.push_back(cg.b.getPtrTy());
         if (a.kind == AbiArg::Direct) {
             if (t.isFloat()) sseRegs--;
             else intRegs--;
@@ -151,6 +165,8 @@ static AttributeList attrsFor(Codegen &cg, const Plan &pl, const FType &ret, con
             uint64_t align = std::max<uint64_t>(8, params[i].info->isC ? params[i].info->cdecl->align : 8);
             al = al.addParamAttribute(ctx, idx, Attribute::getWithByValType(ctx, cg.ty(params[i])));
             al = al.addParamAttribute(ctx, idx, Attribute::getWithAlignment(ctx, Align(align)));
+            idx++;
+        } else if (a.kind == AbiArg::Indirect) {
             idx++;
         } else if (a.kind == AbiArg::Expand) {
             idx += a.parts.size();
@@ -221,8 +237,8 @@ Value_ Codegen::emitCCall(const CFunc &f, Function *fn, std::vector<Value_> args
         const AbiArg &a = pl.params[i];
         if (ps[i].kind == FType::Str) {
             ll.push_back(cstr(v.v));
-        } else if (a.kind == AbiArg::Memory) {
-            Value *s = tmpOf(ty(ps[i]));
+        } else if (a.kind == AbiArg::Memory || a.kind == AbiArg::Indirect) {
+            Value *s = tmpOf(ty(ps[i]));  // a copy the callee may change
             cast<AllocaInst>(s)->setAlignment(Align(16));
             b.CreateStore(v.v, s);
             ll.push_back(s);
@@ -278,7 +294,7 @@ Function *Codegen::cThunk(Fn &fn, Pos p) {
     std::vector<Value *> args;
     for (size_t i = 0; i < fn.params.size(); i++) {
         const AbiArg &a = pl.params[i];
-        if (a.kind == AbiArg::Memory) {
+        if (a.kind == AbiArg::Memory || a.kind == AbiArg::Indirect) {
             args.push_back(b.CreateLoad(ty(fn.params[i]), th->getArg(ai++)));
         } else if (a.kind == AbiArg::Expand) {
             Value *s = abiSlot(*this, fn.params[i], a);

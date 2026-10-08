@@ -101,9 +101,11 @@ struct ModuleScope {
     std::set<std::string> imports;  // Finch modules visible here
 };
 
-// How a C struct travels through registers (System V x86-64).
+// How a C struct travels: System V x86-64 (Linux) or Microsoft x64 (Windows).
 struct AbiArg {
-    enum Kind { Direct, Expand, Memory } kind = Direct;
+    // Direct: as is. Expand: split into register-sized parts. Memory: on the stack (byval), or
+    // returned through a hidden pointer (sret). Indirect (Windows): a pointer to a copy the caller made.
+    enum Kind { Direct, Expand, Memory, Indirect } kind = Direct;
     std::vector<llvm::Type *> parts;  // Expand: one value per eightbyte
     llvm::Type *coerced = nullptr;    // Expand: { parts... } for returns
 };

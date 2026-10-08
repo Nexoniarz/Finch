@@ -17,13 +17,24 @@ add_executable(finch
     src/codegen_builtins.cpp
     src/abi.cpp
     src/cimport.cpp
+    src/target.cpp
 )
 
 # The runtime (runtime/finch_rt.c) is embedded into the compiler as a string;
 # finch compiles it once into ~/.cache/finch and links it into every program.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/runtime/finch_rt.c)
+# (written as several raw string pieces: MSVC limits one literal to 16 KB)
 file(READ ${CMAKE_SOURCE_DIR}/runtime/finch_rt.c FINCH_RT_SOURCE)
-file(WRITE ${CMAKE_BINARY_DIR}/rt_source.inc "static const char *kRuntimeSource = R\"FINCHRT(${FINCH_RT_SOURCE})FINCHRT\";\n")
+string(LENGTH "${FINCH_RT_SOURCE}" FINCH_RT_LENGTH)
+set(FINCH_RT_INC "static const char *kRuntimeSource =\n")
+set(FINCH_RT_POS 0)
+while(FINCH_RT_POS LESS FINCH_RT_LENGTH)
+    string(SUBSTRING "${FINCH_RT_SOURCE}" ${FINCH_RT_POS} 8000 FINCH_RT_PIECE)
+    string(APPEND FINCH_RT_INC "R\"FINCHRT(${FINCH_RT_PIECE})FINCHRT\"\n")
+    math(EXPR FINCH_RT_POS "${FINCH_RT_POS} + 8000")
+endwhile()
+string(APPEND FINCH_RT_INC ";\n")
+file(WRITE ${CMAKE_BINARY_DIR}/rt_source.inc "${FINCH_RT_INC}")
 target_include_directories(finch PRIVATE ${CMAKE_BINARY_DIR})
 
 # libclang reads C headers for `import "stdio.h"`
@@ -35,7 +46,11 @@ endif()
 
 target_include_directories(finch SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS} ${LIBCLANG_INCLUDE})
 target_compile_definitions(finch PRIVATE ${LLVM_DEFINITIONS} FINCH_VERSION="${PROJECT_VERSION}")
-target_compile_options(finch PRIVATE -Wall -Wextra)
+if(MSVC)
+    target_compile_options(finch PRIVATE /W3 /utf-8 /EHsc /wd4244 /wd4267 /wd4146 /wd4624)
+else()
+    target_compile_options(finch PRIVATE -Wall -Wextra)
+endif()
 
 # Link the one shared libLLVM when available: libclang uses it too, and two copies
 # of LLVM in one process crash on exit.

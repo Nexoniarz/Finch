@@ -387,7 +387,18 @@ void Codegen::emitPrint(Value *v, const FType &t, bool quoted) {
     else if (t.kind == FType::Bool) printf_("%s", {b.CreateSelect(v, b.CreateGlobalString("true", "true"), b.CreateGlobalString("false", "false"))});
     else if (t.kind == FType::Str)
         printf_(quoted ? "\"%.*s\"" : "%.*s", {b.CreateTrunc(b.CreateExtractValue(v, 1), b.getInt32Ty()), cstr(v)});
-    else if (t.isPtr()) printf_("%p", {v});
+    else if (t.isPtr()) {  // the same on every system: null or 0x...
+        Value *isNull = b.CreateIsNull(v);
+        BasicBlock *nul = newBlock("ptr.null"), *addr = newBlock("ptr.addr"), *done = newBlock("ptr.done");
+        b.CreateCondBr(isNull, nul, addr);
+        b.SetInsertPoint(nul);
+        printf_("null", {});
+        b.CreateBr(done);
+        b.SetInsertPoint(addr);
+        printf_("0x%llx", {b.CreatePtrToInt(v, b.getInt64Ty())});
+        b.CreateBr(done);
+        b.SetInsertPoint(done);
+    }
     else if (t.kind == FType::Null) printf_("null", {});
     else b.CreateCall(printFn(t), {tmp(v)});
 }

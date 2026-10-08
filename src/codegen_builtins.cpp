@@ -8,7 +8,7 @@ namespace finch {
 
 bool Codegen::isBuiltin(const std::string &n) {
     static const std::set<std::string> names = {"print", "addr", "input", "new", "free", "read_file", "write_file",
-                                                "file_exists", "exit", "shell"};
+                                                "file_exists", "delete_file", "exit", "shell"};
     FType t;
     return names.count(n) || typeFromName(n, t);
 }
@@ -92,6 +92,8 @@ Function *Codegen::rt(const std::string &name) {
         {"finch_read_file", {V, {P, P, P, I}}},
         {"finch_write_file", {I32, {P, P}}},
         {"finch_shell", {I, {P}}},
+        {"finch_delete_file", {I32, {P}}},
+        {"finch_std_stream", {P, {I32}}},
     };
     auto it = sigs.find(name);
     if (it == sigs.end()) {
@@ -215,6 +217,15 @@ Value_ Codegen::call(const CallExpr &c) {
         b.CreateCall(libc("fflush", b.getInt32Ty(), {b.getPtrTy()}), {ConstantPointerNull::get(b.getPtrTy())});
         b.CreateCall(libc("exit", b.getVoidTy(), {b.getInt32Ty()}), {code});
         return {nullptr, FType::Void};
+    }
+    if (n == "delete_file") {
+        Value_ path = coerce(expr(one("path")), FType::Str, c.args[0]->pos, "the file name");
+        Value *ss = tmpOf(ty(FType::Str));
+        b.CreateCall(rt("finch_str_copy"), {ss, tmp(path.v)});  // NUL-terminated copy
+        Value *r = b.CreateCall(rt("finch_delete_file"), {ss});
+        dropAt(ss, FType::Str);
+        release(path);
+        return {b.CreateICmpNE(r, b.getInt32(0)), FType::Bool};
     }
     if (n == "read_file" || n == "file_exists") {
         Value_ path = coerce(expr(one("path")), FType::Str, c.args[0]->pos, "the file name");

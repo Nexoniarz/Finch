@@ -1,5 +1,6 @@
 #include "cimport.h"
 #include "error.h"
+#include "target.h"
 
 #include <clang-c/Index.h>
 
@@ -7,20 +8,20 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sstream>
 
 namespace {
 
 // Ask the system C compiler where it looks for headers, so we find the same stdio.h it would.
 std::vector<std::string> systemIncludeDirs() {
-    const char *cc = std::getenv("CC");
-    std::string cmd = std::string(cc ? cc : "cc") + " -E -v -x c /dev/null 2>&1";
+    std::string output;
+    capture(g_target.cc + " -E -v -x c " + nullDevice(), output);
     std::vector<std::string> dirs;
-    FILE *p = popen(cmd.c_str(), "r");
-    if (!p) return dirs;
-    char line[4096];
+    std::stringstream lines(output);
     bool inList = false;
-    while (std::fgets(line, sizeof line, p)) {
-        std::string l = line;
+    for (std::string l; std::getline(lines, l);) {
+        if (!l.empty() && l.back() == '\r') l.pop_back();
+        l += "\n";
         if (l.rfind("#include <...> search starts here:", 0) == 0) { inList = true; continue; }
         if (l.rfind("End of search list.", 0) == 0) break;
         if (!inList) continue;
@@ -31,7 +32,6 @@ std::vector<std::string> systemIncludeDirs() {
         if (d.size() > 20 && d.compare(d.size() - 20, 20, " (framework directory)") == 0) continue;
         dirs.push_back(d);
     }
-    pclose(p);
     return dirs;
 }
 
@@ -318,7 +318,9 @@ CImports importHeaders(const std::vector<Import> &imports, const std::vector<std
     for (const Import &im : imports) any |= im.isC;
     if (!any) return out;
 
-    std::vector<std::string> args = {"-x", "c", "-std=gnu11"};
+    // parse for the target system: sizes (long is 32 bits on Windows) and headers differ
+    std::vector<std::string> args = {"-x", "c", "-std=gnu11", "--target=" + g_target.triple.str()};
+    if (g_target.windows) args.push_back("-D_USE_MATH_DEFINES");  // M_PI and friends, as on Linux
     for (const std::string &d : dirs) args.push_back("-I" + d);
     for (const std::string &d : systemIncludeDirs()) args.push_back("-isystem" + d);
     std::vector<const char *> argv;

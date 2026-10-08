@@ -25,7 +25,10 @@ Codegen::Codegen(LLVMContext &c, const std::vector<Program> &ps, const CImports 
         }
         diUnit = di->createCompileUnit(dwarf::DW_LANG_C, diFiles[0], "finch " FINCH_VERSION, false, "", 0);
         mod->addModuleFlag(Module::Warning, "Debug Info Version", DEBUG_METADATA_VERSION);
-        mod->addModuleFlag(Module::Warning, "Dwarf Version", 5);
+        if (tm.getTargetTriple().isWindowsMSVCEnvironment())
+            mod->addModuleFlag(Module::Warning, "CodeView", 1);  // what Visual Studio and WinDbg read
+        else
+            mod->addModuleFlag(Module::Warning, "Dwarf Version", 5);
     }
 }
 
@@ -657,6 +660,12 @@ Value_ Codegen::expr(const Expr &e) {
             }
             if (modules[curModule].imports.count(v.name))
                 failAt(e.pos.file, e.pos.line, e.pos.col, "'" + v.name + "' is a module; use something from it, like " + v.name + ".name(...)");
+            // C's standard streams are macros on some systems; the runtime knows them everywhere
+            if (!cimports.globals.count(v.name) && (v.name == "stdin" || v.name == "stdout" || v.name == "stderr") &&
+                cimports.fns.count("fprintf")) {
+                int which = v.name == "stdin" ? 0 : v.name == "stdout" ? 1 : 2;
+                return {b.CreateCall(rt("finch_std_stream"), {b.getInt32(which)}), FType::Ptr};
+            }
         }
         Place pl = place(e);
         return {b.CreateLoad(ty(pl.type), pl.addr, v.name), pl.type};

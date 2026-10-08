@@ -15,7 +15,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <sys/wait.h>
+#endif
 
 typedef struct {
     char *ptr;
@@ -379,17 +381,25 @@ void finch_args(FArr *out, int argc, char **argv) {
 void finch_input(FStr *out, const FStr *prompt) {
     if (prompt->len) fwrite(prompt->ptr, 1, (size_t)prompt->len, stdout);
     fflush(stdout);
-    char *line = NULL;
-    size_t size = 0;
-    ssize_t n = getline(&line, &size, stdin);
-    if (n < 0) {
+    // read one line of any length (getline isn't available everywhere)
+    size_t size = 128, n = 0;
+    char *line = finch_alloc((int64_t)size);
+    int c, got = 0;
+    while ((c = fgetc(stdin)) != EOF) {
+        got = 1;
+        if (c == '\n') break;
+        if (n + 1 >= size) line = must(realloc(line, size *= 2));
+        line[n++] = (char)c;
+    }
+    if (!got) {
         free(line);
         str_static(out, empty);
         return;
     }
-    while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = 0;
+    while (n > 0 && line[n - 1] == '\r') n--;
+    line[n] = 0;
     out->ptr = line;
-    out->len = n;
+    out->len = (int64_t)n;
     out->cap = (int64_t)size;
 }
 
@@ -423,10 +433,19 @@ void finch_read_file(FStr *out, const FStr *path, const char *file, int64_t line
 int64_t finch_shell(const FStr *cmd) {
     fflush(stdout);
     int status = system(cmd->ptr ? cmd->ptr : "");
+#ifdef _WIN32
+    return status;  // Windows gives the exit code directly
+#else
     if (status == -1) return -1;
     if (WIFEXITED(status)) return WEXITSTATUS(status);
     return 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+#endif
 }
+
+int finch_delete_file(const FStr *path) { return remove(path->ptr ? path->ptr : "") == 0; }
+
+// stdin/stdout/stderr are macros on some systems (Windows), so Finch asks for them here
+void *finch_std_stream(int i) { return i == 0 ? (void *)stdin : i == 1 ? (void *)stdout : (void *)stderr; }
 
 int finch_write_file(const FStr *path, const FStr *text) {
     FILE *f = fopen(path->ptr, "wb");

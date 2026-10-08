@@ -17,7 +17,7 @@ for f in run/*.fch; do
     want="${f%.fch}.out"
     input="${f%.fch}.in"
     [ -f "$input" ] || input=/dev/null
-    got=$("$FINCH" run "$f" < "$input" 2>&1)
+    got=$("$FINCH" run "$f" < "$input" 2>&1 | tr -d '\r')   # Windows ends lines with \r\n
     if [ "$got" != "$(cat "$want")" ]; then
         failed=$((failed + 1))
         echo "FAIL $f"
@@ -41,6 +41,7 @@ for f in fail/*.fch; do
     expect=$(head -1 "$f" | sed -n 's|^// expect: ||p')
     got=$("$FINCH" run "$f" < /dev/null 2>&1)
     status=$?
+    got=$(echo "$got" | tr -d '\r')
     if [ $status -ne 0 ] && [[ "$got" == *"$expect"* ]]; then
         pass=$((pass + 1))
     else

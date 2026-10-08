@@ -3,6 +3,7 @@
 #include "error.h"
 #include "lexer.h"
 #include "parser.h"
+#include "target.h"
 
 #include <llvm/Config/llvm-config.h>
 #include <llvm/IR/LegacyPassManager.h>
@@ -23,7 +24,6 @@
 #include <map>
 #include <sstream>
 #include <string>
-#include <sys/wait.h>
 #include <vector>
 
 #include "rt_source.inc"  // kRuntimeSource: runtime/finch_rt.c, embedded at build time
@@ -39,9 +39,10 @@ static void usage() {
                  "  finch ir    <file.fch>              show the generated LLVM IR\n"
                  "  finch version                      show the version\n"
                  "\n"
-                 "  -l <lib>   link a C library, same as  link \"lib\"  in the file\n"
-                 "  -g         add debug info (for gdb / lldb)\n"
-                 "  -O0        skip optimizations (to read the raw IR)\n");
+                 "  -l <lib>          link a C library, same as  link \"lib\"  in the file\n"
+                 "  --target <name>   build for another system: windows, linux, or an LLVM triple\n"
+                 "  -g                add debug info (gdb / lldb / Visual Studio)\n"
+                 "  -O0               skip optimizations (to read the raw IR)\n");
     std::exit(1);
 }
 
@@ -52,11 +53,6 @@ static bool readFile(const std::string &path, std::string &out) {
     ss << in.rdbuf();
     out = ss.str();
     return true;
-}
-
-static std::string dirOf(const std::string &path) {
-    size_t slash = path.find_last_of('/');
-    return slash == std::string::npos ? "." : path.substr(0, slash);
 }
 
 // ---------- loading the program and its modules ----------
@@ -95,7 +91,7 @@ struct Loader {
         if (sys::fs::exists(here)) return here;
         if (const char *fp = std::getenv("FINCH_PATH")) {
             std::stringstream ss(fp);
-            for (std::string d; std::getline(ss, d, ':');)
+            for (std::string d; std::getline(ss, d, pathListSeparator());)
                 if (!d.empty() && sys::fs::exists(d + "/" + name + ".fch")) return d + "/" + name + ".fch";
         }
         return here;
@@ -118,11 +114,16 @@ static void optimize(Module &mod, TargetMachine *tm) {
     pb.buildPerModuleDefaultPipeline(OptimizationLevel::O2).run(mod, mam);
 }
 
-static TargetMachine *hostMachine() {
+static TargetMachine *targetMachine() {
     InitializeNativeTarget();
     InitializeNativeTargetAsmPrinter();
 
-    Triple triple(sys::getDefaultTargetTriple());
+    const Triple &triple = g_target.triple;
+    if (triple.getArch() != Triple(sys::getDefaultTargetTriple()).getArch()) {
+        std::fprintf(stderr, "error: Finch can build for other systems on the same processor (like Windows from Linux), but not for %s yet\n",
+                     triple.getArchName().str().c_str());
+        std::exit(1);
+    }
     std::string err;
     const Target *target = TargetRegistry::lookupTarget(triple, err);
     if (!target) {
@@ -149,30 +150,11 @@ static void emitObject(Module &mod, TargetMachine *tm, const std::string &path) 
 
 // ---------- linking ----------
 
-// Run a shell command; returns its exit status, everything it printed goes to `output`.
-static int capture(const std::string &cmd, std::string &output) {
-    FILE *p = popen((cmd + " 2>&1").c_str(), "r");
-    if (!p) return -1;
-    char buf[4096];
-    size_t n;
-    while ((n = std::fread(buf, 1, sizeof buf, p)) > 0) output.append(buf, n);
-    int status = pclose(p);
-    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-}
-
-static std::string ccName() {
-    const char *cc = std::getenv("CC");
-    return cc ? cc : "cc";
-}
-
 // The runtime is compiled once per version and kept in ~/.cache/finch.
 static std::string runtimeObject() {
-    std::string dir;
-    if (const char *x = std::getenv("XDG_CACHE_HOME")) dir = std::string(x) + "/finch";
-    else if (const char *h = std::getenv("HOME")) dir = std::string(h) + "/.cache/finch";
-    else dir = "/tmp/finch-cache";
-    size_t hash = std::hash<std::string>()(std::string(kRuntimeSource) + FINCH_VERSION + ccName());
-    std::string obj = dir + "/rt-" + std::to_string(hash) + ".o";
+    std::string dir = cacheDir();
+    size_t hash = std::hash<std::string>()(std::string(kRuntimeSource) + FINCH_VERSION + g_target.cc + g_target.triple.str());
+    std::string obj = dir + (g_target.windows && !g_target.cross ? "\\" : "/") + "rt-" + std::to_string(hash) + ".o";
     if (sys::fs::exists(obj)) return obj;
 
     sys::fs::create_directories(dir);
@@ -182,10 +164,12 @@ static std::string runtimeObject() {
         out << kRuntimeSource;
     }
     std::string output;
-    int status = capture(ccName() + " -O2 -fPIC -c '" + src + "' -o '" + part + "'", output);
+    std::string pic = g_target.windows ? "" : " -fPIC";
+    int status = capture(g_target.cc + " -O2" + pic + " -c " + shellQuote(src) + " -o " + shellQuote(part), output);
     std::remove(src.c_str());
     if (status != 0) {
-        std::fprintf(stderr, "%serror: couldn't build the Finch runtime (is a C compiler installed?)\n", output.c_str());
+        std::fprintf(stderr, "%serror: couldn't build the Finch runtime with '%s' (is a C compiler installed?)\n", output.c_str(),
+                     g_target.cc.c_str());
         std::exit(1);
     }
     sys::fs::rename(part, obj);
@@ -195,11 +179,11 @@ static std::string runtimeObject() {
 // pkg-config knows the right paths for a library if it has one; otherwise plain -l<name>.
 static std::string libFlags(const std::string &lib) {
     std::string out;
-    if (capture("pkg-config --libs '" + lib + "'", out) == 0) {
+    if (!g_target.cross && capture("pkg-config --libs " + shellQuote(lib), out) == 0) {
         while (!out.empty() && std::isspace((unsigned char)out.back())) out.pop_back();
         return " " + out;
     }
-    return " '-l" + lib + "'";
+    return " " + shellQuote("-l" + lib);
 }
 
 // "GLFW/glfw3.h" -> "glfw": a decent first guess for the library's name.
@@ -226,6 +210,15 @@ static std::string guessLib(const std::string &header) {
         } else if ((a = l.find("undefined symbol: ")) != std::string::npos) {
             a += 18;
             addOnce(missing, l.substr(a, l.find_first_of(" \n", a) - a));
+        } else if ((a = l.find("unresolved external symbol ")) != std::string::npos) {  // MSVC link.exe
+            a += 27;
+            addOnce(missing, l.substr(a, l.find_first_of(" \n\r", a) - a));
+        } else if ((a = l.find("cannot open file '")) != std::string::npos ||   // MSVC: LNK1104 cannot open file 'x.lib'
+                   (a = l.find("could not open '")) != std::string::npos) {  // lld-link
+            a = l.find('\'', a) + 1;
+            std::string lib = l.substr(a, l.find('\'', a) - a);
+            if (lib.size() > 4 && lib.compare(lib.size() - 4, 4, ".lib") == 0) lib = lib.substr(0, lib.size() - 4);
+            addOnce(missingLibs, lib);
         } else if ((a = l.find("cannot find -l")) != std::string::npos) {
             a += 14;
             addOnce(missingLibs, l.substr(a, l.find_first_of(": \n", a) - a));
@@ -272,19 +265,21 @@ static bool endsWith(const std::string &s, const char *x) {
 
 static void link(const std::string &obj, const std::string &exe, const std::vector<std::string> &libs,
                  const CImports &c) {
-    std::string cmd = ccName() + " '" + obj + "' '" + runtimeObject() + "' -o '" + exe + "' -lm";
+    std::string cmd = g_target.cc + " " + shellQuote(obj) + " " + shellQuote(runtimeObject()) + " -o " + shellQuote(exe);
+    if (!g_target.msvc) cmd += " -lm";
     std::vector<std::string> temps;
     for (const std::string &l : libs) {
         if (endsWith(l, ".c")) {  // compile the user's C file
             std::string o = obj + "." + std::to_string(temps.size()) + ".o", output;
-            if (capture(ccName() + " -O2 -fPIC -c '" + l + "' -o '" + o + "'", output) != 0) {
+            std::string pic = g_target.windows ? "" : " -fPIC";
+            if (capture(g_target.cc + " -O2" + pic + " -c " + shellQuote(l) + " -o " + shellQuote(o), output) != 0) {
                 std::fprintf(stderr, "%serror: couldn't compile %s\n", output.c_str(), l.c_str());
                 std::exit(1);
             }
             temps.push_back(o);
-            cmd += " '" + o + "'";
+            cmd += " " + shellQuote(o);
         } else if (endsWith(l, ".o") || endsWith(l, ".a")) {
-            cmd += " '" + l + "'";
+            cmd += " " + shellQuote(l);
         } else {
             cmd += libFlags(l);
         }
@@ -294,7 +289,7 @@ static void link(const std::string &obj, const std::string &exe, const std::vect
     std::remove(obj.c_str());
     for (const std::string &t : temps) std::remove(t.c_str());
     if (status == 127) {
-        std::fprintf(stderr, "error: no C compiler found to link with (install gcc or clang, or set CC)\n");
+        std::fprintf(stderr, "error: no C compiler found to link with ('%s'; install one, or set FINCH_CC)\n", g_target.cc.c_str());
         std::exit(1);
     }
     if (status != 0) linkFailed(output, c);
@@ -302,16 +297,10 @@ static void link(const std::string &obj, const std::string &exe, const std::vect
 }
 
 static std::string stem(const std::string &path) {
-    size_t slash = path.find_last_of('/');
+    size_t slash = path.find_last_of("/\\");
     std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
     size_t dot = name.rfind('.');
     return dot == std::string::npos ? name : name.substr(0, dot);
-}
-
-static std::string shellQuote(const std::string &s) {
-    std::string out = "'";
-    for (char ch : s) out += ch == '\'' ? std::string("'\\''") : std::string(1, ch);
-    return out + "'";
 }
 
 int main(int argc, char **argv) {
@@ -324,11 +313,13 @@ int main(int argc, char **argv) {
     if (cmd != "run" && cmd != "build" && cmd != "ir") usage();
     std::string out = stem(file);
     std::vector<std::string> libs, programArgs;
-    bool optimizeCode = true, debug = false;
+    std::string targetName;
+    bool optimizeCode = true, debug = false, outGiven = false;
     for (int i = 3; i < argc; i++) {
         std::string a = argv[i];
         if (cmd == "run" && !programArgs.empty()) programArgs.push_back(a);
-        else if (a == "-o" && i + 1 < argc && cmd == "build") out = argv[++i];
+        else if (a == "-o" && i + 1 < argc && cmd == "build") out = argv[++i], outGiven = true;
+        else if (a == "--target" && i + 1 < argc) targetName = argv[++i];
         else if (a == "-O0") optimizeCode = false;
         else if (a == "-g") debug = true;
         else if (a == "-l" && i + 1 < argc) libs.push_back(argv[++i]);
@@ -336,6 +327,9 @@ int main(int argc, char **argv) {
         else if (cmd == "run") programArgs.push_back(a);
         else usage();
     }
+
+    setTarget(targetName);
+    if (!outGiven) out += g_target.exe;
 
     Loader loader;
     loader.load(file, "", Pos{});
@@ -345,7 +339,7 @@ int main(int argc, char **argv) {
         allImports.insert(allImports.end(), p.imports.begin(), p.imports.end());
         for (const Link &l : p.links) {
             bool file = endsWith(l.lib, ".c") || endsWith(l.lib, ".o") || endsWith(l.lib, ".a");
-            std::string path = file && l.lib[0] != '/' ? dirOf(p.path) + "/" + l.lib : l.lib;
+            std::string path = file && !sys::path::is_absolute(l.lib) ? dirOf(p.path) + "/" + l.lib : l.lib;
             if (file && !sys::fs::exists(path)) failAt(l.pos.file, l.pos.line, l.pos.col, "can't find the file '" + path + "'");
             libs.push_back(path);
         }
@@ -353,7 +347,7 @@ int main(int argc, char **argv) {
     }
     CImports c = importHeaders(allImports, dirs);
     LLVMContext ctx;
-    TargetMachine *tm = hostMachine();
+    TargetMachine *tm = targetMachine();
     std::unique_ptr<Module> mod = generate(loader.progs, c, ctx, *tm, debug);
     if (optimizeCode) optimize(*mod, tm);
 
@@ -365,7 +359,7 @@ int main(int argc, char **argv) {
     std::string obj = out + ".o";
     if (cmd == "run") {
         SmallString<128> tmp;
-        sys::fs::createTemporaryFile("finch", "", tmp);
+        sys::fs::createTemporaryFile("finch", g_target.windows ? "exe" : "", tmp);
         out = tmp.str().str();
         obj = out + ".o";
     }
@@ -375,13 +369,15 @@ int main(int argc, char **argv) {
     if (cmd == "run") {
         std::string line = shellQuote(out);
         for (const std::string &a : programArgs) line += " " + shellQuote(a);
-        int status = std::system(line.c_str());
+        if (g_target.cross && g_target.windows) line = "wine " + line;  // a Windows program on Linux
+#ifdef _WIN32
+        line = "\"" + line + "\"";  // cmd /c strips one pair of outer quotes
+#endif
+        std::string crash;
+        int status = runCommand(line, &crash);
         std::remove(out.c_str());
-        if (WIFSIGNALED(status)) {
-            std::fprintf(stderr, "\nthe program crashed: %s\n", strsignal(WTERMSIG(status)));
-            return 128 + WTERMSIG(status);
-        }
-        return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+        if (!crash.empty()) std::fprintf(stderr, "\nthe program crashed: %s\n", crash.c_str());
+        return status;
     }
     return 0;
 }

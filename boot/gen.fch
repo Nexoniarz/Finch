@@ -506,7 +506,18 @@ fn emitPrint(ptr[Gen] g, str v, ast.Type t, bool quoted) {
             printf(g, "%.*s", "i32 " + n + ", ptr " + p)
         }
     } else if k == "ptr" {
-        printf(g, "%p", "ptr " + v)
+        isNull := op(g, "icmp eq ptr " + v + ", null")
+        nul := newLabel(g, "ptr.null")
+        at := newLabel(g, "ptr.addr")
+        done := newLabel(g, "ptr.done")
+        condBr(g, isNull, nul, at)
+        label(g, nul)
+        printf(g, "null", "")
+        br(g, done)
+        label(g, at)
+        printf(g, "0x%llx", "i64 " + op(g, "ptrtoint ptr " + v + " to i64"))
+        br(g, done)
+        label(g, done)
     } else if k == "null" {
         printf(g, "null", "")
     } else {
@@ -618,7 +629,7 @@ fn findFn(ptr[Gen] g, str module, str name) -> int {
 
 fn isBuiltin(str n) -> bool {
     names := ["print", "addr", "str", "int", "char", "float", "bool", "read_file", "write_file", "file_exists",
-              "shell", "exit", "input", "new", "free", "ptr"]
+              "shell", "exit", "input", "new", "free", "ptr", "delete_file"]
     return names.contains(n)
 }
 
@@ -1646,6 +1657,14 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
         r := op(g, "call i32 @finch_write_file(ptr " + path + ", ptr " + text + ")")
         return Val(v: op(g, "icmp ne i32 " + r + ", 0"), ty: T("bool"))
     }
+    if n == "delete_file" {
+        checkArgs(g, c, 0, 1, n)
+        p := strArg(g, c.kids[0], "the file name")
+        heap := strOut(g)
+        emit(g, "call void @finch_str_copy(ptr " + heap + ", ptr " + spill(g, p) + ")")
+        r := op(g, "call i32 @finch_delete_file(ptr " + heap + ")")
+        return Val(v: op(g, "icmp ne i32 " + r + ", 0"), ty: T("bool"))
+    }
     if n == "shell" {
         checkArgs(g, c, 0, 1, n)
         cmd := strArg(g, c.kids[0], "the command")
@@ -2122,6 +2141,7 @@ fn runtimeDecls() -> str {
         "declare void @finch_read_file(ptr, ptr, ptr, i64)",
         "declare i32 @finch_write_file(ptr, ptr)",
         "declare i64 @finch_shell(ptr)",
+        "declare i32 @finch_delete_file(ptr)",
         "declare i32 @printf(ptr, ...)",
         "declare i32 @fflush(ptr)",
         "declare void @exit(i32) noreturn",
