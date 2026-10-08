@@ -52,6 +52,17 @@ else()
     target_compile_options(finch PRIVATE -Wall -Wextra)
 endif()
 
+# The official Windows LLVM package names the DIA SDK library at the path of the machine it was
+# built on (Visual Studio 2019); point it at the Visual Studio installed here.
+if(MSVC AND TARGET LLVMDebugInfoPDB AND DEFINED ENV{VSINSTALLDIR})
+    get_target_property(FINCH_PDB_LIBS LLVMDebugInfoPDB INTERFACE_LINK_LIBRARIES)
+    if(FINCH_PDB_LIBS)
+        file(TO_CMAKE_PATH "$ENV{VSINSTALLDIR}DIA SDK/lib/amd64/diaguids.lib" FINCH_DIA_LIB)
+        list(TRANSFORM FINCH_PDB_LIBS REPLACE ".*diaguids\\.lib$" "${FINCH_DIA_LIB}")
+        set_target_properties(LLVMDebugInfoPDB PROPERTIES INTERFACE_LINK_LIBRARIES "${FINCH_PDB_LIBS}")
+    endif()
+endif()
+
 # Link the one shared libLLVM when available: libclang uses it too, and two copies
 # of LLVM in one process crash on exit.
 if(TARGET LLVM)

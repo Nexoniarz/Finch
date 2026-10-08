@@ -1,6 +1,7 @@
 // Code generation, part 3: calls, built-in functions, conversions and methods.
 
 #include "codegen_impl.h"
+#include "builtins_doc.h"
 
 using namespace llvm;
 
@@ -161,9 +162,23 @@ Value *Codegen::cGlobal(const std::string &name) {
 
 // ---------- calls ----------
 
+static std::string docHover(const BuiltinDoc &d) {
+    return "```finch\n" + std::string(d.signature) + "\n```\n" + d.doc;
+}
+
+static std::string cSignature(const CFunc &f) {
+    std::string s = f.ret.show() + " " + f.name + "(";
+    for (size_t i = 0; i < f.params.size(); i++) s += (i ? ", " : "") + f.params[i].show();
+    if (f.variadic) s += f.params.empty() ? "..." : ", ...";
+    return s + ")";
+}
+
 Value_ Codegen::call(const CallExpr &c) {
     const std::string &n = c.callee;
     Pos p = c.pos;
+    if (g_index)
+        for (const BuiltinDoc &d : kBuiltins)
+            if (n == d.name) note(p, n.size(), docHover(d));
     auto one = [&](const char *what) -> const Expr & {
         checkArgs(c.args, c.argNames, 1, p, n);
         (void)what;
@@ -266,9 +281,16 @@ Value_ Codegen::call(const CallExpr &c) {
     }
 
     ModuleScope &m = modules[curModule];
-    if (auto it = m.fns.find(n); it != m.fns.end()) return callFinch(it->second, c.args, c.argNames, p, n);
-    if (StructInfo *s = findStruct("", n, false)) return construct(s, c.args, c.argNames, p);
+    if (auto it = m.fns.find(n); it != m.fns.end()) {
+        note(p, n.size(), "```finch\n" + signature(it->second) + "\n```", it->second.decl->namePos);
+        return callFinch(it->second, c.args, c.argNames, p, n);
+    }
+    if (StructInfo *s = findStruct("", n, false)) {
+        note(p, n.size(), structHover(s), s->decl ? s->decl->namePos : Pos{});
+        return construct(s, c.args, c.argNames, p);
+    }
     if (auto cf = cimports.fns.find(n); cf != cimports.fns.end()) {
+        note(p, n.size(), "C function from `" + cf->second.header + "`\n```c\n" + cSignature(cf->second) + "\n```");
         checkArgs(c.args, c.argNames, cf->second.params.size(), p, n, cf->second.variadic);
         return callC(cf->second, c.args, p);
     }
@@ -468,10 +490,16 @@ Value_ Codegen::method(const MethodExpr &m) {
         if (!lookup(mn) && modules[curModule].imports.count(mn)) {
             auto mi = modules.find(mn);
             if (mi == modules.end()) failAt(p.file, p.line, p.col, "the module '" + mn + "' was not found");
-            if (auto it = mi->second.fns.find(m.name); it != mi->second.fns.end())
+            note(m.obj->pos, mn.size(), "module `" + mn + "`");
+            Pos namePos{p.line, p.col + 1, p.file};
+            if (auto it = mi->second.fns.find(m.name); it != mi->second.fns.end()) {
+                note(namePos, m.name.size(), "```finch\n" + signature(it->second) + "\n```", it->second.decl->namePos);
                 return callFinch(it->second, m.args, m.argNames, p, mn + "." + m.name);
-            if (auto it = mi->second.structs.find(m.name); it != mi->second.structs.end())
+            }
+            if (auto it = mi->second.structs.find(m.name); it != mi->second.structs.end()) {
+                note(namePos, m.name.size(), structHover(it->second), it->second->decl->namePos);
                 return construct(it->second, m.args, m.argNames, p);
+            }
             failAt(p.file, p.line, p.col, "the module '" + mn + "' has no function or struct named '" + m.name + "'");
         }
         if (!lookup(mn) && !cimports.globals.count(mn) && !cimports.consts.count(mn))
@@ -481,6 +509,14 @@ Value_ Codegen::method(const MethodExpr &m) {
     static const std::set<std::string> changing = {"push", "pop", "insert", "remove", "clear", "resize", "sort", "reverse"};
     LRef r = ref(*m.obj, changing.count(m.name) > 0);
     FType t = r.isPlace ? r.pl.type : r.val.type;
+    if (g_index && (t.kind == FType::Array || t.kind == FType::Str)) {
+        auto look = [&](const BuiltinDoc *first, const BuiltinDoc *last) {
+            for (; first != last; ++first)
+                if (m.name == first->name) note(Pos{p.line, p.col + 1, p.file}, m.name.size(), docHover(*first));
+        };
+        if (t.kind == FType::Str) look(std::begin(kStrMethods), std::end(kStrMethods));
+        else look(std::begin(kArrayMethods), std::end(kArrayMethods));
+    }
     if (t.kind == FType::Array) {
         Value_ recv = r.isPlace ? Value_{r.pl.addr, t} : r.val;
         if (!r.isPlace) {

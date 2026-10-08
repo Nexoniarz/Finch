@@ -3,6 +3,7 @@
 
 #include "codegen.h"
 #include "error.h"
+#include "index.h"
 
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DIBuilder.h>
@@ -29,6 +30,7 @@ struct StructInfo {
         const Expr *init = nullptr;  // default value
         bool hidden = false;         // C union/bitfield padding: has no name in Finch
         unsigned llvmIndex = 0;      // C structs carry explicit padding between fields
+        Pos pos;                     // Finch structs: where the field is declared
     };
     std::vector<F> fields;
     llvm::StructType *llvm = nullptr;
@@ -55,6 +57,7 @@ struct Var {
     bool owned = false;     // dropped when its scope ends
     int order = 0;          // declaration order, for defer
     bool moved = false;     // returned out of the function: not dropped on that path
+    Pos pos;                // where it was declared
 };
 
 struct Cleanup {
@@ -258,6 +261,11 @@ public:
     llvm::Function *declareC(const CFunc &f);
     Value_ emitCCall(const CFunc &f, llvm::Function *fn, std::vector<Value_> args, Pos p);
     llvm::Function *cThunk(Fn &fn, Pos p);
+
+    // ---------- language server index ----------
+    void note(Pos at, size_t len, const std::string &hover, Pos def = Pos{});
+    std::string signature(const Fn &fn);
+    std::string structHover(StructInfo *s);
 
     // ---------- debug info ----------
     void setLoc(Pos p);

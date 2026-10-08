@@ -147,6 +147,7 @@ private:
         StructDecl s;
         s.pos = pos();
         expect(Tok::Struct);
+        s.namePos = pos();
         s.name = expect(Tok::Ident, "a struct name").text;
         if (isTypeName(s.name)) fail(s.pos.line, s.pos.col, "'" + s.name + "' is a built-in type name, pick another");
         Pos open = pos();
@@ -157,6 +158,7 @@ private:
             f.pos = pos();
             if (!atDeclaration()) unexpected("(a field looks like: int x  or  str name = \"default\")");
             f.type = type();
+            f.namePos = pos();
             f.name = expect(Tok::Ident, "a field name").text;
             for (const Field &other : s.fields)
                 if (other.name == f.name) fail(f.pos.line, f.pos.col, "the field '" + f.name + "' is listed twice");
@@ -175,6 +177,7 @@ private:
             fail(fn.pos.line, fn.pos.col, "functions start with 'fn', like: fn add(int a, int b) -> int { ... }");
         expect(Tok::Fn, "'fn', 'struct', 'import' or 'link' (every function starts with fn)");
 
+        fn.namePos = pos();
         fn.name = expect(Tok::Ident, "a function name").text;
         expect(Tok::LParen);
         parenDepth++;
@@ -183,6 +186,7 @@ private:
                 Param p;
                 p.pos = pos();
                 p.type = type();
+                p.namePos = pos();
                 p.name = expect(Tok::Ident, "a parameter name").text;
                 fn.params.push_back(p);
             } while (accept(Tok::Comma));
@@ -207,6 +211,7 @@ private:
             endOfStatement();
         }
         parenDepth = saved;
+        b->end = pos();
         next();
         return b;
     }
@@ -229,12 +234,14 @@ private:
         }
         case Tok::For: {
             next();
+            Pos varPos = pos();
             std::string var = expect(Tok::Ident, "a loop variable name").text;
             expect(Tok::In);
             ExprPtr first = expr();
             if (accept(Tok::DotDot)) {  // for i in 0..10
                 auto s = std::make_unique<ForStmt>(p);
                 s->var = var;
+                s->varPos = varPos;
                 s->from = std::move(first);
                 s->to = expr();
                 s->body = block();
@@ -242,6 +249,7 @@ private:
             }
             auto s = std::make_unique<ForEachStmt>(p);  // for x in list
             s->var = var;
+            s->varPos = varPos;
             s->list = std::move(first);
             s->body = block();
             return s;
@@ -272,6 +280,7 @@ private:
             auto s = std::make_unique<VarDeclStmt>(p);
             s->hasType = true;
             s->type = type();
+            s->namePos = pos();
             s->name = expect(Tok::Ident, "a variable name").text;
             if (accept(Tok::Assign)) s->init = expr();
             return s;
@@ -281,6 +290,7 @@ private:
         if (at(Tok::Ident) && peekTok().kind == Tok::Declare) {
             auto s = std::make_unique<VarDeclStmt>(p);
             s->hasType = false;
+            s->namePos = pos();
             s->name = next().text;
             next();
             s->init = expr();

@@ -13,8 +13,16 @@ struct SourceFile {
 inline std::vector<SourceFile> g_files;
 inline int g_curFile = 0;  // the file the lexer/parser is working on
 
+// The language server needs errors as values: it shows them in the editor and keeps running.
+struct FinchError {
+    int file, line, col;
+    std::string msg;
+};
+inline bool g_throwErrors = false;
+
 // Finch stops at the first error and shows exactly where it is.
 [[noreturn]] inline void failAt(int file, int line, int col, const std::string &msg) {
+    if (g_throwErrors) throw FinchError{file, line, col, msg};
     const SourceFile &f = g_files.at(file);
     std::fprintf(stderr, "%s:%d:%d: error: %s\n", f.path.c_str(), line, col, msg.c_str());
 

@@ -202,6 +202,7 @@ using StmtPtr = std::unique_ptr<Stmt>;
 
 struct BlockStmt : Stmt {
     std::vector<StmtPtr> body;
+    Pos end;  // the closing '}' 
     explicit BlockStmt(Pos p) : Stmt(StmtKind::Block, p) {}
 };
 using BlockPtr = std::unique_ptr<BlockStmt>;
@@ -210,6 +211,7 @@ struct VarDeclStmt : Stmt {
     bool hasType;  // `int x = 5` vs `x := 5`
     Type type;
     std::string name;
+    Pos namePos;
     ExprPtr init;  // may be null only when hasType
     VarDeclStmt(Pos p) : Stmt(StmtKind::VarDecl, p) {}
 };
@@ -236,12 +238,14 @@ struct WhileStmt : Stmt {
 };
 struct ForStmt : Stmt {
     std::string var;
+    Pos varPos;
     ExprPtr from, to;  // for var in from..to  (to is exclusive)
     BlockPtr body;
     ForStmt(Pos p) : Stmt(StmtKind::For, p) {}
 };
 struct ForEachStmt : Stmt {
     std::string var;
+    Pos varPos;
     ExprPtr list;  // for var in list  (an array or a str)
     BlockPtr body;
     ForEachStmt(Pos p) : Stmt(StmtKind::ForEach, p) {}
@@ -266,11 +270,13 @@ struct DeferStmt : Stmt {  // defer <statement>: runs when the block ends
 struct Param {
     Type type;
     std::string name;
-    Pos pos;
+    Pos pos;      // the type
+    Pos namePos;  // the name
 };
 
 struct FnDecl {
     Pos pos;
+    Pos namePos;
     std::string name;
     Type ret;  // Void when there is no `-> type`
     std::vector<Param> params;
@@ -282,10 +288,12 @@ struct Field {
     std::string name;
     ExprPtr init;  // default value, may be null
     Pos pos;
+    Pos namePos;
 };
 
 struct StructDecl {
     Pos pos;
+    Pos namePos;
     std::string name;
     std::vector<Field> fields;
 };

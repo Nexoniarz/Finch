@@ -3,6 +3,7 @@
 // codegen_builtins.cpp; the C calling convention in abi.cpp.
 
 #include "codegen_impl.h"
+#include "builtins_doc.h"
 
 using namespace llvm;
 
@@ -81,6 +82,21 @@ void Codegen::declareStructs() {
         structStore.push_back(std::move(s));
     }
     for (auto &s : structStore) resolveStruct(s.get());
+    if (g_index)
+        for (auto &s : structStore) {
+            StructIndex si{s->module, s->name, {}, -1, 0, 0};
+            if (s->decl) {
+                si.file = s->decl->namePos.file;
+                si.line = s->decl->namePos.line;
+                si.col = s->decl->namePos.col;
+                note(s->decl->namePos, s->name.size(), structHover(s.get()), s->decl->namePos);
+            }
+            for (auto &f : s->fields) {
+                si.fields.push_back({f.name, f.type.show()});
+                if (s->decl) note(f.pos, f.name.size(), "```finch\n" + f.type.show() + " " + f.name + "\n```\nfield of `" + s->name + "`", f.pos);
+            }
+            g_index->structs.push_back(si);
+        }
 }
 
 void Codegen::declareFns() {
@@ -147,6 +163,12 @@ void Codegen::define(Fn &fn) {
     const FnDecl &d = *fn.decl;
     curFn = &fn;
     curModule = fn.module;
+    if (g_index) {
+        FnInfo fi{fn.module, d.name, signature(fn), "", {}, d.namePos.file, d.namePos.line, d.namePos.col, d.body->end.line};
+        for (size_t i = 0; i < fn.params.size(); i++) fi.params.push_back(fn.params[i].show() + " " + d.params[i].name);
+        g_index->fns.push_back(fi);
+        note(d.namePos, d.name.size(), "```finch\n" + signature(fn) + "\n```", d.namePos);
+    }
     Function *f = fn.llvm;
     b.SetInsertPoint(BasicBlock::Create(ctx, "entry", f));
     if (di) {
@@ -168,8 +190,8 @@ void Codegen::define(Fn &fn) {
         const Param &p = d.params[i];
         const FType &t = fn.params[i];
         arg.setName(p.name);
-        if (owning(t) && !fn.borrowParam[i]) addVar(p.pos, p.name, t, copyValue(&arg, t), true, false, i + 1);  // changed inside: own a copy
-        else addVar(p.pos, p.name, t, &arg, false, false, i + 1);
+        if (owning(t) && !fn.borrowParam[i]) addVar(p.namePos, p.name, t, copyValue(&arg, t), true, false, i + 1);  // changed inside: own a copy
+        else addVar(p.namePos, p.name, t, &arg, false, false, i + 1);
         i++;
     }
     blockBody(*d.body);
@@ -256,7 +278,13 @@ Var &Codegen::addVar(Pos p, const std::string &name, const FType &t, Value *init
     v.readonly = readonly;
     v.owned = owned && owning(t);
     v.order = ++varOrder;
+    v.pos = p;
     if (v.owned) scopes.back().cleanups.push_back({false, name});
+    if (g_index && name[0] != '$' && curFn) {
+        const FnDecl &d = *curFn->decl;
+        g_index->vars.push_back({name, t.show(), p.file, p.line, p.col, d.pos.file, d.pos.line, d.body->end.line});
+        note(p, name.size(), "```finch\n" + t.show() + " " + name + "\n```", p);
+    }
     if (di && name[0] != '$') {
         DILocalVariable *dv = argNo ? di->createParameterVariable(diFn, name, argNo, diFiles[p.file], p.line, diType(t))
                                     : di->createAutoVariable(diFn, name, diFiles[p.file], p.line, diType(t));
@@ -319,13 +347,13 @@ void Codegen::varDecl(const VarDeclStmt &s) {
         Pos ip = s.init->pos;
         if (v.type.kind == FType::Void) failAt(ip.file, ip.line, ip.col, "this gives back nothing, so it can't be stored");
         if (v.type.kind == FType::Null) failAt(ip.file, ip.line, ip.col, "null needs a type, like: ptr[int] " + s.name + " = null");
-        addVar(p, s.name, v.type, own(v), true);
+        addVar(s.namePos, s.name, v.type, own(v), true);
         return;
     }
     FType t = resolve(s.type, p);
     if (t.kind == FType::Void) failAt(p.file, p.line, p.col, "a variable can't have the type 'nothing'");
     Value_ v = s.init ? coerce(exprWant(*s.init, t), t, s.init->pos, "'" + s.name + "'") : defaultValue(t, p);
-    addVar(p, s.name, t, own(v), true);
+    addVar(s.namePos, s.name, t, own(v), true);
 }
 
 void Codegen::assign(const AssignStmt &s) {
@@ -431,7 +459,7 @@ void Codegen::forStmt(const ForStmt &s) {
     Value *to = coerce(expr(*s.to), FType::I64, s.to->pos, "the end of a range").v;
 
     pushScope();
-    Var &iv = addVar(s.pos, s.var, FType::I64, from, false, true);
+    Var &iv = addVar(s.varPos, s.var, FType::I64, from, false, true);
     iv.readonlyWhy = "the loop variable '" + s.var + "' can't be changed";
     Value *i = iv.slot;
 
@@ -503,7 +531,7 @@ void Codegen::forEachStmt(const ForEachStmt &s) {
     Value *elem = b.CreateLoad(ty(et), elemAddr);
     loops.push_back({step, end, scopes.size()});
     pushScope();
-    Var &xv = addVar(s.pos, s.var, et, copyElems ? copyValue(elem, et) : elem, copyElems, true);
+    Var &xv = addVar(s.varPos, s.var, et, copyElems ? copyValue(elem, et) : elem, copyElems, true);
     xv.readonlyWhy = "the loop variable '" + s.var + "' can't be changed (to change the list, loop with for i in 0..list.len and use list[i])";
     block(*s.body);
     popScope();
@@ -655,6 +683,8 @@ Value_ Codegen::expr(const Expr &e) {
         if (!lookup(v.name)) {
             auto c = cimports.consts.find(v.name);
             if (c != cimports.consts.end()) {
+                note(e.pos, v.name.size(), "C constant `" + v.name + " = " +
+                     (c->second.type.isFloat() ? std::to_string(c->second.f) : std::to_string(c->second.i)) + "`");
                 if (c->second.type.isFloat()) return {ConstantFP::get(b.getDoubleTy(), c->second.f), FType::F64, true};
                 return {b.getInt64(c->second.i), FType::I64, true};
             }
@@ -704,7 +734,10 @@ LRef Codegen::ref(const Expr &e, bool forWrite) {
     switch (e.kind) {
     case ExprKind::Var: {
         auto &v = static_cast<const VarExpr &>(e);
-        if (Var *var = lookup(v.name)) return {true, {var->slot, var->type}, {}};
+        if (Var *var = lookup(v.name)) {
+            note(e.pos, v.name.size(), "```finch\n" + var->type.show() + " " + v.name + "\n```", var->pos);
+            return {true, {var->slot, var->type}, {}};
+        }
         if (cimports.globals.count(v.name)) return {true, {cGlobal(v.name), resolve(cimports.globals.at(v.name).type, e.pos)}, {}};
         return {false, {}, expr(e)};
     }
@@ -753,6 +786,10 @@ LRef Codegen::member(const MemberExpr &m, bool forWrite) {
     }
 
     if (t.kind == FType::Array || t.kind == FType::Str || t.kind == FType::Fixed) {
+        if (m.field == "len" || m.field == "ptr")
+            note(Pos{p.line, p.col + 1, p.file}, m.field.size(),
+                 m.field == "len" ? "`.len -> int`: the number of " + std::string(t.kind == FType::Str ? "bytes" : "elements")
+                                  : "`.ptr`: the address of the first element, for C");
         if (m.field != "len" && m.field != "ptr")
             failAt(p.file, p.line, p.col, (t.kind == FType::Str ? "a str" : "an array") + std::string(" has .len and .ptr, not '.") + m.field + "'");
         if (forWrite) failAt(p.file, p.line, p.col, "." + m.field + " can't be changed directly" + (t.kind == FType::Array ? " (use resize, push or pop)" : ""));
@@ -786,6 +823,8 @@ LRef Codegen::member(const MemberExpr &m, bool forWrite) {
         failAt(p.file, p.line, p.col, "the struct " + t.show() + " has no field '" + m.field + "' (it has: " + names + ")");
     }
     const StructInfo::F &f = s->fields[idx];
+    note(Pos{p.line, p.col + 1, p.file}, m.field.size(),
+         "```finch\n" + f.type.show() + " " + m.field + "\n```\nfield of `" + s->name + "`", f.pos);
     unsigned llvmIdx = f.llvmIndex;
     if (obj.isPlace) return {true, {b.CreateStructGEP(s->llvm, obj.pl.addr, llvmIdx), f.type}, {}};
     // a field of a temporary struct: take it (copying if it owns memory), then drop the rest
@@ -1084,6 +1123,33 @@ Value_ Codegen::binary(const BinaryExpr &e) {
         return arith(e.op, l, expr(*e.rhs), e.pos);
     }
     }
+}
+
+// ---------- language server index ----------
+
+void Codegen::note(Pos at, size_t len, const std::string &hover, Pos def) {
+    if (!g_index || at.line <= 0) return;
+    SymRef r{at.file, at.line, at.col, (int)len, hover};
+    if (def.line > 0) {
+        r.defFile = def.file;
+        r.defLine = def.line;
+        r.defCol = def.col;
+    }
+    g_index->refs.push_back(r);
+}
+
+std::string Codegen::signature(const Fn &fn) {
+    std::string s = "fn " + (fn.module.empty() ? "" : fn.module + ".") + fn.decl->name + "(";
+    for (size_t i = 0; i < fn.params.size(); i++) s += (i ? ", " : "") + fn.params[i].show() + " " + fn.decl->params[i].name;
+    s += ")";
+    if (fn.ret.kind != FType::Void) s += " -> " + fn.ret.show();
+    return s;
+}
+
+std::string Codegen::structHover(StructInfo *s) {
+    std::string h = "```finch\nstruct " + s->name + " {\n";
+    for (auto &f : s->fields) h += "    " + f.type.show() + " " + f.name + "\n";
+    return h + "}\n```" + (s->isC ? "\nfrom C" : "");
 }
 
 // ---------- debug info ----------

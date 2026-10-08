@@ -99,6 +99,7 @@ void Codegen::resolveStruct(StructInfo *s) {
             nf.type = resolveT(f.type, f.pos, true);
             if (nf.type.kind == FType::Void) failAt(f.pos.file, f.pos.line, f.pos.col, "a field can't have the type 'nothing'");
             nf.init = f.init.get();
+            nf.pos = f.namePos;
             nf.llvmIndex = elems.size();
             elems.push_back(ty(nf.type));
             s->owning |= owning(nf.type);
