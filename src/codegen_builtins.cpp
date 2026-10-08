@@ -441,6 +441,8 @@ Value_ Codegen::convert(const FType &to, const std::vector<ExprPtr> &args, Pos, 
     }
     if (to.kind == FType::Bool && from.isInt()) return {b.CreateICmpNE(v.v, ConstantInt::get(ty(from), 0)), to};
     if (to.isPtr() && (from.isPtr() || from.kind == FType::Null)) return {v.v, to};
+    if (to.isPtr() && from.isInt()) return {b.CreateIntToPtr(intCast(v.v, from, FType::U64), b.getPtrTy()), to};  // an address or offset for C
+    if (to.isInt() && from.isPtr()) return {b.CreatePtrToInt(v.v, ty(to)), to};
     if (to.isPtr() && from.kind == FType::Str) failAt(p.file, p.line, p.col, "use .ptr to get a str's address (it is only valid while the str lives)");
     failAt(p.file, p.line, p.col, "can't turn " + from.show() + " into " + name);
 }

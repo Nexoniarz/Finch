@@ -105,6 +105,8 @@ Wybierz przewodnik dla siebie:
 | [`examples/types.fch`](examples/types.fch) | liczby z rozmiarem i wskaźniki |
 | [`examples/c_import.fch`](examples/c_import.fch) | `printf`, `math.h`, `malloc`/`free`, `stderr` |
 | [`examples/window.fch`](examples/window.fch) | okno GLFW + OpenGL |
+| [`examples/opengl.fch`](examples/opengl.fch) | nowoczesny OpenGL 3.3: shadery, bufory, obracający się trójkąt |
+| [`examples/vulkan.fch`](examples/vulkan.fch) | Vulkan: lista kart graficznych, ich pamięć i kolejki, tworzenie urządzenia |
 | [`examples/raylib.fch`](examples/raylib.fch) | raylib ze strukturami C przez wartość |
 | [`examples/llvm.fch`](examples/llvm.fch) | Finch budujący LLVM IR przez API LLVM-C |
 | [`boot/`](boot/) | kompilator Fincha napisany w Finchu |

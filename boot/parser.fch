@@ -385,7 +385,7 @@ fn parseArgs(ptr[Parser] p, ptr[ast.Node] call) {
     expect(p, "(", "'('")
     p.depth += 1
     if !at(p, ")") {
-        while true {
+        while !at(p, ")") {
             name := ""
             if at(p, "ident") && peekKind(p, 1) == ":" {
                 name = next(p).text

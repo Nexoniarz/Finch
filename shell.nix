@@ -10,9 +10,11 @@ pkgs.mkShell {
     ninja
     pkg-config              # finds the right flags for `link "..."`
 
-    # for examples/window.fch and examples/raylib.fch
+    # for the graphics examples (window, opengl, raylib, vulkan)
     glfw
     libGL
     raylib
+    vulkan-headers
+    vulkan-loader
   ];
 }

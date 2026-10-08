@@ -38,7 +38,6 @@ for f in run/*.fch; do
 done
 
 for f in fail/*.fch; do
-    grep -q "^// expect:" "$f" || continue
     expect=$(head -1 "$f" | sed -n 's|^// expect: ||p')
     got=$("$FINCH" run "$f" < /dev/null 2>&1)
     status=$?

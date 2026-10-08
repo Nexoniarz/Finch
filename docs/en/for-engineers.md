@@ -160,7 +160,7 @@ unary       = ( "-" | "!" | "~" ) unary | postfix ;
 postfix     = primary { "." IDENT [ args ] | "[" expr "]" } ;
 primary     = INT | FLOAT | STRING | CHAR | "true" | "false" | "null"
             | IDENT [ args ] | "(" expr ")" | "[" [ expr { "," expr } [","] ] "]" ;
-args        = "(" [ arg { "," arg } ] ")" ;  arg = [ IDENT ":" ] expr ;
+args        = "(" [ arg { "," arg } [","] ] ")" ;  arg = [ IDENT ":" ] expr ;
 ```
 
 **Statement termination.** After a statement, `endOfStatement()` requires `}`, end of file, or a token
@@ -343,6 +343,7 @@ int + float → float; f32 + f64 → f64. There is no C integer promotion: `u8 +
 | `[]u8`/`[]char` → str | `finch_str_from_bytes` |
 | ptr → str | `finch_str_from_c` (borrowed, `cap = -1`) |
 | ptr ↔ ptr | nothing |
+| int → ptr / ptr → int | `inttoptr` / `ptrtoint` |
 
 ### Comparisons
 

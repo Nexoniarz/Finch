@@ -456,6 +456,7 @@ private:
         parenDepth++;
         if (!at(Tok::RParen)) {
             do {
+                if (at(Tok::RParen)) break;  // a trailing comma is fine
                 std::string name;
                 if (at(Tok::Ident) && peekTok().kind == Tok::Colon) {
                     name = next().text;

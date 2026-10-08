@@ -160,7 +160,7 @@ unary       = ( "-" | "!" | "~" ) unary | postfix ;
 postfix     = primary { "." IDENT [ args ] | "[" expr "]" } ;
 primary     = INT | FLOAT | STRING | CHAR | "true" | "false" | "null"
             | IDENT [ args ] | "(" expr ")" | "[" [ expr { "," expr } [","] ] "]" ;
-args        = "(" [ arg { "," arg } ] ")" ;  arg = [ IDENT ":" ] expr ;
+args        = "(" [ arg { "," arg } [","] ] ")" ;  arg = [ IDENT ":" ] expr ;
 ```
 
 **Koniec instrukcji.** Po instrukcji `endOfStatement()` wymaga `}`, końca pliku albo tokenu
@@ -347,6 +347,7 @@ Nie ma promocji całkowitych z C: `u8 + u8` zostaje `u8`.
 | `[]u8`/`[]char` → str | `finch_str_from_bytes` |
 | ptr → str | `finch_str_from_c` (pożyczony, `cap = -1`) |
 | ptr ↔ ptr | nic |
+| int → ptr / ptr → int | `inttoptr` / `ptrtoint` |
 
 ### Porównania
 

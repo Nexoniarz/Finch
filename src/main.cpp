@@ -68,12 +68,7 @@ struct Loader {
     void load(const std::string &path, const std::string &module, Pos from) {
         std::string text;
         if (!readFile(path, text)) {
-            if (from.line) {
-                std::string old = path.substr(0, path.size() - 4) + ".fn";
-                if (sys::fs::exists(old))
-                    failAt(from.file, from.line, from.col, "found " + old + ", but Finch files now end in .fch: rename it to " + path);
-                failAt(from.file, from.line, from.col, "can't find the module '" + module + "' (looked for " + path + ")");
-            }
+            if (from.line) failAt(from.file, from.line, from.col, "can't find the module '" + module + "' (looked for " + path + ")");
             std::fprintf(stderr, "error: can't open '%s'\n", path.c_str());
             std::exit(1);
         }

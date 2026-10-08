@@ -244,6 +244,8 @@ str(42)          // "42"  (also floats, bools, chars; str([]u8) turns bytes into
 int("42")        // 42    (stops the program if the text isn't a number)
 float("2.5")     // 2.5
 ptr(p)           // a typed pointer as an untyped one
+ptr(16)          // a number as a pointer (C APIs that pass offsets as pointers, like OpenGL)
+int(p)           // a pointer as a number (its address)
 str(p)           // a C char pointer as text
 ```
 
@@ -345,6 +347,7 @@ fn no_result(str message) {       // no "->": returns nothing
   To change the caller's variable, pass a pointer: see [Pointers](#14-pointers).
 - A function with `-> type` must return a value on every path. Finch checks this.
 - A function cannot be defined inside another function.
+- Long calls can be split over several lines inside the brackets; a comma after the last argument is fine.
 
 ---
 
@@ -604,6 +607,30 @@ fn main() {
 To give C a function to call back (like `qsort`'s comparator), use `addr(myFunction)`.
 Its parameters must be C types (numbers, pointers, C structs).
 
+### Graphics: OpenGL and Vulkan
+
+Both work directly; `examples/opengl.fch` and `examples/vulkan.fch` are complete programs.
+
+- **OpenGL 3+** on Linux: the modern functions (`glCreateShader`, `glGenVertexArrays`, …) are only
+  declared when `GL_GLEXT_PROTOTYPES` is defined. Finch can't define C macros, so put the includes in a
+  tiny header next to your program and import that:
+
+  ```c
+  // opengl.h
+  #define GL_GLEXT_PROTOTYPES
+  #include <GL/gl.h>
+  #include <GL/glext.h>
+  #include <GLFW/glfw3.h>
+  ```
+
+  Then `import "opengl.h"`, `link "glfw"`, `link "GL"`. Out-parameters use `addr(...)`
+  (`glGenBuffers(1, addr(vbo))`), buffer data uses `.ptr` (`vertices.ptr`), and byte offsets use
+  `ptr(...)` (`glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, ptr(8))`).
+- **Vulkan**: `import "vulkan/vulkan.h"` and `link "vulkan"`. Vulkan's create-info structs are built with
+  named fields (missing ones are zero), handles are `ptr`, and lists come from the usual "call twice"
+  pattern: once for the count, once with `list.ptr` after `list.resize(count)`. Function-like macros such as
+  `VK_MAKE_API_VERSION` aren't available; compute the number instead (`1 << 22` is Vulkan 1.0).
+
 ### What does not work yet
 
 - C **unions** by value, and structs with **bit fields** by value (pointers to them work).
@@ -680,7 +707,7 @@ Finch/
 ├── src/            the compiler (C++)
 ├── runtime/        finch_rt.c: the small runtime (text, arrays, input, files)
 ├── boot/           the Finch compiler written in Finch (see the engineers' guide)
-├── examples/       hello, tour, types, structs, todo, guess, c_import, window, raylib, llvm
+├── examples/       hello, tour, types, structs, todo, guess, c_import, window, opengl, vulkan, raylib, llvm
 ├── tests/
 │   ├── run/        programs + the exact output they must print (.out), input (.in)
 │   ├── fail/       programs that must fail, with the expected error in line 1

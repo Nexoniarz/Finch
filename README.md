@@ -105,6 +105,8 @@ Pick the guide that fits you:
 | [`examples/types.fch`](examples/types.fch) | sized numbers and pointers |
 | [`examples/c_import.fch`](examples/c_import.fch) | `printf`, `math.h`, `malloc`/`free`, `stderr` |
 | [`examples/window.fch`](examples/window.fch) | a GLFW + OpenGL window |
+| [`examples/opengl.fch`](examples/opengl.fch) | modern OpenGL 3.3: shaders, buffers, a spinning triangle |
+| [`examples/vulkan.fch`](examples/vulkan.fch) | Vulkan: list the GPUs, their memory and queues, create a device |
 | [`examples/raylib.fch`](examples/raylib.fch) | raylib with C structs by value |
 | [`examples/llvm.fch`](examples/llvm.fch) | Finch building LLVM IR through the LLVM-C API |
 | [`boot/`](boot/) | the Finch compiler, written in Finch |

@@ -341,8 +341,14 @@ CImports importHeaders(const std::vector<Import> &imports, const std::vector<std
             if (clang_getDiagnosticSeverity(d) >= CXDiagnostic_Error) {
                 std::string msg = str(clang_getDiagnosticSpelling(d));
                 clang_disposeDiagnostic(d);
-                if (msg.find("file not found") != std::string::npos)
-                    failAt(im.pos.file, im.pos.line, im.pos.col, "can't find the C header '" + im.path + "'");
+                if (msg.find("file not found") != std::string::npos) {
+                    // "'GL/gl.h' file not found": it may be a header that this one includes
+                    std::string missing = msg.substr(1, msg.find('\'', 1) - 1);
+                    if (missing == im.path)
+                        failAt(im.pos.file, im.pos.line, im.pos.col, "can't find the C header '" + im.path + "'");
+                    failAt(im.pos.file, im.pos.line, im.pos.col, "can't find the C header '" + missing + "', which '" + im.path +
+                                                                     "' includes (is its library's development package installed?)");
+                }
                 failAt(im.pos.file, im.pos.line, im.pos.col, "C header '" + im.path + "' has an error: " + msg);
             }
             clang_disposeDiagnostic(d);

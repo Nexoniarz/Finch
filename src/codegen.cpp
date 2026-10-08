@@ -758,7 +758,9 @@ LRef Codegen::member(const MemberExpr &m, bool forWrite) {
             if (!obj.isPlace) release(obj.val);
             return {false, {}, {len, FType::I64}};
         }
-        if (!obj.isPlace && obj.val.fresh) failAt(p.file, p.line, p.col, ".ptr of a temporary value would point to freed memory");
+        // a literal lives as long as the program; other temporaries are freed right after this expression
+        if (!obj.isPlace && obj.val.fresh && !isa<Constant>(obj.val.v))
+            failAt(p.file, p.line, p.col, ".ptr of a temporary value would point to freed memory");
         FType pt = t.kind == FType::Str ? FType::ptrTo(FType::Char) : FType::ptrTo(*t.elem);
         return {false, {}, {t.kind == FType::Str ? cstr(v) : b.CreateExtractValue(v, 0), pt}};
     }

@@ -1,0 +1,137 @@
+// Vulkan from Finch: create an instance, list every GPU with its properties, memory and
+// queues, then create a logical device and get a graphics queue. No window needed.
+// Shows big C structs (with arrays of structs inside), out-parameters and Vulkan handles.
+// Needs the Vulkan loader and headers (in shell.nix) and a Vulkan driver.
+import "vulkan/vulkan.h"
+link "vulkan"
+
+fn check(i32 result, str what) {
+    if result != VK_SUCCESS {
+        print(what, "failed with VkResult", result)
+        exit(1)
+    }
+}
+
+fn version(u32 v) -> str {
+    return str(v >> 22) + "." + str((v >> 12) & 0x3FF) + "." + str(v & 0xFFF)
+}
+
+fn deviceType(i32 t) -> str {
+    if t == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU {
+        return "discrete GPU"
+    }
+    if t == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU {
+        return "integrated GPU"
+    }
+    if t == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU {
+        return "virtual GPU"
+    }
+    if t == VK_PHYSICAL_DEVICE_TYPE_CPU {
+        return "CPU (software)"
+    }
+    return "other"
+}
+
+fn queueFlags(u32 f) -> str {
+    []str parts
+    if f & VK_QUEUE_GRAPHICS_BIT != 0 {
+        parts.push("graphics")
+    }
+    if f & VK_QUEUE_COMPUTE_BIT != 0 {
+        parts.push("compute")
+    }
+    if f & VK_QUEUE_TRANSFER_BIT != 0 {
+        parts.push("transfer")
+    }
+    if f & VK_QUEUE_SPARSE_BINDING_BIT != 0 {
+        parts.push("sparse")
+    }
+    if f & VK_QUEUE_VIDEO_DECODE_BIT_KHR != 0 {
+        parts.push("video decode")
+    }
+    if f & VK_QUEUE_VIDEO_ENCODE_BIT_KHR != 0 {
+        parts.push("video encode")
+    }
+    if parts.len == 0 {
+        return "other"
+    }
+    return parts.join(", ")
+}
+
+fn main() {
+    app := VkApplicationInfo(
+        sType: VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        pApplicationName: "Finch".ptr,
+        applicationVersion: 1,
+        pEngineName: "none".ptr,
+        apiVersion: 1 << 22,              // Vulkan 1.0
+    )
+    info := VkInstanceCreateInfo(sType: VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, pApplicationInfo: addr(app))
+    ptr instance
+    check(vkCreateInstance(addr(info), null, addr(instance)), "vkCreateInstance")
+    defer vkDestroyInstance(instance, null)
+
+    u32 count
+    check(vkEnumeratePhysicalDevices(instance, addr(count), null), "counting GPUs")
+    []ptr gpus
+    gpus.resize(count)
+    check(vkEnumeratePhysicalDevices(instance, addr(count), gpus.ptr), "listing GPUs")
+    print("Vulkan found", count, "device(s)")
+
+    for gpu in gpus {
+        VkPhysicalDeviceProperties props
+        vkGetPhysicalDeviceProperties(gpu, addr(props))
+        print()
+        print(str(props.deviceName.ptr))
+        print("  type:", deviceType(props.deviceType))
+        print("  Vulkan " + version(props.apiVersion) + ", driver " + str(props.driverVersion))
+        print("  biggest 2D image:", props.limits.maxImageDimension2D, "px")
+
+        VkPhysicalDeviceMemoryProperties mem
+        vkGetPhysicalDeviceMemoryProperties(gpu, addr(mem))
+        for h in 0..mem.memoryHeapCount {
+            heap := mem.memoryHeaps[h]
+            local := ""
+            if heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT != 0 {
+                local = " (on the GPU)"
+            }
+            print("  memory heap " + str(h) + ": " + str(float(heap.size) / 1073741824.0) + " GiB" + local)
+        }
+
+        u32 families
+        vkGetPhysicalDeviceQueueFamilyProperties(gpu, addr(families), null)
+        []VkQueueFamilyProperties queues
+        queues.resize(families)
+        vkGetPhysicalDeviceQueueFamilyProperties(gpu, addr(families), queues.ptr)
+        graphics := -1
+        for q in 0..queues.len {
+            print("  queue family " + str(q) + ": " + str(queues[q].queueCount) + " x " + queueFlags(queues[q].queueFlags))
+            if graphics < 0 && queues[q].queueFlags & VK_QUEUE_GRAPHICS_BIT != 0 {
+                graphics = q
+            }
+        }
+        if graphics < 0 {
+            continue
+        }
+
+        // a logical device with one graphics queue: what a renderer would start from
+        f32 priority = 1.0
+        queueInfo := VkDeviceQueueCreateInfo(
+            sType: VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            queueFamilyIndex: u32(graphics),
+            queueCount: 1,
+            pQueuePriorities: addr(priority),
+        )
+        deviceInfo := VkDeviceCreateInfo(
+            sType: VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+            queueCreateInfoCount: 1,
+            pQueueCreateInfos: addr(queueInfo),
+        )
+        ptr device
+        check(vkCreateDevice(gpu, addr(deviceInfo), null, addr(device)), "vkCreateDevice")
+        ptr queue
+        vkGetDeviceQueue(device, u32(graphics), 0, addr(queue))
+        print("  created a device and got graphics queue", queue != null)
+        vkDestroyDevice(device, null)
+    }
+}

@@ -244,6 +244,8 @@ str(42)          // "42"  (też float, bool, char; str([]u8) zamienia bajty na t
 int("42")        // 42    (zatrzymuje program, jeśli tekst nie jest liczbą)
 float("2.5")     // 2.5
 ptr(p)           // wskaźnik z typem jako wskaźnik bez typu
+ptr(16)          // liczba jako wskaźnik (API C, które przekazują przesunięcia jako wskaźniki, np. OpenGL)
+int(p)           // wskaźnik jako liczba (jego adres)
 str(p)           // wskaźnik na znaki z C jako tekst
 ```
 
@@ -346,6 +348,7 @@ fn bez_wyniku(str wiadomosc) {    // bez "->": nic nie zwraca
   Żeby zmienić zmienną wywołującego, przekaż wskaźnik, zobacz [Wskaźniki](#14-wskaźniki).
 - Funkcja z `-> typ` musi zwrócić wartość na każdej ścieżce. Finch to sprawdza.
 - Funkcji nie można definiować wewnątrz innej funkcji.
+- Długie wywołania możesz rozbić na kilka linijek wewnątrz nawiasów; przecinek po ostatnim argumencie jest dozwolony.
 
 ---
 
@@ -605,6 +608,30 @@ fn main() {
 Żeby dać C funkcję do wywołania zwrotnego (np. porównywarkę dla `qsort`), użyj `addr(mojaFunkcja)`.
 Jej parametry muszą być typami C (liczby, wskaźniki, struktury C).
 
+### Grafika: OpenGL i Vulkan
+
+Oba działają bezpośrednio; `examples/opengl.fch` i `examples/vulkan.fch` to kompletne programy.
+
+- **OpenGL 3+** na Linuksie: nowoczesne funkcje (`glCreateShader`, `glGenVertexArrays`, …) są deklarowane
+  dopiero po zdefiniowaniu `GL_GLEXT_PROTOTYPES`. Finch nie definiuje makr C, więc dołączenia umieść w małym
+  nagłówku obok programu i zaimportuj go:
+
+  ```c
+  // opengl.h
+  #define GL_GLEXT_PROTOTYPES
+  #include <GL/gl.h>
+  #include <GL/glext.h>
+  #include <GLFW/glfw3.h>
+  ```
+
+  Potem `import "opengl.h"`, `link "glfw"`, `link "GL"`. Parametry wyjściowe przekazujesz przez `addr(...)`
+  (`glGenBuffers(1, addr(vbo))`), dane bufora przez `.ptr` (`vertices.ptr`), a przesunięcia w bajtach przez
+  `ptr(...)` (`glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, ptr(8))`).
+- **Vulkan**: `import "vulkan/vulkan.h"` i `link "vulkan"`. Struktury „create info” budujesz z nazwanymi polami
+  (brakujące są zerami), uchwyty to `ptr`, a listy pobierasz typowym wzorcem „dwóch wywołań”: raz po liczbę,
+  raz z `lista.ptr` po `lista.resize(liczba)`. Makra-funkcje, jak `VK_MAKE_API_VERSION`, nie są dostępne;
+  policz liczbę sam (`1 << 22` to Vulkan 1.0).
+
 ### Co jeszcze nie działa
 
 - **Unie** C przez wartość i struktury z **polami bitowymi** przez wartość (wskaźniki do nich działają).
@@ -682,7 +709,7 @@ Finch/
 ├── src/            kompilator (C++)
 ├── runtime/        finch_rt.c: mała biblioteka uruchomieniowa (teksty, tablice, wejście, pliki)
 ├── boot/           kompilator Fincha napisany w Finchu (zobacz przewodnik dla inżynierów)
-├── examples/       hello, tour, types, structs, todo, guess, c_import, window, raylib, llvm
+├── examples/       hello, tour, types, structs, todo, guess, c_import, window, opengl, vulkan, raylib, llvm
 ├── tests/
 │   ├── run/        programy + dokładny wynik (.out) i wejście (.in)
 │   ├── fail/       programy, które muszą się nie udać, z oczekiwanym błędem w 1. linijce

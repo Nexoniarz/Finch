@@ -42,11 +42,6 @@ struct Loader {
 fn load(ptr[Loader] l, str path, str module) {
     if !file_exists(path) {
         if module.len > 0 {
-            old := path.sub(0, path.len - 4) + ".fn"
-            if file_exists(old) {
-                print("error: found " + old + ", but Finch files now end in .fch: rename it to " + path)
-                exit(1)
-            }
             print("error: can't find the module '" + module + "' (looked for " + path + ")")
         } else {
             print("error: can't open '" + path + "'")
