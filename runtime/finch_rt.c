@@ -596,10 +596,11 @@ int finch_try_write_file(const FStr *path, const FStr *text, FStr *err) {
 }
 
 // ---------- maps ----------
-// map[K]V = { entries; len; used; cap; index; icap }
+// map[K]V = { entries; len; used; cap; index; icap; adds }
 //   entries: `used` slots of es bytes, each { uint64 hash; K key; V value }, in insertion order.
 //            A removed entry keeps its slot (hash 0) until the next resize packs the slots.
 //   index:   icap slots (a power of two, at least 2 * cap): -1 empty, -2 removed, else an entry number.
+//   adds:    how many keys were ever added; a `for` over the map stops with an error if it changes.
 // The compiler stores, copies and drops keys and values; the runtime only finds and places entries.
 // Keys are compared byte for byte (numbers, chars, bools) or as text (kstr).
 
@@ -608,6 +609,7 @@ typedef struct {
     int64_t len, used, cap;
     int64_t *index;
     int64_t icap;
+    int64_t adds;
 } FMap;
 
 static uint64_t map_hash(const void *key, int64_t ks, int kstr) {
@@ -699,6 +701,7 @@ int64_t finch_map_slot(FMap *m, const void *key, int64_t es, int64_t ks, int32_t
     while (m->index[s] >= 0) s = (s + 1) & (m->icap - 1);
     m->index[s] = i;
     m->len++;
+    m->adds++;
     return i;
 }
 
@@ -734,6 +737,10 @@ void finch_map_clone_raw(FMap *out, const FMap *m, int64_t es) {
     memcpy(out->entries, m->entries, (size_t)(m->used * es));
     out->index = finch_alloc(m->icap * (int64_t)sizeof(int64_t));
     memcpy(out->index, m->index, (size_t)m->icap * sizeof(int64_t));
+}
+
+__attribute__((noreturn, cold)) void finch_map_changed(const char *file, int64_t line) {
+    finch_panic(file, line, "a key was added to the map while looping over it (collect the new keys, and add them after the loop)");
 }
 
 __attribute__((noreturn, cold)) void finch_map_missing(const char *file, int64_t line, const FStr *key) {

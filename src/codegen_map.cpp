@@ -138,9 +138,13 @@ Value_ Codegen::mapLit(const MapLitExpr &e, const FType *want) {
     }
     Value *map = tmp(zero(t));
     StructType *ET = mapEntryTy(t);
+    Held held(*this);
+    holdAddr(map, t);  // the entries so far, if a later one leaves early
     for (size_t i = 0; i < e.keys.size(); i++) {
+        Held entry(*this);
         Value_ k = i == 0 && first ? k0 : exprWant(*e.keys[i], *t.key);
         k = coerce(k, *t.key, e.keys[i]->pos, "every key of this map");
+        hold(k);
         Value_ v = i == 0 && first ? v0 : exprWant(*e.values[i], *t.elem);
         Value *vv = own(coerce(v, *t.elem, e.values[i]->pos, "every value of this map"));
         Value *valueAddr = b.CreateStructGEP(ET, mapSlot(map, t, k, p, false), 2);

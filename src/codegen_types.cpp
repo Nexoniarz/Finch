@@ -27,7 +27,7 @@ llvm::Type *Codegen::ty(const FType &t) {
     case FType::Array: return StructType::get(ctx, {b.getPtrTy(), b.getInt64Ty(), b.getInt64Ty()});
     case FType::Map: {
         llvm::Type *P = b.getPtrTy(), *I = b.getInt64Ty();
-        return StructType::get(ctx, {P, I, I, I, P, I});  // entries, len, used, cap, index, icap
+        return StructType::get(ctx, {P, I, I, I, P, I, I});  // entries, len, used, cap, index, icap, adds
     }
     case FType::Ptr:
     case FType::Null: return b.getPtrTy();
@@ -546,11 +546,11 @@ DIType *Codegen::diType(const FType &t) {
     case FType::Map: {  // shown by its parts; the entries are behind `entries`
         DIType *i64 = diType(FType::I64), *pt = di->createPointerType(nullptr, 64);
         DIFile *f = diFiles[0];
-        const char *names[] = {"entries", "len", "used", "cap", "index", "icap"};
+        const char *names[] = {"entries", "len", "used", "cap", "index", "icap", "adds"};
         std::vector<Metadata *> els;
-        for (unsigned k = 0; k < 6; k++)
+        for (unsigned k = 0; k < 7; k++)
             els.push_back(di->createMemberType(diUnit, names[k], f, 0, 64, 64, 64 * k, DINode::FlagZero, k == 0 || k == 4 ? pt : i64));
-        d = di->createStructType(diUnit, t.show(), f, 0, 384, 64, DINode::FlagZero, nullptr, di->getOrCreateArray(els));
+        d = di->createStructType(diUnit, t.show(), f, 0, 448, 64, DINode::FlagZero, nullptr, di->getOrCreateArray(els));
         break;
     }
     case FType::Struct: {

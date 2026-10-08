@@ -1,0 +1,7 @@
+// expect: a key was added to the map while looping over it
+fn main() {
+    m := ["a": 1]
+    for k in m {
+        m[k + "!"] = 2
+    }
+}
