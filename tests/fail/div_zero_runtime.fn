@@ -1,0 +1,5 @@
+// expect: 4: runtime error: division by zero
+fn main() {
+    zero := 0
+    print(10 / zero)
+}

@@ -1,0 +1,18 @@
+// Finch driving LLVM itself through the LLVM-C API: the first step toward
+// a compiler written in Finch. Builds a module with `answer() -> 42` and prints its IR.
+import "llvm-c/Core.h"
+link "LLVM"
+
+fn main() {
+    mod := LLVMModuleCreateWithName("from_finch")
+    i64t := LLVMInt64Type()
+    fnType := LLVMFunctionType(i64t, null, 0, 0)
+    f := LLVMAddFunction(mod, "answer", fnType)
+    entry := LLVMAppendBasicBlock(f, "entry")
+    b := LLVMCreateBuilder()
+    LLVMPositionBuilderAtEnd(b, entry)
+    LLVMBuildRet(b, LLVMConstInt(i64t, 42, 0))
+    LLVMDumpModule(mod)
+    LLVMDisposeBuilder(b)
+    LLVMDisposeModule(mod)
+}

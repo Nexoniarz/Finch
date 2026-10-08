@@ -1,0 +1,3 @@
+// expect: can't find the C header
+import "nope_not_here.h"
+fn main() {}

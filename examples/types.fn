@@ -1,0 +1,31 @@
+// Sized numbers and pointers.
+
+fn double(ptr[int] p) {
+    p.value = p.value * 2
+}
+
+fn main() {
+    // everyday: int and float. For bytes and hardware: exact sizes.
+    u8 small = 255
+    i32 points = -1000
+    big := u64(0xFFFF_FFFF)
+    f32 half = 0.5
+
+    small += 1                       // u8 wraps around, like real hardware
+    print("u8 255 + 1 =", small)
+    print("points:", points, "big:", big, "half:", half)
+
+    i64 wide = points                // a smaller type fits into a bigger one by itself
+    print("wide:", wide)
+
+    // pointers: addr(x) gives you where x lives, p.value is what is there
+    int x = 21
+    p := addr(x)
+    double(p)
+    print("x is now", x)
+
+    ptr[int] nothing = null
+    if nothing == null {
+        print("nothing points nowhere")
+    }
+}

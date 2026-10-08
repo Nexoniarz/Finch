@@ -1,0 +1,6 @@
+// expect: this ptr has no type
+import "stdlib.h"
+fn main() {
+    p := malloc(8)
+    print(p.value)
+}

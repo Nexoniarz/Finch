@@ -1,0 +1,5 @@
+// expect: 4: runtime error: used .value on a null pointer
+fn main() {
+    ptr[int] p = null
+    print(p.value)
+}

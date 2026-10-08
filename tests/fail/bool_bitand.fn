@@ -1,0 +1,4 @@
+// expect: for true/false use '&&'
+fn main() {
+    print(true & false)
+}

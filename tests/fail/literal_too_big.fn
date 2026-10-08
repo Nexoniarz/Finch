@@ -1,0 +1,4 @@
+// expect: doesn't fit in u8
+fn main() {
+    u8 b = 300
+}

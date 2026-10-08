@@ -1,0 +1,3 @@
+// expect: the library 'definitely_not_a_lib' wasn't found
+link "definitely_not_a_lib"
+fn main() {}

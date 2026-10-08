@@ -1,0 +1,42 @@
+fn classify(int n) -> str {
+    if n < 0 {
+        return "negative"
+    } else if n == 0 {
+        return "zero"
+    } else {
+        return "positive"
+    }
+}
+
+fn main() {
+    print(classify(-5), classify(0), classify(5))
+
+    total := 0
+    for i in 0..100 {
+        if i % 2 == 0 {
+            continue
+        }
+        if i > 10 {
+            break
+        }
+        total += i
+    }
+    print("odd sum below 10:", total)
+
+    n := 0
+    while true {
+        n += 1
+        if n == 5 {
+            break
+        }
+    }
+    print("n:", n)
+
+    for i in 3..3 {
+        print("never")
+    }
+    {
+        inner := "blocks have their own scope"
+        print(inner)
+    }
+}

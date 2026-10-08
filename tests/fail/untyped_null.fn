@@ -1,0 +1,4 @@
+// expect: null needs a type
+fn main() {
+    p := null
+}

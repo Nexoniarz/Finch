@@ -1,0 +1,6 @@
+// expect: can't use '+' on i32 and u32
+fn main() {
+    i32 a = 1
+    u32 b = 2
+    print(a + b)
+}

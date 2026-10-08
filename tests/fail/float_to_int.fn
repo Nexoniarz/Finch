@@ -1,0 +1,5 @@
+// expect: cuts off the fraction
+fn main() {
+    float f = 2.5
+    int n = f
+}

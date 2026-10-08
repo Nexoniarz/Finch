@@ -1,0 +1,28 @@
+fn fib(int n) -> int {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn later() -> int {
+    return defined_below()
+}
+
+fn defined_below() -> int {
+    return 42
+}
+
+fn greet(str who) {
+    if who == "" {
+        return
+    }
+    print("hi", who)
+}
+
+fn main() {
+    print(fib(20))
+    print(later())
+    greet("")
+    greet("finch")
+}

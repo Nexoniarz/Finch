@@ -1,0 +1,5 @@
+// expect: link "lib_hint"
+import "lib_hint.h"
+fn main() {
+    print(finch_test_missing(1))
+}

@@ -1,0 +1,4 @@
+// expect: 'x' must be int, but this is str
+fn main() {
+    int x = "hi"
+}

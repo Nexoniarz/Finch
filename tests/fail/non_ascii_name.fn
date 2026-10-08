@@ -1,0 +1,4 @@
+// expect: unexpected character 'ż' (names use only
+fn main() {
+    żółw := 1
+}

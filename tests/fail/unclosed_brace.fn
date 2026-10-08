@@ -1,0 +1,3 @@
+// expect: never closed
+fn main() {
+    print(1)

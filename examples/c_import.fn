@@ -1,0 +1,23 @@
+// Use any C library: import its header and call it.
+import "stdio.h"
+import "math.h"
+import "stdlib.h"
+import "string.h"
+
+fn main() {
+    printf("printf works: %d + %d = %d\n", 2, 3, 2 + 3)
+    puts("so does puts")
+
+    print("sqrt(2) =", sqrt(2))
+    print("pi from math.h:", M_PI)
+    print("strlen(\"finch\") =", strlen("finch"))
+    print("RAND_MAX =", RAND_MAX, "EOF =", EOF)
+
+    // memory from C: malloc gives a ptr, free gives it back
+    ptr[i32] n = malloc(4)
+    n.value = 7
+    print("from the heap:", n.value)
+    free(n)
+
+    fprintf(stderr, "this goes to stderr\n")
+}

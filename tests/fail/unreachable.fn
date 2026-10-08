@@ -1,0 +1,5 @@
+// expect: this code can never run
+fn main() {
+    return
+    print(1)
+}

@@ -1,0 +1,4 @@
+// expect: functions start with 'fn'
+int add(int a) {
+    return a
+}

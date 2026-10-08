@@ -1,0 +1,17 @@
+fn main() {
+    u8 small = 255
+    small += 1
+    print(small)
+    i8 tiny = -128
+    print(tiny, i8(200), u8(-1), u16(70000))
+    i32 p = 1000
+    i64 wide = p
+    print(wide, p + 1)
+    u32 big = 4000000000
+    print(big, big / 3)
+    f32 half = 0.5
+    print(half * 2, float(half))
+    print(int(3.99), int(-3.99), float(7) / 2, int('A'), char(66), bool(0), bool(5))
+    print(0xFF, 1_000_000)
+    print(u8(250) + 10)
+}

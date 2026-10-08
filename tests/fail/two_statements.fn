@@ -1,0 +1,4 @@
+// expect: put each statement on its own line
+fn main() {
+    x := 1 print(x)
+}

@@ -1,0 +1,3 @@
+// expect: write just the library's name
+link "libm.so"
+fn main() {}

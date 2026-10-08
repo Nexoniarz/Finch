@@ -1,0 +1,4 @@
+// expect: division by zero
+fn main() {
+    print(1 / 0)
+}

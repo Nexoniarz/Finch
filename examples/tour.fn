@@ -1,0 +1,62 @@
+// A quick tour of Finch.
+
+fn add(int a, int b) -> int {
+    return a + b
+}
+
+fn fib(int n) -> int {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn isEven(int n) -> bool {
+    return n % 2 == 0
+}
+
+fn greet(str name) {
+    if name == "Finch" {
+        print("Hi, it's me!")
+    } else {
+        print("Hi,", name)
+    }
+}
+
+fn main() {
+    // two ways to make a variable
+    int age = 10
+    name := "Ola"          // type is guessed: str
+    pi := 3.14             // float
+    letter := 'F'          // char
+
+    print(name, "is", age, "years old")
+    print("2 + 3 =", add(2, 3))
+    print("pi * 2 =", pi * 2)
+    print("first letter:", letter)
+    print("10 is even?", isEven(10))
+
+    greet("Finch")
+    greet(name)
+
+    // loops
+    for i in 0..10 {
+        if i == 3 {
+            continue
+        }
+        if i == 7 {
+            break
+        }
+        print("i =", i)
+    }
+
+    count := 3
+    while count > 0 {
+        print("countdown", count)
+        count -= 1
+    }
+
+    print("fib(30) =", fib(30))
+    print("7 / 2 =", 7 / 2, "and as float:", float(7) / 2)
+    print("int(9.99) =", int(9.99))
+}

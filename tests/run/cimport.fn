@@ -1,0 +1,16 @@
+import "stdio.h"
+import "math.h"
+import "stdlib.h"
+import "string.h"
+
+fn main() {
+    printf("%d-%s\n", 42, "printf")
+    print(sqrt(16), pow(2, 10), floor(2.7))
+    print(strlen("finch"), abs(-5), atoi("123"))
+    print(EOF, RAND_MAX > 0, M_PI > 3.14)
+    ptr[i32] n = malloc(4)
+    n.value = 7
+    print(n.value)
+    free(n)
+    fflush(stdout)
+}

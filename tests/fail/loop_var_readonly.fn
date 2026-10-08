@@ -1,0 +1,6 @@
+// expect: can't be changed
+fn main() {
+    for i in 0..3 {
+        i = 5
+    }
+}

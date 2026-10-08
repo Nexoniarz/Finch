@@ -1,0 +1,4 @@
+// expect: there is no variable named 'y'
+fn main() {
+    print(y)
+}

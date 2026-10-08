@@ -1,0 +1,2 @@
+// expect: there is no main function
+fn helper() {}

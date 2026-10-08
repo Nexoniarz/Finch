@@ -1,0 +1,18 @@
+fn main() {
+    int a = 7
+    b := 2
+    print(a + b, a - b, a * b, a / b, a % b)
+    print(-a / b, -a % b)
+    x := 1.5
+    print(x * 2, x + 1, 7 / 2.0)
+    print(true && false, true || false, !true)
+    print('A', "text", 1 < 2, 2 <= 2, 3 > 4, 4 >= 4, 1 == 1, 1 != 1)
+    a += 3
+    a -= 1
+    a *= 2
+    a /= 3
+    a %= 4
+    print(a)
+    print()
+    print("tab\there", "quote\"inside")
+}

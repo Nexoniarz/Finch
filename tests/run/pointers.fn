@@ -1,0 +1,25 @@
+fn double(ptr[int] p) {
+    p.value = p.value * 2
+}
+
+fn swap(ptr[int] a, ptr[int] b) {
+    t := a.value
+    a.value = b.value
+    b.value = t
+}
+
+fn main() {
+    x := 21
+    double(addr(x))
+    print(x)
+    a := 1
+    b := 2
+    swap(addr(a), addr(b))
+    print(a, b)
+    p := addr(a)
+    pp := addr(p)
+    pp.value.value = 99
+    print(a)
+    ptr[int] none = null
+    print(none == null, p != null, none)
+}

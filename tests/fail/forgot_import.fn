@@ -1,0 +1,4 @@
+// expect: import "math.h"
+fn main() {
+    print(sqrt(2))
+}

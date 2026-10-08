@@ -1,0 +1,5 @@
+// expect: can reach its end without returning int
+fn f() -> int {
+    print(1)
+}
+fn main() {}
