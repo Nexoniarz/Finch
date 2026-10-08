@@ -111,6 +111,7 @@ struct AbiArg {
     enum Kind { Direct, Expand, Memory, Indirect } kind = Direct;
     std::vector<llvm::Type *> parts;  // Expand: one value per eightbyte
     llvm::Type *coerced = nullptr;    // Expand: { parts... } for returns
+    bool stackAlign8 = false;         // AArch64 Linux: HFA arguments that end up on the stack
 };
 
 class Codegen {

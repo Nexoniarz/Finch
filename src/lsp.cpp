@@ -165,8 +165,7 @@ int Server::run() {
     _setmode(_fileno(stdin), _O_BINARY);
     _setmode(_fileno(stdout), _O_BINARY);
 #endif
-    InitializeNativeTarget();
-    InitializeNativeTargetAsmPrinter();
+    initTargets();
     setTarget("");
     std::string err;
     const Target *target = TargetRegistry::lookupTarget(g_target.triple, err);

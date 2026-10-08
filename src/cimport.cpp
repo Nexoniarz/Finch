@@ -12,8 +12,9 @@
 
 namespace {
 
-// Ask the system C compiler where it looks for headers, so we find the same stdio.h it would.
-std::vector<std::string> systemIncludeDirs() {
+// Ask the system C compiler where it looks for headers (and, on macOS, frameworks), so we find
+// the same stdio.h it would. Returns ready -isystem / -iframework arguments.
+std::vector<std::string> systemIncludeArgs() {
     std::string output;
     capture(g_target.cc + " -E -v -x c " + nullDevice(), output);
     std::vector<std::string> dirs;
@@ -29,8 +30,11 @@ std::vector<std::string> systemIncludeDirs() {
         size_t z = l.find_last_not_of(" \n");
         if (a == std::string::npos) continue;
         std::string d = l.substr(a, z - a + 1);
-        if (d.size() > 20 && d.compare(d.size() - 20, 20, " (framework directory)") == 0) continue;
-        dirs.push_back(d);
+        // macOS: "/…/System/Library/Frameworks (framework directory)" holds <OpenGL/gl.h> and friends
+        if (d.size() > 22 && d.compare(d.size() - 22, 22, " (framework directory)") == 0)
+            dirs.push_back("-iframework" + d.substr(0, d.size() - 22));
+        else
+            dirs.push_back("-isystem" + d);
     }
     return dirs;
 }
@@ -322,7 +326,7 @@ CImports importHeaders(const std::vector<Import> &imports, const std::vector<std
     std::vector<std::string> args = {"-x", "c", "-std=gnu11", "--target=" + g_target.triple.str()};
     if (g_target.windows) args.push_back("-D_USE_MATH_DEFINES");  // M_PI and friends, as on Linux
     for (const std::string &d : dirs) args.push_back("-I" + d);
-    for (const std::string &d : systemIncludeDirs()) args.push_back("-isystem" + d);
+    for (const std::string &d : systemIncludeArgs()) args.push_back(d);
     std::vector<const char *> argv;
     for (const std::string &a : args) argv.push_back(a.c_str());
 

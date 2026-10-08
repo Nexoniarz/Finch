@@ -8,6 +8,7 @@
 
 struct TargetInfo {
     llvm::Triple triple;
+    bool darwin = false;    // macOS
     bool windows = false;   // Windows (MSVC or MinGW): Microsoft x64 calling convention, .exe
     bool msvc = false;      // the MSVC environment (link with clang + the Windows SDK)
     bool cross = false;     // compiling for another system than the one we run on
@@ -17,8 +18,14 @@ struct TargetInfo {
 
 inline TargetInfo g_target;
 
-// "windows" / "linux" / a full triple; "" = the system finch runs on
+// "windows", "linux", "macos", "arm64" (ARM64 Linux), or a full LLVM triple; "" = the system finch runs on
 void setTarget(const std::string &name);
+
+// Register the LLVM backends Finch can generate code for (x86-64, ARM64).
+void initTargets();
+
+// How to run a program built for g_target on this machine ("" = directly, "wine", "qemu-aarch64").
+std::string runPrefix();
 
 // Quote one argument for the shell that runs our commands (sh on Unix, cmd.exe on Windows).
 std::string shellQuote(const std::string &s);

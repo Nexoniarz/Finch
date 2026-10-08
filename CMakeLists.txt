@@ -67,9 +67,24 @@ endif()
 
 # Link the one shared libLLVM when available: libclang uses it too, and two copies
 # of LLVM in one process crash on exit.
+# Finch generates code for x86-64 and ARM64; use whichever of them this LLVM was built with.
+set(FINCH_BACKENDS)
+foreach(t X86 AArch64)
+    if(t IN_LIST LLVM_TARGETS_TO_BUILD)
+        list(APPEND FINCH_BACKENDS ${t})
+        string(TOUPPER ${t} T)
+        target_compile_definitions(finch PRIVATE FINCH_TARGET_${T})
+    endif()
+endforeach()
+message(STATUS "Finch backends: ${FINCH_BACKENDS}")
+
 if(TARGET LLVM)
     set(LLVM_LIBS LLVM)
 else()
-    llvm_map_components_to_libnames(LLVM_LIBS core support passes native)
+    set(FINCH_COMPONENTS core support passes native)
+    foreach(t ${FINCH_BACKENDS})
+        list(APPEND FINCH_COMPONENTS ${t}codegen ${t}asmparser ${t}desc ${t}info)
+    endforeach()
+    llvm_map_components_to_libnames(LLVM_LIBS ${FINCH_COMPONENTS})
 endif()
 target_link_libraries(finch PRIVATE ${LLVM_LIBS} ${LIBCLANG})

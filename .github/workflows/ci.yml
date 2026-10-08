@@ -11,7 +11,14 @@ env:
 
 jobs:
   linux:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, arch: x64 }
+          - { os: ubuntu-24.04-arm, arch: arm64 }
+    name: linux-${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Install LLVM 21, libclang, tools
@@ -28,11 +35,48 @@ jobs:
       - name: Tests
         run: tests/run.sh
       - name: Tests under valgrind
+        if: matrix.arch == 'x64'
         run: MEMCHECK=1 tests/run.sh
       - name: Self-hosting
         run: tests/boot.sh
       - name: Language server
         run: python3 tests/lsp_test.py
+      - name: Package
+        run: |
+          mkdir -p dist/finch && cp build/finch README.md LICENSE dist/finch/ && cp -r examples dist/finch/
+          tar -czf finch-linux-${{ matrix.arch }}.tar.gz -C dist finch
+      - uses: actions/upload-artifact@v4
+        with:
+          name: finch-linux-${{ matrix.arch }}
+          path: finch-linux-${{ matrix.arch }}.tar.gz
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LLVM 21
+        run: |
+          brew install llvm@21 ninja
+          echo "$(brew --prefix llvm@21)/bin" >> $GITHUB_PATH
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR="$(brew --prefix llvm@21)/lib/cmake/llvm"
+          ninja -C build
+          build/finch version
+      - name: Tests
+        run: CC=/usr/bin/clang tests/run.sh
+      - name: Self-hosting
+        run: CC=/usr/bin/clang tests/boot.sh
+      - name: Language server
+        run: python3 tests/lsp_test.py
+      - name: Package
+        run: |
+          mkdir -p dist/finch && cp build/finch README.md LICENSE dist/finch/ && cp -r examples dist/finch/
+          tar -czf finch-macos-arm64.tar.gz -C dist finch
+      - uses: actions/upload-artifact@v4
+        with:
+          name: finch-macos-arm64
+          path: finch-macos-arm64.tar.gz
 
   vscode:
     runs-on: ubuntu-24.04

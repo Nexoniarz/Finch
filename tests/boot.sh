@@ -25,7 +25,7 @@ for f in tests/run/*.fch; do
     # (checked in the test and in the modules it imports)
     files="$f"
     for m in $(sed -n 's/^import \([a-z_]*\)$/\1/p' "$f"); do files="$files tests/run/$m.fch"; done
-    if grep -qE '^import "|^link |\b(u8|u16|u32|u64|i8|i16|i32|f32|f64)\b|defer |0x' $files; then
+    if grep -qE '^import "|^link |defer |0x' $files || grep -qwE 'u8|u16|u32|u64|i8|i16|i32|f32|f64' $files; then
         skipped=$((skipped + 1))
         continue
     fi

@@ -65,13 +65,10 @@ static void optimize(Module &mod, TargetMachine *tm) {
 }
 
 static TargetMachine *targetMachine() {
-    InitializeNativeTarget();
-    InitializeNativeTargetAsmPrinter();
-
+    initTargets();
     const Triple &triple = g_target.triple;
-    if (triple.getArch() != Triple(sys::getDefaultTargetTriple()).getArch()) {
-        std::fprintf(stderr, "error: Finch can build for other systems on the same processor (like Windows from Linux), but not for %s yet\n",
-                     triple.getArchName().str().c_str());
+    if (!triple.isX86() && !triple.isAArch64()) {
+        std::fprintf(stderr, "error: Finch generates code for x86-64 and ARM64, not for %s\n", triple.getArchName().str().c_str());
         std::exit(1);
     }
     std::string err;
@@ -129,6 +126,9 @@ static std::string runtimeObject() {
 // pkg-config knows the right paths for a library if it has one; otherwise plain -l<name>.
 static std::string libFlags(const std::string &lib) {
     std::string out;
+    // macOS: link "Cocoa.framework" -> -framework Cocoa
+    if (lib.size() > 10 && lib.compare(lib.size() - 10, 10, ".framework") == 0)
+        return " -framework " + shellQuote(lib.substr(0, lib.size() - 10));
     if (!g_target.cross && capture("pkg-config --libs " + shellQuote(lib), out) == 0) {
         while (!out.empty() && std::isspace((unsigned char)out.back())) out.pop_back();
         return " " + out;
@@ -170,9 +170,21 @@ static std::string guessLib(const std::string &header) {
             std::string lib = l.substr(a, l.find('\'', a) - a);
             if (lib.size() > 4 && lib.compare(lib.size() - 4, 4, ".lib") == 0) lib = lib.substr(0, lib.size() - 4);
             addOnce(missingLibs, lib);
-        } else if ((a = l.find("cannot find -l")) != std::string::npos) {
-            a += 14;
-            addOnce(missingLibs, l.substr(a, l.find_first_of(": \n", a) - a));
+        } else if ((a = l.find("cannot find -l")) != std::string::npos ||
+                   (a = l.find("library not found for -l")) != std::string::npos) {  // older Apple ld
+            a = l.find("-l", a) + 2;
+            addOnce(missingLibs, l.substr(a, l.find_first_of(": \n\r", a) - a));
+        } else if ((a = l.find("ld: library '")) != std::string::npos) {  // Apple ld: library 'x' not found
+            a += 13;
+            addOnce(missingLibs, l.substr(a, l.find('\'', a) - a));
+        } else if ((a = l.find("framework '")) != std::string::npos && l.find("not found") != std::string::npos) {
+            a += 11;
+            addOnce(missingLibs, l.substr(a, l.find('\'', a) - a) + ".framework");
+        } else if (l.rfind("  \"", 0) == 0 && (a = l.find("\", referenced from:")) != std::string::npos) {
+            // Apple ld: Undefined symbols for architecture arm64:\n  "_name", referenced from:
+            std::string name = l.substr(3, a - 3);
+            if (g_target.darwin && !name.empty() && name[0] == '_') name.erase(0, 1);
+            addOnce(missing, name);
         }
     }
     if (missing.empty() && missingLibs.empty()) {
@@ -323,7 +335,7 @@ int main(int argc, char **argv) {
     if (cmd == "run") {
         std::string line = shellQuote(out);
         for (const std::string &a : programArgs) line += " " + shellQuote(a);
-        if (g_target.cross && g_target.windows) line = "wine " + line;  // a Windows program on Linux
+        line = runPrefix() + line;  // wine / qemu for programs built for another system
 #ifdef _WIN32
         line = "\"" + line + "\"";  // cmd /c strips one pair of outer quotes
 #endif

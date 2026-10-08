@@ -1,6 +1,7 @@
-// The C calling convention for structs passed and returned by value (System V x86-64),
-// the way clang does it: small structs travel in registers, split into eightbytes that are
-// either INTEGER (general registers) or SSE (xmm registers); bigger ones go through memory.
+// The C calling convention for structs passed and returned by value, the way clang does it:
+//   System V x86-64 (Linux, macOS): small structs split into eightbytes, INTEGER or SSE registers
+//   Microsoft x64 (Windows): 1/2/4/8 bytes in one register, everything else by address
+//   AAPCS64 (ARM64 Linux, Apple): float groups in vector registers, else up to 16 bytes in x registers
 
 #include "codegen_impl.h"
 #include "target.h"
@@ -45,6 +46,39 @@ AbiArg Codegen::classify(const FType &t) {
     AbiArg a;
     if (t.kind != FType::Struct) return a;  // Direct
     uint64_t size = dl->getTypeAllocSize(ty(t));
+    if (g_target.triple.isAArch64()) {
+        // A homogeneous float aggregate (1-4 floats or 1-4 doubles) travels in vector registers.
+        std::vector<Leaf> ls;
+        leaves(*this, t, 0, ls);
+        bool hfa = !ls.empty() && ls.size() <= 4;
+        for (const Leaf &l : ls) hfa &= l.isFloat && l.isDouble == ls[0].isDouble;
+        if (hfa) {
+            llvm::Type *ft = ls[0].isDouble ? (llvm::Type *)b.getDoubleTy() : b.getFloatTy();
+            a.kind = AbiArg::Expand;
+            a.parts.push_back(ArrayType::get(ft, ls.size()));
+            a.coerced = StructType::get(ctx, std::vector<llvm::Type *>(ls.size(), ft));
+            a.stackAlign8 = !g_target.triple.isOSDarwin();
+            return a;
+        }
+        if (size > 16) {
+            a.kind = AbiArg::Indirect;  // a copy, passed by address; returned through sret
+            return a;
+        }
+        // up to 16 bytes in general registers: i64 or [2 x i64]; returned as an exact-size integer
+        uint64_t align = dl->getABITypeAlign(ty(t)).value();
+        a.kind = AbiArg::Expand;
+        if (align >= 16) {
+            a.parts.push_back(b.getInt128Ty());
+            a.coerced = b.getInt128Ty();
+        } else if (size <= 8) {
+            a.parts.push_back(b.getInt64Ty());
+            a.coerced = b.getIntNTy(size * 8);
+        } else {
+            a.parts.push_back(ArrayType::get(b.getInt64Ty(), 2));
+            a.coerced = a.parts[0];
+        }
+        return a;
+    }
     if (g_target.windows) {
         // Microsoft x64: 1, 2, 4 or 8 bytes travel as one integer (even if they hold floats);
         // anything else is copied by the caller and passed by address
@@ -122,7 +156,8 @@ static Plan makePlan(Codegen &cg, const FType &ret, const std::vector<FType> &pa
         if (a.kind == AbiArg::Expand) {
             int ni = 0, ns = 0;
             for (llvm::Type *p : a.parts) (p->isIntegerTy() ? ni : ns)++;
-            if (g_target.windows || (ni <= intRegs && ns <= sseRegs)) {
+            // only System V counts registers here; elsewhere the backend places each part
+            if (g_target.windows || g_target.triple.isAArch64() || (ni <= intRegs && ns <= sseRegs)) {
                 intRegs -= ni;
                 sseRegs -= ns;
                 for (llvm::Type *p : a.parts) types.push_back(p);
@@ -143,9 +178,15 @@ static Plan makePlan(Codegen &cg, const FType &ret, const std::vector<FType> &pa
     return pl;
 }
 
+// Is C's plain `char` signed? Yes on x86 and Apple; no on ARM64 Linux.
+static bool charIsSigned() {
+    return !g_target.triple.isAArch64() || g_target.triple.isOSDarwin() || g_target.triple.isOSWindows();
+}
+
 static Attribute::AttrKind extAttr(const FType &t) {
     if (t.bits() >= 32 || !(t.isInt() || t.kind == FType::Bool || t.kind == FType::Char)) return Attribute::None;
-    return t.isSigned() || t.kind == FType::Char ? Attribute::SExt : Attribute::ZExt;
+    if (t.kind == FType::Char) return charIsSigned() ? Attribute::SExt : Attribute::ZExt;
+    return t.isSigned() ? Attribute::SExt : Attribute::ZExt;
 }
 
 // Attributes that tell LLVM how C passes each piece: sret, byval, signext/zeroext.
@@ -169,6 +210,7 @@ static AttributeList attrsFor(Codegen &cg, const Plan &pl, const FType &ret, con
         } else if (a.kind == AbiArg::Indirect) {
             idx++;
         } else if (a.kind == AbiArg::Expand) {
+            if (a.stackAlign8) al = al.addParamAttribute(ctx, idx, Attribute::getWithStackAlignment(ctx, Align(8)));
             idx += a.parts.size();
         } else {
             if (Attribute::AttrKind k = extAttr(params[i]); k != Attribute::None) al = al.addParamAttribute(ctx, idx, k);
@@ -230,7 +272,7 @@ Value_ Codegen::emitCCall(const CFunc &f, Function *fn, std::vector<Value_> args
             if (t.kind == FType::F32) x = b.CreateFPExt(x, b.getDoubleTy());
             else if (t.kind == FType::Str) x = cstr(x);
             else if (t.kind == FType::Bool || ((t.isInt() || t.kind == FType::Char) && t.bits() < 32))
-                x = b.CreateIntCast(x, b.getInt32Ty(), t.isSigned() || t.kind == FType::Char);
+                x = b.CreateIntCast(x, b.getInt32Ty(), t.isSigned() || (t.kind == FType::Char && charIsSigned()));
             ll.push_back(x);
             continue;
         }
