@@ -1,0 +1,8 @@
+.vscodeignore
+test/**
+node_modules/.package-lock.json
+node_modules/vscode-textmate/**
+node_modules/vscode-oniguruma/**
+node_modules/@vscode/**
+**/*.map
+.gitignore

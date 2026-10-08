@@ -1,0 +1,154 @@
+{
+  "name": "finch-lang",
+  "displayName": "Finch",
+  "description": "The Finch programming language: highlighting, errors as you type, completion, hover, go to definition, and a Run button.",
+  "version": "2.3.0",
+  "publisher": "nexoniarz",
+  "license": "Apache-2.0",
+  "icon": "images/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Nexoniarz/Finch"
+  },
+  "homepage": "https://github.com/Nexoniarz/Finch",
+  "bugs": {
+    "url": "https://github.com/Nexoniarz/Finch/issues"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Snippets"
+  ],
+  "keywords": [
+    "finch",
+    "llvm",
+    "compiler",
+    "language"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:finch"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "finch",
+        "aliases": [
+          "Finch",
+          "finch"
+        ],
+        "extensions": [
+          ".fch"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./images/file-light.svg",
+          "dark": "./images/file-dark.svg"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "finch",
+        "scopeName": "source.finch",
+        "path": "./syntaxes/finch.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "finch",
+        "path": "./snippets/finch.json"
+      }
+    ],
+    "configuration": {
+      "title": "Finch",
+      "properties": {
+        "finch.path": {
+          "type": "string",
+          "default": "finch",
+          "description": "The finch compiler: a command on your PATH, or the full path to finch / finch.exe."
+        },
+        "finch.languageServer": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use `finch lsp` for errors as you type, completion, hover and go to definition."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "finch.run",
+        "title": "Finch: Run This File",
+        "icon": "$(play)"
+      },
+      {
+        "command": "finch.build",
+        "title": "Finch: Build This File",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "finch.restartServer",
+        "title": "Finch: Restart Language Server"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "finch.run",
+          "when": "resourceLangId == finch",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "finch.run",
+          "when": "editorLangId == finch"
+        },
+        {
+          "command": "finch.build",
+          "when": "editorLangId == finch"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "finch.run",
+        "key": "ctrl+f5",
+        "mac": "cmd+f5",
+        "when": "editorLangId == finch"
+      }
+    ],
+    "problemMatchers": [
+      {
+        "name": "finch",
+        "owner": "finch",
+        "fileLocation": [
+          "autoDetect",
+          "${workspaceFolder}"
+        ],
+        "pattern": {
+          "regexp": "^(.*?):(\\d+):(\\d+): error: (.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "message": 4
+        }
+      }
+    ]
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "scripts": {
+    "test": "node test/grammar.js",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "vscode-textmate": "^9.2.0",
+    "vscode-oniguruma": "^2.0.1",
+    "@vscode/vsce": "^3.2.0"
+  }
+}

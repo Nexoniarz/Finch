@@ -1,0 +1,241 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Finch",
+  "scopeName": "source.finch",
+  "fileTypes": [
+    "fch"
+  ],
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#imports"
+    },
+    {
+      "include": "#struct"
+    },
+    {
+      "include": "#function"
+    },
+    {
+      "include": "#statements"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.finch",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.finch",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "imports": {
+      "patterns": [
+        {
+          "match": "^\\s*(import)\\s+(\"[^\"]*\")",
+          "captures": {
+            "1": {
+              "name": "keyword.control.import.finch"
+            },
+            "2": {
+              "name": "string.quoted.double.include.finch"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(import)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.import.finch"
+            },
+            "2": {
+              "name": "entity.name.namespace.finch"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(link)\\s+(\"[^\"]*\")",
+          "captures": {
+            "1": {
+              "name": "keyword.control.import.finch"
+            },
+            "2": {
+              "name": "string.quoted.double.finch"
+            }
+          }
+        }
+      ]
+    },
+    "struct": {
+      "match": "\\b(struct)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": {
+          "name": "storage.type.struct.finch"
+        },
+        "2": {
+          "name": "entity.name.type.struct.finch"
+        }
+      }
+    },
+    "function": {
+      "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": {
+          "name": "storage.type.function.finch"
+        },
+        "2": {
+          "name": "entity.name.function.finch"
+        }
+      }
+    },
+    "statements": {
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#strings"
+        },
+        {
+          "include": "#chars"
+        },
+        {
+          "include": "#numbers"
+        },
+        {
+          "name": "keyword.control.finch",
+          "match": "\\b(if|else|while|for|in|break|continue|return|defer)\\b"
+        },
+        {
+          "name": "storage.type.function.finch",
+          "match": "\\bfn\\b"
+        },
+        {
+          "name": "storage.type.struct.finch",
+          "match": "\\bstruct\\b"
+        },
+        {
+          "name": "constant.language.finch",
+          "match": "\\b(true|false|null)\\b"
+        },
+        {
+          "name": "storage.type.primitive.finch",
+          "match": "\\b(int|float|bool|char|str|ptr|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64)\\b"
+        },
+        {
+          "match": "\\b(print|input|read_file|write_file|file_exists|delete_file|shell|exit|addr|new|free)\\s*(?=\\()",
+          "captures": {
+            "1": {
+              "name": "support.function.builtin.finch"
+            }
+          }
+        },
+        {
+          "match": "(?<=\\.)(len|ptr|value)\\b(?!\\s*\\()",
+          "captures": {
+            "1": {
+              "name": "variable.other.property.finch"
+            }
+          }
+        },
+        {
+          "match": "\\b([A-Z][A-Za-z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": {
+              "name": "entity.name.type.finch"
+            }
+          }
+        },
+        {
+          "match": "\\b([a-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": {
+              "name": "entity.name.function.call.finch"
+            }
+          }
+        },
+        {
+          "name": "entity.name.type.finch",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        },
+        {
+          "name": "keyword.operator.assignment.finch",
+          "match": ":=|\\+=|-=|\\*=|/=|%=|(?<![=!<>])=(?!=)"
+        },
+        {
+          "name": "keyword.operator.comparison.finch",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.logical.finch",
+          "match": "&&|\\|\\||!"
+        },
+        {
+          "name": "keyword.operator.arrow.finch",
+          "match": "->"
+        },
+        {
+          "name": "keyword.operator.range.finch",
+          "match": "\\.\\."
+        },
+        {
+          "name": "keyword.operator.arithmetic.finch",
+          "match": "<<|>>|[-+*/%&|^~]"
+        },
+        {
+          "name": "variable.other.finch",
+          "match": "\\b[a-z_][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.finch",
+      "begin": "\"",
+      "end": "\"|$",
+      "patterns": [
+        {
+          "name": "constant.character.escape.finch",
+          "match": "\\\\[ntr0\\\\\"']"
+        },
+        {
+          "name": "invalid.illegal.escape.finch",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "chars": {
+      "name": "string.quoted.single.finch",
+      "begin": "'",
+      "end": "'|$",
+      "patterns": [
+        {
+          "name": "constant.character.escape.finch",
+          "match": "\\\\[ntr0\\\\\"']"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.finch",
+          "match": "\\b0[xX][0-9A-Fa-f_]+\\b"
+        },
+        {
+          "name": "constant.numeric.float.finch",
+          "match": "\\b\\d[\\d_]*\\.\\d[\\d_]*\\b"
+        },
+        {
+          "name": "constant.numeric.integer.finch",
+          "match": "\\b\\d[\\d_]*\\b"
+        }
+      ]
+    }
+  }
+}

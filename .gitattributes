@@ -1,0 +1,4 @@
+# Finch sources, tests and expected outputs always use \n line endings, on every system
+* text=auto eol=lf
+*.png binary
+*.vsix binary

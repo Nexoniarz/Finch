@@ -163,8 +163,9 @@ static std::string guessLib(const std::string &header) {
         } else if ((a = l.find("unresolved external symbol ")) != std::string::npos) {  // MSVC link.exe
             a += 27;
             addOnce(missing, l.substr(a, l.find_first_of(" \n\r", a) - a));
-        } else if ((a = l.find("cannot open file '")) != std::string::npos ||   // MSVC: LNK1104 cannot open file 'x.lib'
-                   (a = l.find("could not open '")) != std::string::npos) {  // lld-link
+        } else if ((a = l.find("cannot open file '")) != std::string::npos ||        // MSVC: LNK1104
+                   (a = l.find("cannot open input file '")) != std::string::npos ||  // MSVC: LNK1181
+                   (a = l.find("could not open '")) != std::string::npos) {       // lld-link
             a = l.find('\'', a) + 1;
             std::string lib = l.substr(a, l.find('\'', a) - a);
             if (lib.size() > 4 && lib.compare(lib.size() - 4, 4, ".lib") == 0) lib = lib.substr(0, lib.size() - 4);

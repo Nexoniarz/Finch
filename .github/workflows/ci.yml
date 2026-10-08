@@ -34,6 +34,26 @@ jobs:
       - name: Language server
         run: python3 tests/lsp_test.py
 
+  vscode:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: Grammar test
+        run: npm test
+      - name: Package
+        run: npx vsce package --out finch-lang.vsix
+      - uses: actions/upload-artifact@v4
+        with:
+          name: finch-vscode
+          path: editors/vscode/finch-lang.vsix
+
   windows:
     runs-on: windows-2022
     defaults:

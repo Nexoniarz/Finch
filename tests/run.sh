@@ -18,7 +18,7 @@ for f in run/*.fch; do
     input="${f%.fch}.in"
     [ -f "$input" ] || input=/dev/null
     got=$("$FINCH" run "$f" < "$input" 2>&1 | tr -d '\r')   # Windows ends lines with \r\n
-    if [ "$got" != "$(cat "$want")" ]; then
+    if [ "$got" != "$(tr -d '\r' < "$want")" ]; then
         failed=$((failed + 1))
         echo "FAIL $f"
         diff <(echo "$got") "$want" | head -20
