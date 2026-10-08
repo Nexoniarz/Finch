@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE language>
+<!--
+  Finch syntax highlighting for Kate, KWrite and KDevelop (KSyntaxHighlighting).
+  Install: copy to ~/.local/share/org.kde.syntax-highlighting/syntax/finch.xml
+  (or run editors/kate/install.sh), then restart Kate.
+-->
+<language name="Finch" version="1" kateversion="5.0" section="Sources" extensions="*.fch"
+          mimetype="text/x-finch" indenter="cstyle" author="The Finch authors" license="Apache-2.0">
+  <highlighting>
+    <list name="keywords">
+      <item>fn</item>
+      <item>struct</item>
+    </list>
+    <list name="control">
+      <item>if</item>
+      <item>else</item>
+      <item>while</item>
+      <item>for</item>
+      <item>in</item>
+      <item>break</item>
+      <item>continue</item>
+      <item>return</item>
+      <item>defer</item>
+    </list>
+    <list name="imports">
+      <item>import</item>
+      <item>link</item>
+    </list>
+    <list name="constants">
+      <item>true</item>
+      <item>false</item>
+      <item>null</item>
+    </list>
+    <list name="types">
+      <item>int</item>
+      <item>float</item>
+      <item>bool</item>
+      <item>char</item>
+      <item>str</item>
+      <item>ptr</item>
+      <item>i8</item>
+      <item>i16</item>
+      <item>i32</item>
+      <item>i64</item>
+      <item>u8</item>
+      <item>u16</item>
+      <item>u32</item>
+      <item>u64</item>
+      <item>f32</item>
+      <item>f64</item>
+    </list>
+    <list name="builtins">
+      <item>print</item>
+      <item>input</item>
+      <item>read_file</item>
+      <item>write_file</item>
+      <item>file_exists</item>
+      <item>delete_file</item>
+      <item>shell</item>
+      <item>exit</item>
+      <item>addr</item>
+      <item>new</item>
+      <item>free</item>
+    </list>
+
+    <contexts>
+      <context name="Normal" attribute="Normal Text" lineEndContext="#stay">
+        <DetectSpaces/>
+        <Detect2Chars char="/" char1="/" attribute="Comment" context="LineComment"/>
+        <Detect2Chars char="/" char1="*" attribute="Comment" context="BlockComment" beginRegion="Comment"/>
+        <DetectChar char="{" attribute="Symbol" beginRegion="Brace"/>
+        <DetectChar char="}" attribute="Symbol" endRegion="Brace"/>
+        <DetectChar char="&quot;" attribute="String" context="String"/>
+        <DetectChar char="'" attribute="Char" context="Char"/>
+
+        <WordDetect String="fn" attribute="Keyword" context="FunctionName"/>
+        <WordDetect String="struct" attribute="Keyword" context="StructName"/>
+        <keyword String="control" attribute="Control Flow"/>
+        <keyword String="imports" attribute="Import"/>
+        <keyword String="constants" attribute="Constant"/>
+        <keyword String="types" attribute="Data Type"/>
+        <keyword String="builtins" attribute="Built-in"/>
+
+        <RegExpr String="\b0[xX][0-9a-fA-F_]+\b" attribute="Hex"/>
+        <RegExpr String="\b[0-9][0-9_]*\.[0-9][0-9_]*([eE][+-]?[0-9]+)?\b" attribute="Float"/>
+        <RegExpr String="\b[0-9][0-9_]*\b" attribute="Decimal"/>
+
+        <!-- a call: name( ; method or field after a dot -->
+        <RegExpr String="\b[A-Za-z_][A-Za-z0-9_]*(?=\s*\()" attribute="Function"/>
+        <!-- struct names are written with a capital letter by convention -->
+        <RegExpr String="\b[A-Z][A-Za-z0-9_]*\b" attribute="Data Type"/>
+        <DetectIdentifier/>
+
+        <Detect2Chars char=":" char1="=" attribute="Operator"/>
+        <Detect2Chars char="-" char1="&gt;" attribute="Operator"/>
+        <Detect2Chars char="." char1="." attribute="Operator"/>
+        <AnyChar String="+-*/%=&lt;&gt;!&amp;|^~" attribute="Operator"/>
+        <AnyChar String="()[],.:" attribute="Symbol"/>
+      </context>
+
+      <context name="FunctionName" attribute="Normal Text" lineEndContext="#pop" fallthroughContext="#pop">
+        <DetectSpaces/>
+        <RegExpr String="[A-Za-z_][A-Za-z0-9_]*" attribute="Function Definition" context="#pop"/>
+      </context>
+
+      <context name="StructName" attribute="Normal Text" lineEndContext="#pop" fallthroughContext="#pop">
+        <DetectSpaces/>
+        <RegExpr String="[A-Za-z_][A-Za-z0-9_]*" attribute="Data Type" context="#pop"/>
+      </context>
+
+      <context name="LineComment" attribute="Comment" lineEndContext="#pop">
+        <DetectSpaces/>
+        <IncludeRules context="##Comments"/>
+      </context>
+
+      <context name="BlockComment" attribute="Comment" lineEndContext="#stay">
+        <Detect2Chars char="*" char1="/" attribute="Comment" context="#pop" endRegion="Comment"/>
+        <IncludeRules context="##Comments"/>
+      </context>
+
+      <context name="String" attribute="String" lineEndContext="#pop">
+        <RegExpr String="\\[ntr0\\&quot;']" attribute="Escape"/>
+        <RegExpr String="\\." attribute="Error"/>
+        <DetectChar char="&quot;" attribute="String" context="#pop"/>
+      </context>
+
+      <context name="Char" attribute="Char" lineEndContext="#pop">
+        <RegExpr String="\\[ntr0\\&quot;']" attribute="Escape"/>
+        <DetectChar char="'" attribute="Char" context="#pop"/>
+      </context>
+    </contexts>
+
+    <itemDatas>
+      <itemData name="Normal Text" defStyleNum="dsNormal" spellChecking="false"/>
+      <itemData name="Keyword" defStyleNum="dsKeyword" spellChecking="false"/>
+      <itemData name="Control Flow" defStyleNum="dsControlFlow" spellChecking="false"/>
+      <itemData name="Import" defStyleNum="dsImport" spellChecking="false"/>
+      <itemData name="Constant" defStyleNum="dsConstant" spellChecking="false"/>
+      <itemData name="Data Type" defStyleNum="dsDataType" spellChecking="false"/>
+      <itemData name="Built-in" defStyleNum="dsBuiltIn" spellChecking="false"/>
+      <itemData name="Function" defStyleNum="dsFunction" spellChecking="false"/>
+      <itemData name="Function Definition" defStyleNum="dsFunction" bold="true" spellChecking="false"/>
+      <itemData name="Decimal" defStyleNum="dsDecVal" spellChecking="false"/>
+      <itemData name="Hex" defStyleNum="dsBaseN" spellChecking="false"/>
+      <itemData name="Float" defStyleNum="dsFloat" spellChecking="false"/>
+      <itemData name="String" defStyleNum="dsString"/>
+      <itemData name="Char" defStyleNum="dsChar" spellChecking="false"/>
+      <itemData name="Escape" defStyleNum="dsSpecialChar" spellChecking="false"/>
+      <itemData name="Operator" defStyleNum="dsOperator" spellChecking="false"/>
+      <itemData name="Symbol" defStyleNum="dsNormal" spellChecking="false"/>
+      <itemData name="Comment" defStyleNum="dsComment"/>
+      <itemData name="Error" defStyleNum="dsError" spellChecking="false"/>
+    </itemDatas>
+  </highlighting>
+
+  <general>
+    <comments>
+      <comment name="singleLine" start="//"/>
+      <comment name="multiLine" start="/*" end="*/" region="Comment"/>
+    </comments>
+    <keywords casesensitive="1"/>
+    <folding indentationsensitive="0"/>
+  </general>
+</language>

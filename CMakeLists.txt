@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(finch VERSION 2.3.0 LANGUAGES CXX)
+project(finch VERSION 2.3.0 LANGUAGES C CXX)  # C: LLVM's CMake config checks C headers on some systems
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

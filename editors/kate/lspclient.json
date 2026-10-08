@@ -1,0 +1,9 @@
+{
+    "servers": {
+        "finch": {
+            "command": ["finch", "lsp"],
+            "url": "https://github.com/Nexoniarz/Finch",
+            "highlightingModeRegex": "^Finch$"
+        }
+    }
+}
