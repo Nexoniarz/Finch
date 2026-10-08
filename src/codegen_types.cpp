@@ -110,7 +110,7 @@ void Codegen::resolveStruct(StructInfo *s) {
         // Lay the C struct out byte for byte: explicit padding, packed, exactly C's offsets.
         long long off = 0;
         Pos none;
-        for (const CField &cf : s->cdecl->fields) {
+        for (const CField &cf : s->cstruct->fields) {
             if (cf.hidden || cf.offset < off) continue;
             FType ft = resolveT(cf.type, none, true);
             llvm::Type *lt = ty(ft);
@@ -125,9 +125,9 @@ void Codegen::resolveStruct(StructInfo *s) {
             s->fields.push_back(nf);
             off = cf.offset + size;
         }
-        if (s->cdecl->size > off) elems.push_back(ArrayType::get(b.getInt8Ty(), s->cdecl->size - off));
+        if (s->cstruct->size > off) elems.push_back(ArrayType::get(b.getInt8Ty(), s->cstruct->size - off));
         s->llvm->setBody(elems, true);
-        if (s->cdecl->hasHidden && s->unsupported.empty()) s->unsupported = "has fields Finch can't see (unions or bit fields)";
+        if (s->cstruct->hasHidden && s->unsupported.empty()) s->unsupported = "has fields Finch can't see (unions or bit fields)";
     }
     curModule = savedModule;
     s->state = 2;

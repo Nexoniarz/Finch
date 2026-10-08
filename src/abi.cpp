@@ -162,7 +162,7 @@ static AttributeList attrsFor(Codegen &cg, const Plan &pl, const FType &ret, con
     for (size_t i = 0; i < params.size(); i++) {
         const AbiArg &a = pl.params[i];
         if (a.kind == AbiArg::Memory) {
-            uint64_t align = std::max<uint64_t>(8, params[i].info->isC ? params[i].info->cdecl->align : 8);
+            uint64_t align = std::max<uint64_t>(8, params[i].info->isC ? params[i].info->cstruct->align : 8);
             al = al.addParamAttribute(ctx, idx, Attribute::getWithByValType(ctx, cg.ty(params[i])));
             al = al.addParamAttribute(ctx, idx, Attribute::getWithAlignment(ctx, Align(align)));
             idx++;

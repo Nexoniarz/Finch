@@ -2,6 +2,7 @@
 #include "codegen.h"
 #include "error.h"
 #include "lexer.h"
+#include "loader.h"
 #include "parser.h"
 #include "target.h"
 
@@ -38,6 +39,7 @@ static void usage() {
                  "  finch build <file.fch> [-o name]    compile to a program\n"
                  "  finch ir    <file.fch>              show the generated LLVM IR\n"
                  "  finch version                      show the version\n"
+                 "  finch lsp                          the language server, for editors (VS Code)\n"
                  "\n"
                  "  -l <lib>          link a C library, same as  link \"lib\"  in the file\n"
                  "  --target <name>   build for another system: windows, linux, or an LLVM triple\n"
@@ -45,58 +47,6 @@ static void usage() {
                  "  -O0               skip optimizations (to read the raw IR)\n");
     std::exit(1);
 }
-
-static bool readFile(const std::string &path, std::string &out) {
-    std::ifstream in(path);
-    if (!in) return false;
-    std::stringstream ss;
-    ss << in.rdbuf();
-    out = ss.str();
-    return true;
-}
-
-// ---------- loading the program and its modules ----------
-
-struct Loader {
-    std::vector<Program> progs;
-    std::map<std::string, bool> loaded;  // module name -> seen
-
-    void load(const std::string &path, const std::string &module, Pos from) {
-        std::string text;
-        if (!readFile(path, text)) {
-            if (from.line) failAt(from.file, from.line, from.col, "can't find the module '" + module + "' (looked for " + path + ")");
-            std::fprintf(stderr, "error: can't open '%s'\n", path.c_str());
-            std::exit(1);
-        }
-        int idx = (int)g_files.size();
-        g_files.push_back({path, text});
-        Program p = parse(lex(idx), idx);
-        p.module = module;
-        p.path = path;
-        std::vector<Import> mods;
-        for (const Import &im : p.imports)
-            if (!im.isC) mods.push_back(im);
-        progs.push_back(std::move(p));
-        for (const Import &im : mods) {
-            if (im.path == "main") failAt(im.pos.file, im.pos.line, im.pos.col, "'main' can't be imported");
-            if (loaded[im.path]) continue;
-            loaded[im.path] = true;
-            load(findModule(dirOf(path), im.path), im.path, im.pos);
-        }
-    }
-
-    // next to the importing file, then in $FINCH_PATH folders
-    static std::string findModule(const std::string &dir, const std::string &name) {
-        std::string here = dir + "/" + name + ".fch";
-        if (sys::fs::exists(here)) return here;
-        if (const char *fp = std::getenv("FINCH_PATH")) {
-            std::stringstream ss(fp);
-            for (std::string d; std::getline(ss, d, pathListSeparator());)
-                if (!d.empty() && sys::fs::exists(d + "/" + name + ".fch")) return d + "/" + name + ".fch";
-        }
-        return here;
-    }
-};
 
 // ---------- LLVM ----------
 
@@ -303,7 +253,10 @@ static std::string stem(const std::string &path) {
     return dot == std::string::npos ? name : name.substr(0, dot);
 }
 
+int runLanguageServer();  // lsp.cpp
+
 int main(int argc, char **argv) {
+    if (argc == 2 && std::string(argv[1]) == "lsp") return runLanguageServer();
     if (argc == 2 && (std::string(argv[1]) == "version" || std::string(argv[1]) == "--version")) {
         std::printf("finch %s (LLVM %s)\n", FINCH_VERSION, LLVM_VERSION_STRING);
         return 0;

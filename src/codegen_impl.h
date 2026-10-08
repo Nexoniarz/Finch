@@ -23,7 +23,7 @@ struct StructInfo {
     std::string module;  // "" main file, a module name, or "C" for imported C structs
     bool isC = false;
     const StructDecl *decl = nullptr;  // Finch structs
-    const CStruct *cdecl = nullptr;    // C structs
+    const CStruct *cstruct = nullptr;    // C structs
     struct F {
         std::string name;
         FType type;

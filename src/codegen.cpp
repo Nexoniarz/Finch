@@ -75,7 +75,7 @@ void Codegen::declareStructs() {
         s->name = name;
         s->module = "C";
         s->isC = true;
-        s->cdecl = &cs;
+        s->cstruct = &cs;
         s->unsupported = cs.unsupported;
         s->llvm = StructType::create(ctx, "c." + name);
         cStructs[name] = s.get();
@@ -249,7 +249,7 @@ AllocaInst *Codegen::slot(const FType &t, const std::string &name) {
     Function *f = b.GetInsertBlock()->getParent();
     IRBuilder<> entry(&f->getEntryBlock(), f->getEntryBlock().begin());
     AllocaInst *a = entry.CreateAlloca(ty(t), nullptr, name);
-    if (t.kind == FType::Struct && t.info->isC) a->setAlignment(Align(t.info->cdecl->align));
+    if (t.kind == FType::Struct && t.info->isC) a->setAlignment(Align(t.info->cstruct->align));
     return a;
 }
 

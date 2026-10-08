@@ -18,6 +18,8 @@ add_executable(finch
     src/abi.cpp
     src/cimport.cpp
     src/target.cpp
+    src/loader.cpp
+    src/lsp.cpp
 )
 
 # The runtime (runtime/finch_rt.c) is embedded into the compiler as a string;

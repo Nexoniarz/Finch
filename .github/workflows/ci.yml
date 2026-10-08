@@ -31,6 +31,8 @@ jobs:
         run: MEMCHECK=1 tests/run.sh
       - name: Self-hosting
         run: tests/boot.sh
+      - name: Language server
+        run: python3 tests/lsp_test.py
 
   windows:
     runs-on: windows-2022
