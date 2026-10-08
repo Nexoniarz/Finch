@@ -10,8 +10,9 @@ pkgs.mkShell {
     ninja
     pkg-config              # finds the right flags for `link "..."`
 
-    # for examples/window.fn
+    # for examples/window.fn and examples/raylib.fn
     glfw
     libGL
+    raylib
   ];
 }

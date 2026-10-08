@@ -20,10 +20,15 @@ Take it slowly, one section at a time, and type every example yourself: that is 
 8. [Making decisions: if](#8-making-decisions-if)
 9. [Repeating things: loops](#9-repeating-things-loops)
 10. [Your own commands: functions](#10-your-own-commands-functions)
-11. [When something goes wrong](#11-when-something-goes-wrong)
-12. [Small projects to try](#12-small-projects-to-try)
-13. [Cheat sheet](#13-cheat-sheet)
-14. [Words you will hear](#14-words-you-will-hear)
+11. [Lists: many values in one box](#11-lists-many-values-in-one-box)
+12. [Playing with text](#12-playing-with-text)
+13. [Asking the user](#13-asking-the-user)
+14. [Your own kinds of values: structs](#14-your-own-kinds-of-values-structs)
+15. [Saving to a file](#15-saving-to-a-file)
+16. [When something goes wrong](#16-when-something-goes-wrong)
+17. [Small projects to try](#17-small-projects-to-try)
+18. [Cheat sheet](#18-cheat-sheet)
+19. [Words you will hear](#19-words-you-will-hear)
 
 ---
 
@@ -72,7 +77,7 @@ To check it works, type:
 ./build/finch version
 ```
 
-You should see something like `finch 1.0.0`.
+You should see something like `finch 2.0.0`.
 
 ---
 
@@ -441,7 +446,200 @@ It does not matter where in the file you put your functions, above or below `mai
 
 ---
 
-## 11. When something goes wrong
+## 11. Lists: many values in one box
+
+Sometimes one box is not enough. A shopping list has many things on it.
+A **list** (programmers also say **array**) keeps many values in order:
+
+```c
+fn main() {
+    fruits := ["apple", "banana", "cherry"]
+    print(fruits)
+    print("I have", fruits.len, "fruits")
+    print("The first one is", fruits[0])
+}
+```
+
+```
+["apple", "banana", "cherry"]
+I have 3 fruits
+The first one is apple
+```
+
+- Square brackets `[ ]` make a list. Commas separate the values.
+- `.len` tells you how many things are in the list.
+- `fruits[0]` is the **first** thing. Counting starts at **0**, so `fruits[1]` is the second, and `fruits[2]` the third.
+
+If you ask for a place that doesn't exist, like `fruits[10]`, the program stops and tells you:
+`index 10 is out of range (the length is 3)`.
+
+### Adding and taking away
+
+```c
+fn main() {
+    []int scores          // an empty list of whole numbers
+    scores.push(10)       // put 10 at the end
+    scores.push(25)
+    scores.push(7)
+    print(scores)         // [10, 25, 7]
+
+    last := scores.pop()  // take the last one out
+    print(last, scores)   // 7 [10, 25]
+
+    scores.sort()
+    print(scores)
+}
+```
+
+### Going through a list
+
+`for ... in` visits every value, one by one:
+
+```c
+fn main() {
+    total := 0
+    for n in [3, 5, 2] {
+        total += n
+    }
+    print("Total:", total)    // Total: 10
+}
+```
+
+Lists can do more: `contains`, `find`, `insert`, `remove`, `sort`, `reverse`, `join`.
+The [guide for technicians](for-technicians.md#arrays) lists them all.
+
+---
+
+## 12. Playing with text
+
+Text can be glued together with `+`:
+
+```c
+fn main() {
+    name := "Ola"
+    greeting := "Hello, " + name + "!"
+    print(greeting)
+}
+```
+
+To glue a number to text, turn the number into text first with `str(...)`:
+
+```c
+age := 10
+print("Age: " + str(age))
+```
+
+Text has handy tools too:
+
+```c
+fn main() {
+    word := "Finch"
+    print(word.len)            // 5 letters
+    print(word[0])             // F  (the first letter)
+    print(word.upper())        // FINCH
+    print(word.lower())        // finch
+    print(word.contains("in")) // true
+    for letter in word {
+        print(letter)          // F, i, n, c, h, one per line
+    }
+}
+```
+
+---
+
+## 13. Asking the user
+
+`input` shows a question and waits until the person types an answer and presses Enter:
+
+```c
+fn main() {
+    name := input("What's your name? ")
+    print("Nice to meet you,", name)
+}
+```
+
+The answer is always **text**. If you need a number, turn it into one with `int(...)`:
+
+```c
+fn main() {
+    answer := input("How old are you? ")
+    age := int(answer)
+    print("Next year you will be", age + 1)
+}
+```
+
+If the person types something that isn't a number, the program stops with a message
+like `can't turn "abc" into int`.
+
+---
+
+## 14. Your own kinds of values: structs
+
+Imagine a card in a library: each card has a title, an author and a year.
+A **struct** lets you make your own kind of value with named parts:
+
+```c
+struct Book {
+    str title
+    str author
+    int year
+}
+
+fn main() {
+    b := Book(title: "The Hobbit", author: "Tolkien", year: 1937)
+    print(b.title, "by", b.author)
+    b.year = 1938
+    print(b)
+}
+```
+
+```
+The Hobbit by Tolkien
+Book(title: "The Hobbit", author: "Tolkien", year: 1938)
+```
+
+- `struct Book { ... }` describes what every book has. Put it **outside** `main`.
+- `Book(title: ..., author: ..., year: ...)` makes one book.
+- `b.title` reads one part. `b.year = 1938` changes it.
+
+You can give parts a starting value. Then you don't have to fill them in:
+
+```c
+struct Player {
+    str name
+    int lives = 3
+}
+
+fn main() {
+    p := Player(name: "Ola")
+    print(p.lives)     // 3
+}
+```
+
+And you can keep many of them in a list: `[]Book shelf`, then `shelf.push(b)`.
+
+---
+
+## 15. Saving to a file
+
+Programs forget everything when they end. To remember things, save them to a file:
+
+```c
+fn main() {
+    write_file("note.txt", "Buy milk")
+    print(read_file("note.txt"))
+}
+```
+
+- `write_file(name, text)` saves the text in a file (and replaces what was there).
+- `read_file(name)` gives you the file's text back.
+- `file_exists(name)` tells you if the file is there (`true` or `false`).
+
+The file appears in the folder where you ran the program.
+
+---
+
+## 16. When something goes wrong
 
 Everyone makes mistakes when programming, even experts, every day.
 Finch tries hard to explain what went wrong in plain words. Example:
@@ -479,10 +677,13 @@ Here we simply misspelled `age`.
 | `this '{' is never closed` | A `}` is missing | Add the `}` |
 | `a condition must be bool` | `if` needs a yes/no question | Compare something: `if x > 0` |
 | `runtime error: division by zero` | You divided by 0 while the program ran | Check the number before dividing |
+| `index 5 is out of range (the length is 3)` | You asked a list for a place it doesn't have | Remember counting starts at 0; check `.len` |
+| `can't turn "abc" into int` | `int(...)` got text that isn't a number | Check what the person typed |
+| `can't use '+' on str and int` | Text plus a number | Use `str(...)` on the number |
 
 ---
 
-## 12. Small projects to try
+## 17. Small projects to try
 
 Try writing each one yourself first. Look at the solution only if you get stuck.
 
@@ -589,9 +790,60 @@ fn main() {
 ```
 </details>
 
+### Project 6: Guess the number
+
+The computer picks a secret number. The player guesses until they find it,
+and the computer says "higher" or "lower" each time.
+
+<details><summary>Solution</summary>
+
+```c
+fn main() {
+    secret := 42
+    tries := 0
+    while true {
+        guess := int(input("Your guess: "))
+        tries += 1
+        if guess < secret {
+            print("Higher!")
+        } else if guess > secret {
+            print("Lower!")
+        } else {
+            print("Yes! You needed", tries, "tries")
+            return
+        }
+    }
+}
+```
+
+`return` inside `main` ends the program. (A version with a random number is in `examples/guess.fn`.)
+</details>
+
+### Project 7: Class average
+
+Ask for 3 grades, keep them in a list, and show the list and the average.
+
+<details><summary>Solution</summary>
+
+```c
+fn main() {
+    []int grades
+    for i in 0..3 {
+        grades.push(int(input("Grade: ")))
+    }
+    sum := 0
+    for g in grades {
+        sum += g
+    }
+    print("Grades:", grades)
+    print("Average:", float(sum) / grades.len)
+}
+```
+</details>
+
 ---
 
-## 13. Cheat sheet
+## 18. Cheat sheet
 
 ```c
 // a comment
@@ -624,11 +876,21 @@ fn main() {                       // the program starts here
 fn add(int a, int b) -> int {     // your own command
     return a + b
 }
+
+struct Pet {                      // your own kind of value
+    str name
+    int age = 1
+}
+
+// lists:  nums := [1, 2, 3]   nums.push(4)   nums[0]   nums.len   for n in nums { }
+// text:   "a" + "b"   str(42)   int("42")   s.len   s.upper()   s.contains("x")
+// ask:    name := input("Name? ")
+// files:  write_file("f.txt", text)   read_file("f.txt")
 ```
 
 ---
 
-## 14. Words you will hear
+## 19. Words you will hear
 
 | Word | Meaning |
 |---|---|
@@ -641,6 +903,10 @@ fn add(int a, int b) -> int {     // your own command
 | **function** | A named group of steps you can use again |
 | **loop** | Steps that repeat |
 | **condition** | A yes/no question, like `x > 5` |
+| **list / array** | Many values kept in order, like `[1, 2, 3]` |
+| **index** | The position of a value in a list, starting at 0 |
+| **struct** | Your own kind of value, made of named parts |
+| **input** | What the person types into the program |
 | **error** | A message saying something is wrong, and where |
 | **bug** | A mistake in a program |
 

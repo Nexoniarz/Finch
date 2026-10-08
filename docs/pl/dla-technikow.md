@@ -1,9 +1,9 @@
 # Finch dla techników
 
 **Dla osób, które dobrze znają komputery, ale programować nie umieją albo umieją niewiele.**
-Ten przewodnik opisuje instalację Fincha, obsługę polecenia `finch`, cały język,
-korzystanie z bibliotek C i rozwiązywanie typowych problemów. Nie opisuje, jak kompilator
-działa w środku. Do tego służy [przewodnik dla inżynierów](dla-inzynierow.md).
+Ten przewodnik opisuje instalację Fincha, obsługę polecenia `finch`, cały język, pamięć,
+moduły, biblioteki C, debugowanie i rozwiązywanie typowych problemów. Nie opisuje, jak
+kompilator działa w środku. Do tego służy [przewodnik dla inżynierów](dla-inzynierow.md).
 
 > 🇬🇧 English version: [for-technicians.md](../en/for-technicians.md)
 
@@ -20,26 +20,37 @@ działa w środku. Do tego służy [przewodnik dla inżynierów](dla-inzynierow.
 7. [Operatory](#7-operatory)
 8. [Sterowanie przebiegiem](#8-sterowanie-przebiegiem)
 9. [Funkcje](#9-funkcje)
-10. [Wskaźniki](#10-wskaźniki)
-11. [Biblioteki z C](#11-biblioteki-z-c)
-12. [Błędy](#12-błędy)
-13. [Rozwiązywanie problemów](#13-rozwiązywanie-problemów)
-14. [Struktura projektu i testy](#14-struktura-projektu-i-testy)
-15. [Obecne ograniczenia](#15-obecne-ograniczenia)
+10. [Tablice](#10-tablice)
+11. [Tekst (str)](#11-tekst-str)
+12. [Struktury](#12-struktury)
+13. [Pamięć: kto co zwalnia](#13-pamięć-kto-co-zwalnia)
+14. [Wskaźniki](#14-wskaźniki)
+15. [Funkcje wbudowane](#15-funkcje-wbudowane)
+16. [Moduły](#16-moduły)
+17. [Biblioteki z C](#17-biblioteki-z-c)
+18. [Błędy](#18-błędy)
+19. [Debugowanie](#19-debugowanie)
+20. [Rozwiązywanie problemów](#20-rozwiązywanie-problemów)
+21. [Struktura projektu i testy](#21-struktura-projektu-i-testy)
+22. [Obecne ograniczenia](#22-obecne-ograniczenia)
 
 ---
 
 ## 1. Czym jest Finch
 
 Finch to język **kompilowany**. Narzędzie `finch` tłumaczy plik `.fn` na prawdziwy program
-(natywny plik wykonywalny, taki sam jak te z C). Korzysta przy tym z **LLVM**, tego samego
-zaplecza kompilatorów, na którym działają clang, Rust i Swift.
+(natywny plik wykonywalny, taki jak te z C). Korzysta przy tym z **LLVM**, tego samego zaplecza
+kompilatorów, na którym działają clang, Rust i Swift.
 
 Co to daje:
 
 - **Szybkość zbliżoną do C.** Nie ma interpretera, maszyny wirtualnej ani garbage collectora.
+  Kontrola zakresu tablic i inne zabezpieczenia po optymalizacji prawie nic nie kosztują.
 - **Małe, samodzielne programy**, które można skopiować i uruchomić.
-- **Bezpośredni dostęp do bibliotek C.** Piszesz `import "stdio.h"` i wołasz, co chcesz.
+- **Pamięć obsługiwana za ciebie.** Listy i teksty są zwalniane automatycznie na końcu bloku,
+  do którego należą, bez garbage collectora.
+- **Bezpośredni dostęp do bibliotek C.** Piszesz `import "stdio.h"` i wołasz, co chcesz,
+  nawet funkcje przyjmujące struktury.
 
 Zasady projektu: jeden sposób na każdą rzecz, składnia podobna do C bez jej pułapek
 i komunikaty błędów, które mówią, jak problem naprawić.
@@ -56,10 +67,10 @@ Z innymi wersjami LLVM prawdopodobnie się nie skompiluje, bo API C++ LLVM zmien
 ```sh
 git clone https://github.com/Nexoniarz/Finch.git
 cd Finch
-nix-shell                        # pobiera LLVM, libclang, cmake, ninja, pkg-config
+nix-shell                        # pobiera LLVM, libclang, clang, cmake, ninja, pkg-config
 cmake -S . -B build -G Ninja
 ninja -C build
-./build/finch version            # finch 1.0.0 (LLVM 21.x)
+./build/finch version            # finch 2.0.0 (LLVM 21.x)
 ```
 
 ### Opcja B: pakiety z twojej dystrybucji
@@ -73,7 +84,7 @@ i libclang 21, a opcjonalnie `pkg-config`.
 | Fedora | `gcc-c++ cmake ninja-build pkgconf llvm-devel clang-devel` |
 | Arch | `base-devel cmake ninja pkgconf llvm clang` |
 
-Jeśli CMake nie znajduje LLVM, wskaż mu katalog:
+Ta opcja nie była testowana. Jeśli CMake nie znajduje LLVM, wskaż mu katalog:
 
 ```sh
 cmake -S . -B build -G Ninja -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm
@@ -87,21 +98,23 @@ sudo cp build/finch /usr/local/bin/
 finch version
 ```
 
-Podczas pracy Finch potrzebuje działającego kompilatora C (`cc`). Używa go jako **linkera**,
-który skleja skompilowany kod w gotowy program. Inny kompilator wskażesz zmienną środowiskową `CC`.
+Podczas pracy Finch potrzebuje kompilatora C (`cc`). Używa go do linkowania programów i jednorazowo
+do zbudowania swojej małej biblioteki uruchomieniowej, którą trzyma w `~/.cache/finch`.
+Inny kompilator wskażesz zmienną `CC`.
 
 ---
 
 ## 3. Polecenie finch
 
 ```
-finch run   <plik.fn>              skompiluj i od razu uruchom
-finch build <plik.fn> [-o nazwa]   skompiluj do programu (domyślna nazwa: nazwa pliku)
-finch ir    <plik.fn>              pokaż LLVM IR (dla ciekawskich)
-finch version                      pokaż wersję
+finch run   <plik.fn> [argumenty...]   skompiluj i od razu uruchom
+finch build <plik.fn> [-o nazwa]       skompiluj do programu (domyślna nazwa: nazwa pliku)
+finch ir    <plik.fn>                  pokaż LLVM IR (dla ciekawskich)
+finch version                          pokaż wersję
 
 opcje:
   -l <lib>   dolinkuj bibliotekę C, to samo co  link "lib"  w pliku
+  -g         dodaj informacje dla debuggera (gdb / lldb)
   -O0        bez optymalizacji
 ```
 
@@ -109,13 +122,13 @@ Przykłady:
 
 ```sh
 finch run hello.fn                 # wypisuje wynik
+finch run narzedzie.fn dane.txt -v # argumenty po nazwie pliku trafiają do programu
 finch build gra.fn -o mojagra      # tworzy ./mojagra
-./mojagra
-finch run okno.fn -l glfw          # z biblioteką C
+finch build gra.fn -g -O0          # wersja dla debuggera
 ```
 
-`finch run` przekazuje dalej kod wyjścia twojego programu. Jeśli program się wysypie,
-powie jak (np. `the program crashed: Segmentation fault`).
+`finch run` przekazuje dalej kod wyjścia programu. Jeśli program się wysypie, powie jak
+(np. `the program crashed: Segmentation fault`).
 
 ---
 
@@ -126,8 +139,14 @@ powie jak (np. `the program crashed: Segmentation fault`).
 /* albo zajmuje
    kilka linijek */
 
-import "math.h"          // nagłówki C (opcjonalne), zawsze na górze
-link "m"                 // biblioteki C do dolinkowania (opcjonalne)
+import "math.h"          // nagłówki C (opcjonalne), na górze
+import ksztalty          // moduły Fincha (opcjonalne): ksztalty.fn obok tego pliku
+link "m"                 // biblioteki albo pliki C do dolinkowania (opcjonalne)
+
+struct Punkt {           // własne typy
+    int x
+    int y
+}
 
 fn main() {              // tu zaczyna się program
     print("Cześć")
@@ -136,12 +155,13 @@ fn main() {              // tu zaczyna się program
 
 Zasady, które warto znać:
 
-- **Jedna instrukcja na linijkę.** Średników nie ma. Długie wyrażenie możesz złamać
-  **po** operatorze (`a +⏎ b`) albo w dowolnym miejscu wewnątrz nawiasów `( )`.
+- **Jedna instrukcja na linijkę.** Średników nie ma. Długie wyrażenie możesz złamać **po** operatorze
+  (`a +⏎ b`) albo w dowolnym miejscu wewnątrz nawiasów `( )` lub `[ ]`.
 - **Klamry są zawsze obowiązkowe** po `if`, `else`, `for`, `while`, a otwierająca `{` stoi w tej samej linijce.
 - **Bez nawiasów wokół warunków:** `if x > 5 {`, a nie `if (x > 5) {`.
-- Funkcje mogą być w pliku w dowolnej kolejności.
-- `main` to `fn main()` albo `fn main() -> int` (zwraca kod wyjścia).
+- Funkcje i struktury mogą być w pliku w dowolnej kolejności.
+- `main` to `fn main()`, `fn main() -> int` (zwraca kod wyjścia) albo `fn main([]str args)`
+  (dostaje argumenty z linii poleceń; `args[0]` to ścieżka samego programu).
 
 ---
 
@@ -150,19 +170,20 @@ Zasady, które warto znać:
 ```c
 x := 5               // nowa zmienna, typ zgadnięty (int)
 int y = 10           // nowa zmienna, typ podany jawnie
-int z                // bez wartości: startuje od zera ("" dla str, null dla wskaźników)
+int z                // bez wartości: startuje od zera ("" dla str, [] dla tablic, null dla wskaźników)
+Punkt p              // struktura bez wartości: zera albo wartości domyślne struktury
 
 x = 7                // przypisanie
 x += 1               // także -= *= /= %=
 ```
 
-- Nazwę można zadeklarować **raz** w funkcji. Finch nie pozwala użyć tej samej nazwy ponownie
-  w bloku wewnętrznym (nie ma „przesłaniania”), bo to częste źródło pomyłek.
+- Nazwę można zadeklarować **raz** w funkcji. Finch nie pozwala użyć jej ponownie w bloku
+  wewnętrznym (nie ma „przesłaniania”), bo to częste źródło pomyłek.
 - Zmienna istnieje od deklaracji do końca bloku `{ }`, w którym powstała.
 - Nazwy: litery ASCII, cyfry i `_`, bez cyfry na początku. Polskie litery tylko w tekstach w cudzysłowie.
-  Nazwy typów (`int`, `u8`, …) i słowa kluczowe są zarezerwowane.
+  Nazwy typów (`int`, `u8`, …), funkcji wbudowanych i słowa kluczowe są zarezerwowane.
 
-**Słowa kluczowe:** `fn return if else while for in break continue true false null import link`
+**Słowa kluczowe:** `fn return if else while for in break continue true false null import link struct defer`
 
 ---
 
@@ -176,7 +197,9 @@ x += 1               // także -= *= /= %=
 | `float` | liczba z przecinkiem, 64-bitowa (to samo co `f64`) | `3.14` |
 | `bool`  | `true` albo `false` | |
 | `char`  | jeden znak wielkości bajtu | `'A'`, `'\n'` |
-| `str`   | tekst (napis w stylu C) | `"cześć\tświecie"` |
+| `str`   | tekst | `"cześć\tświecie"` |
+| `[]T`   | lista (tablica) elementów `T` | `[1, 2, 3]` |
+| twoje struktury | nazwane grupy wartości | `Punkt(1, 2)` |
 
 Znaki specjalne w tekstach: `\n` nowa linia, `\t` tabulator, `\r`, `\0`, `\\`, `\"`, `\'`.
 
@@ -191,48 +214,41 @@ Znaki specjalne w tekstach: `\n` nowa linia, `\t` tabulator, `\r`, `\0`, `\\`, `
 
 `f32` to 32-bitowa liczba z przecinkiem (ok. 7 cyfr znaczących), `f64` to 64-bitowa (ok. 15–16).
 
-### Wskaźniki
-
-`ptr[T]` wskazuje na wartość typu `T`. Samo `ptr` wskazuje na „coś” nieznanego typu,
-jak `void*` w C. Szczegóły w rozdziale [Wskaźniki](#10-wskaźniki).
-
 ### Zamiana typów
 
 Finch zamienia typy sam **tylko wtedy, gdy nic nie może zginąć**:
 
 | Z | Na | Automatycznie? |
 |---|---|---|
-| mniejsza liczba całkowita | większa o tej samej „znakowości” (`i8`→`i32`, `u8`→`u64`) | ✅ |
+| mniejsza liczba całkowita | większa o tej samej znakowości (`i8`→`i32`, `u8`→`u64`) | ✅ |
 | bez znaku | ściśle większa ze znakiem (`u8`→`i16`, `u32`→`i64`) | ✅ |
 | dowolna liczba całkowita | `float` / `f32` | ✅ |
 | `f32` | `f64` | ✅ |
 | `null` | dowolny wskaźnik | ✅ |
-| dowolny wskaźnik, `str` | `ptr` | ✅ |
-| `ptr` | dowolny `ptr[T]` | ✅ |
+| dowolny wskaźnik | `ptr`, a `ptr` na dowolny wskaźnik | ✅ |
 | wszystko inne | | ❌ napisz to jawnie: `typ(wartość)` |
 
 **Liczby wpisane w kod się dopasowują.** Liczba napisana wprost w kodzie pasuje do każdego typu,
-który ją pomieści: `u8 b = 200` działa, a `u8 b = 300` to błąd (`the number 300 doesn't fit in u8`).
-To samo dotyczy stałych z nagłówków C.
+który ją pomieści: `u8 b = 200` działa, a `u8 b = 300` to błąd. To samo dotyczy stałych z nagłówków C.
 
 **Jawna zamiana** wygląda jak wywołanie funkcji o nazwie typu:
 
 ```c
-int(3.99)      // 3     (obcina część ułamkową)
-int(-3.99)     // -3
-float(7) / 2   // 3.5
-u8(300)        // 44    (zostawia najniższe 8 bitów)
-i8(200)        // -56
-int('A')       // 65
-char(66)       // 'B'
-bool(0)        // false (każda liczba różna od zera to true)
-ptr(tekst)     // str jako wskaźnik bez typu
-str(p)         // wskaźnik jako str
+int(3.99)        // 3     (obcina część ułamkową)
+float(7) / 2     // 3.5
+u8(300)          // 44    (zostawia najniższe 8 bitów)
+int('A')         // 65
+char(66)         // 'B'
+bool(0)          // false (każda liczba różna od zera to true)
+str(42)          // "42"  (też float, bool, char; str([]u8) zamienia bajty na tekst)
+int("42")        // 42    (zatrzymuje program, jeśli tekst nie jest liczbą)
+float("2.5")     // 2.5
+ptr(p)           // wskaźnik z typem jako wskaźnik bez typu
+str(p)           // wskaźnik na znaki z C jako tekst
 ```
 
 **Liczby o stałym rozmiarze się „zawijają”**, jak w prawdziwym sprzęcie: `u8` równe 255 plus 1 daje 0.
 Działania liczą się w typie użytych wartości, więc `u8(250) + 10` daje `4`, a nie `260`.
-Jeśli potrzebujesz więcej miejsca, najpierw zamień typ: `int(x) + 10`.
 
 ---
 
@@ -242,8 +258,8 @@ Jeśli potrzebujesz więcej miejsca, najpierw zamień typ: `int(x) + 10`.
 
 | Priorytet | Operatory | Znaczenie |
 |---|---|---|
-| 5 | `*` `/` `%` `<<` `>>` `&` | mnożenie, dzielenie, reszta, przesunięcie bitów w lewo/prawo, bitowe AND |
-| 4 | `+` `-` `\|` `^` | dodawanie, odejmowanie, bitowe OR, bitowe XOR |
+| 5 | `*` `/` `%` `<<` `>>` `&` | mnożenie, dzielenie, reszta, przesunięcia bitów, bitowe AND |
+| 4 | `+` `-` `\|` `^` | dodawanie (i sklejanie tekstu), odejmowanie, bitowe OR, bitowe XOR |
 | 3 | `==` `!=` `<` `<=` `>` `>=` | porównania |
 | 2 | `&&` | logiczne I |
 | 1 | `\|\|` | logiczne LUB |
@@ -251,18 +267,16 @@ Jeśli potrzebujesz więcej miejsca, najpierw zamień typ: `int(x) + 10`.
 Jednoargumentowe (przed wartością): `-x` zmiana znaku, `!x` logiczne NIE, `~x` odwrócenie wszystkich bitów.
 
 > **Celowo inaczej niż w C:** operatory bitowe wiążą mocniej niż porównania, więc
-> `flagi & 4 != 0` znaczy `(flagi & 4) != 0`. W C to samo po cichu znaczy co innego.
+> `flagi & 4 != 0` znaczy `(flagi & 4) != 0`.
 
 Uwagi:
 
-- `/` na liczbach całkowitych zaokrągla w stronę zera: `7 / 2` to `3`, `-7 / 2` to `-3`. `%` ma znak lewej strony.
+- `/` na liczbach całkowitych zaokrągla w stronę zera: `7 / 2` to `3`. `%` ma znak lewej strony.
 - Dzielenie przez zero **zatrzymuje program** komunikatem `runtime error: division by zero` z numerem linijki.
-  Jeśli zero jest wpisane wprost w kod, jest to błąd już przy kompilacji.
 - `&&` i `||` liczą prawą stronę tylko wtedy, gdy to potrzebne.
-- Tekst (`str`) można porównywać przez `==` i `!=` (porównuje zawartość). `<` i `>` na tekstach nie działają.
-- Wskaźniki porównuje się przez `==` i `!=`, także z `null`.
-- Operatory bitowe wymagają liczb całkowitych. Dla `bool` używaj `&&` i `||`.
-- `>>` na liczbach ze znakiem zachowuje znak (`-16 >> 2` to `-4`). Na liczbach bez znaku wypełnia zerami.
+- Tekst: `+` skleja, `==` `!=` porównują treść, `<` `>` porównują alfabetycznie (bajt po bajcie).
+- Wskaźniki porównuje się przez `==` i `!=`, także z `null`. `str` nigdy nie jest `null`.
+- Tablic i struktur nie porównasz przez `==`; porównuj ich części.
 
 ---
 
@@ -285,13 +299,32 @@ for i in 0..10 {          // i = 0, 1, …, 9  (koniec nie jest wliczany)
     if i == 3 { continue }
     if i == 8 { break }
 }
+
+for imie in imiona {      // każdy element tablicy (albo każdy znak str)
+    print(imie)
+}
 ```
 
 - Warunek musi być typu `bool`. `if x {` z liczbą to błąd; napisz `if x != 0 {`.
-- W `for i in a..b` oba końce są liczbami całkowitymi obliczanymi **raz**, przed startem pętli.
-  `i` jest typu `int` i nie można go zmieniać wewnątrz pętli.
+- W `for i in a..b` oba końce są liczone **raz**. `i` jest typu `int` i nie można go zmieniać w pętli.
+- W `for x in lista` zmiennej `x` też nie zmienisz. Żeby zmieniać elementy, przechodź po indeksach:
+  `for i in 0..lista.len { lista[i] = ... }`. Dodawanie do listy w trakcie pętli jest dozwolone.
 - `while true { ... }` kręci się do `break` albo `return`.
 - Kod po `return`, `break` lub `continue` w tym samym bloku to błąd, bo nigdy się nie wykona.
+
+### defer
+
+`defer` uruchamia instrukcję, gdy bieżący blok się kończy, niezależnie od tego, jak się kończy:
+normalnie, przez `return`, `break` lub `continue`. Kilka `defer` wykonuje się w odwrotnej kolejności.
+Przydaje się do sprzątania:
+
+```c
+f := fopen("dane.txt", "r")
+defer fclose(f)
+// ... używaj f; zostanie zamknięty na końcu bloku, na każdej ścieżce
+```
+
+Instrukcja w `defer` nie może zawierać `return`, `break` ani `continue`.
 
 ---
 
@@ -308,32 +341,129 @@ fn bez_wyniku(str wiadomosc) {    // bez "->": nic nie zwraca
 }
 ```
 
-- Parametry są kopiami. Zmiana parametru nie zmienia zmiennej u wywołującego.
-  Do tego służą wskaźniki (niżej).
+- Argumenty zachowują się jak kopie: zmiana parametru nigdy nie zmienia zmiennej u wywołującego.
+  (Finch kopiuje naprawdę tylko wtedy, gdy trzeba: funkcja, która nie zmienia tablicy, dostaje ją za darmo.)
+  Żeby zmienić zmienną wywołującego, przekaż wskaźnik, zobacz [Wskaźniki](#14-wskaźniki).
 - Funkcja z `-> typ` musi zwrócić wartość na każdej ścieżce. Finch to sprawdza.
 - Funkcji nie można definiować wewnątrz innej funkcji.
-- Wbudowane nazwy, których nie możesz użyć: `print`, `addr` i wszystkie nazwy typów.
-
-### Funkcje wbudowane
-
-| Funkcja | Co robi |
-|---|---|
-| `print(a, b, ...)` | Wypisuje wszystkie wartości oddzielone spacjami i przechodzi do nowej linii. Działa z każdym typem. |
-| `addr(x)` | Daje wskaźnik na zmienną `x`. |
-| `int(x)`, `u8(x)`, `float(x)`, … | Zamienia typy (zobacz [Zamiana typów](#zamiana-typów)). |
 
 ---
 
-## 10. Wskaźniki
+## 10. Tablice
 
-Wskaźnik przechowuje **adres** wartości, czyli miejsce w pamięci, gdzie ona leży. Finch zamiast
-`*` i `&` z C używa słów:
+```c
+liczby := [5, 3, 8]        // tablica int
+[]str imiona               // pusta tablica str
+siatka := [[1, 2], [3, 4]] // tablice tablic
+[]f32 xs = [1, 2.5]        // typ decyduje, czym staną się liczby
+```
+
+| Operacja | Znaczenie |
+|---|---|
+| `a.len` | liczba elementów |
+| `a[i]` | element `i` (od 0); poza zakresem program zatrzymuje się z czytelnym komunikatem |
+| `a[i] = x` | zmiana elementu |
+| `a.push(x)` | dodaj na końcu |
+| `a.pop()` | zabierz ostatni i go oddaj |
+| `a.insert(i, x)` | wstaw `x` na pozycję `i`, przesuwając resztę |
+| `a.remove(i)` | usuń pozycję `i` i ją oddaj |
+| `a.clear()` | usuń wszystko |
+| `a.resize(n)` | zmień długość na `n` (nowe elementy to zera) |
+| `a.contains(x)`, `a.find(x)` | czy `x` jest w środku? jego indeks albo -1 (liczby, znaki, bool, str) |
+| `a.sort()`, `a.reverse()` | w miejscu (liczby, znaki, str) |
+| `a.slice(s, e)` | nowa tablica z elementami `s` … `e-1` |
+| `a.join(sep)` | dla `[]str`: jeden tekst z `sep` między częściami |
+| `a.ptr` | adres pierwszego elementu (dla C) |
+| `print(a)` | wypisuje `[1, 2, 3]` |
+
+**Przypisanie kopiuje:** po `b := a` zmiana `b` nie zmienia `a`.
+
+---
+
+## 11. Tekst (str)
+
+```c
+s := "Cześć"
+s += ", świecie"          // sklejanie
+print(s.len, s[0])        // .len liczy bajty; ą, ś, ż… zajmują po 2
+s[0] = 'D'                // zmiana znaku
+```
+
+| Metoda | Oddaje |
+|---|---|
+| `s.sub(a, b)` | fragment od `a` do `b-1` |
+| `s.find(t)` | gdzie zaczyna się `t`, albo -1 |
+| `s.contains(t)`, `s.starts_with(t)`, `s.ends_with(t)` | `bool` |
+| `s.split(sep)` | `[]str`; `split("")` daje pojedyncze znaki |
+| `s.trim()` | bez spacji i nowych linii na obu końcach |
+| `s.upper()`, `s.lower()` | zmienione litery A–Z / a–z (tylko ASCII) |
+| `s.replace(a, b)` | każde `a` zamienione na `b` |
+| `s.repeat(n)` | `s` n razy |
+| `s.bytes()` | `[]u8` z bajtami |
+| `s.ptr` | `ptr[char]` dla C (ważny, dopóki żyje `s`) |
+
+`str` pamięta swoją długość, więc `.len` działa natychmiast. Zawsze kończy się zerem, więc
+przekazanie go do C jako `char*` działa.
+
+---
+
+## 12. Struktury
+
+```c
+struct Gracz {
+    str imie
+    int zycia = 3            // wartość domyślna
+    []int wyniki
+    Punkt pozycja            // struktury w strukturach
+}
+
+g := Gracz(imie: "Ola")                      // po nazwie: brakujące pola dostają domyślne (albo zero)
+q := Punkt(1, 2)                             // po kolei: wtedy trzeba podać każde pole
+g.zycia -= 1
+g.wyniki.push(10)
+g.pozycja.x = 5
+print(g)      // Gracz(imie: "Ola", zycia: 2, wyniki: [10], pozycja: Punkt(x: 5, y: 0))
+```
+
+- Przypisanie albo przekazanie struktury ją kopiuje, razem z jej tablicami i tekstami.
+- Struktura nie może zawierać samej siebie wprost; dla takiego pola użyj `ptr[Wezel]` albo `[]Wezel` (drzewa, listy).
+- Struktury nie mają metod. Pisz funkcje, które je przyjmują: `fn wylecz(Gracz g) -> Gracz`.
+
+---
+
+## 13. Pamięć: kto co zwalnia
+
+Tablic, tekstów i struktur nie zwalniasz nigdy. Finch robi to za ciebie, w przewidywalnym momencie:
+**gdy kończy się blok, do którego wartość należy** (`}`), albo wcześniej przy `return`, `break`, `continue`.
+
+- Zmienna **jest właścicielem** swojej wartości. Przypisanie kopiuje, więc dwie zmienne nigdy nie dzielą jednej listy.
+- Wartość z wywołania funkcji albo wyrażenia jest **przenoszona** tam, gdzie ją zapisujesz, bez kopiowania.
+- `return lista` przenosi zmienną poza funkcję, bez kopiowania.
+- Parametry funkcji są **pożyczane**: funkcja dostaje wartość wywołującego bez kopii. Jeśli ją zmienia,
+  Finch najpierw robi jej prywatną kopię. Zauważysz to najwyżej po szybkości.
+
+Do pamięci zarządzanej samodzielnie (listy wiązane, drzewa, dzielenie między strukturami):
+
+```c
+wezel := new(Wezel(wartosc: 1))  // wstaw wartość na stertę, dostajesz ptr[Wezel]
+defer free(wezel)                // free(...) ją oddaje (razem z jej tablicami i tekstami)
+```
+
+Pamięć z C (`malloc`, obiekty bibliotek) zwalniasz funkcjami z C, jak w C.
+
+---
+
+## 14. Wskaźniki
+
+Wskaźnik przechowuje **adres** wartości. Finch zamiast `*` i `&` z C używa słów:
 
 | C | Finch | Znaczenie |
 |---|---|---|
 | `int *p` | `ptr[int] p` | p wskazuje na int |
-| `&x` | `addr(x)` | adres x |
+| `&x` | `addr(x)` | adres x (także `addr(a[i])`, `addr(s.pole)`) |
 | `*p` | `p.value` | wartość, na którą wskazuje p |
+| `p->pole` | `p.pole` | pole struktury, na którą wskazuje p |
+| `p[i]` | `p[i]` | indeksowanie jak w C (bez kontroli zakresu) |
 | `NULL` | `null` | wskazuje donikąd |
 | `void *` | `ptr` | wskazuje na coś nieznanego typu |
 
@@ -342,72 +472,98 @@ fn podwoj(ptr[int] p) {
     p.value = p.value * 2
 }
 
-fn main() {
-    x := 21
-    podwoj(addr(x))
-    print(x)               // 42
-
-    ptr[int] nic = null
-    if nic == null {
-        print("pusty")
-    }
-}
+x := 21
+podwoj(addr(x))           // x to 42
 ```
 
-Wskaźnik może wskazywać na wskaźnik: `ptr[ptr[int]]`, a potem `pp.value.value`.
+Jeśli struktura ma własne pole o nazwie `value`, to `p.value` na wskaźniku do niej oznacza to pole.
 
-Użycie `.value` na wskaźniku `null` **zatrzymuje program** komunikatem
-`runtime error: used .value on a null pointer`, zamiast losowo go wysypać.
+Użycie `.value`, `.pole` albo `[i]` na wskaźniku `null` **zatrzymuje program** z czytelnym komunikatem.
 
-⚠️ Wskaźnika na zmienną nie wolno używać po zakończeniu funkcji, do której ta zmienna należała,
-bo zmienna wtedy już nie istnieje. Finch jeszcze tego nie sprawdza.
+⚠️ Wskaźnika na zmienną nie wolno używać po zakończeniu jej bloku. Finch tego nie sprawdza.
 
 ---
 
-## 11. Biblioteki z C
+## 15. Funkcje wbudowane
 
-Prawie każda biblioteka na Linuksie ma interfejs w C: grafika, dźwięk, sieć, bazy danych.
-Finch może z nich korzystać bezpośrednio.
+| Funkcja | Co robi |
+|---|---|
+| `print(a, b, ...)` | Wypisuje wszystkie wartości oddzielone spacjami i przechodzi do nowej linii. Działa z każdym typem, także z tablicami i strukturami. |
+| `input()`, `input("pytanie")` | Czyta jedną linijkę wpisaną przez użytkownika (bez znaku nowej linii). Na końcu wejścia daje pusty tekst. |
+| `read_file(sciezka)` | Cały plik jako `str`. Jeśli nie da się go przeczytać, zatrzymuje program z czytelnym komunikatem. |
+| `write_file(sciezka, tekst)` | Zapisuje (zastępuje) plik; oddaje `true`, jeśli się udało. |
+| `file_exists(sciezka)` | `true` / `false` |
+| `shell(polecenie)` | Uruchamia polecenie powłoki i oddaje jego kod wyjścia. |
+| `exit(kod)` | Natychmiast kończy program. |
+| `addr(x)` | Wskaźnik na `x`; `addr(funkcja)` daje C wskaźnik na funkcję (callback). |
+| `new(wartosc)`, `free(p)` | Ręczna pamięć na stercie (zobacz [Pamięć](#13-pamięć-kto-co-zwalnia)). |
+| `int(x)`, `str(x)`, `u8(x)`, … | Zamiany typów (zobacz [Zamiana typów](#zamiana-typów)). |
+
+---
+
+## 16. Moduły
+
+Program możesz podzielić na pliki. `import ksztalty` wczytuje `ksztalty.fn` z tego samego folderu
+(albo z folderu wymienionego w zmiennej środowiskowej `FINCH_PATH`, rozdzielonych `:`).
+
+```c
+// ksztalty.fn
+struct Pudlo {
+    float w
+    float h
+}
+
+fn pole(Pudlo p) -> float {
+    return p.w * p.h
+}
+```
+
+```c
+// main.fn
+import ksztalty
+
+fn main() {
+    p := ksztalty.Pudlo(2, 3)
+    print(ksztalty.pole(p))
+    ksztalty.Pudlo inne      // typ z modułu w deklaracji
+}
+```
+
+- Wszystkiego z modułu używasz z jego nazwą z przodu: `ksztalty.pole`, `ksztalty.Pudlo`.
+- Moduł nie ma `main`. Moduły mogą importować inne moduły.
+
+---
+
+## 17. Biblioteki z C
 
 ### Krok 1: zaimportuj nagłówek
 
 ```c
 import "stdio.h"
-import "math.h"
 import "GLFW/glfw3.h"     // ścieżka w systemowych katalogach nagłówków
-import "mojalib.h"        // nagłówek leżący obok twojego pliku .fn
+import "mojalib.h"        // nagłówek obok twojego pliku .fn
 ```
 
 Finch czyta nagłówek przez **libclang** (parser C z clanga) i udostępnia:
 
 - **funkcje**, także te ze zmienną liczbą argumentów, jak `printf`,
-- **wartości `enum`**,
-- **proste stałe `#define`**, które są pojedynczą liczbą, np. `M_PI`, `EOF`, `GL_COLOR_BUFFER_BIT`,
+- **struktury**, przez wartość i przez wskaźnik (`Vector2`, `SDL_Rect`, `CXCursor`, …), razem z polami,
+- **wartości `enum`** i **proste stałe `#define`** (`M_PI`, `GL_COLOR_BUFFER_BIT`),
 - **zmienne globalne**, np. `stdout` i `stderr`.
 
 ### Krok 2: dolinkuj bibliotekę
 
-Nagłówek tylko *opisuje* funkcje. Ich właściwy kod jest w pliku biblioteki (`libNAZWA.so`).
-Powiedz Finchowi, której biblioteki użyć, na górze pliku:
-
 ```c
-link "glfw"              // używa libglfw.so
-link "GL"                // używa libGL.so
+link "glfw"              // używa libglfw.so (najpierw pyta pkg-config, jeśli jest)
+link "pomocnicze.c"      // skompiluj i dołącz własny plik C (obok pliku .fn)
+link "gotowe.a"          // albo plik obiektowy / bibliotekę statyczną
 ```
-
-Wpisz samą nazwę: dla `libglfw.so` to `glfw`. Jeśli `pkg-config` zna tę nazwę, Finch użyje jego
-ustawień (ścieżek i dodatkowych bibliotek). W przeciwnym razie przekaże linkerowi `-lNAZWA`.
-Biblioteka standardowa C i matematyczna (`libm`) są dolinkowane zawsze.
-
-Na linii poleceń `-l NAZWA` robi to samo co `link "NAZWA"`.
 
 Jeśli zapomnisz linijki `link`, Finch powie dokładnie, czego brakuje:
 
 ```
 error: glfwInit, glfwCreateWindow, glfwMakeContextCurrent and 5 more come from "GLFW/glfw3.h", but its library isn't linked
-  the header only says the functions exist; their code lives in a library.
-  add this at the top of your file (with the library's real name):
-
+  ...
       link "glfw"
 ```
 
@@ -421,51 +577,45 @@ error: glfwInit, glfwCreateWindow, glfwMakeContextCurrent and 5 more come from "
 | `float`, `double` | `f32`, `f64` |
 | `_Bool` / `bool` | `bool` |
 | `enum` | odpowiadająca liczba całkowita ze znakiem |
-| `char *`, `const char *` | `str` |
-| `int *`, `double *`, … | `ptr[i32]`, `ptr[f64]`, … |
-| `void *`, `struct X *`, `FILE *`, wskaźniki na funkcje | `ptr` |
+| `char *` jako **parametr albo wynik** | `str` |
+| `char *` w strukturze albo za wskaźnikiem | `ptr[char]` (czytasz przez `str(p)`) |
+| `struct X` przez wartość | `X`, struktura z tymi samymi polami |
+| `struct X *`, `int *`, … | `ptr[X]`, `ptr[i32]`, … |
+| `int arr[16]` w strukturze | `[16]i32`: indeksujesz i używasz `.len` |
+| `void *`, wskaźniki na funkcje, niekompletne struktury | `ptr` |
 
-Czyli `int` z C to `i32` w Finchu. Liczby wpisane w kod dopasowują się same (`abs(-5)` działa),
-ale zmienną typu `int` z Fincha trzeba zamienić: `abs(i32(x))`.
-
-### Przykład
+### Przykład: struktury i raylib
 
 ```c
-import "stdio.h"
-import "math.h"
-import "stdlib.h"
+import "raylib.h"
+link "raylib"
 
 fn main() {
-    printf("%d + %d = %d\n", 2, 3, 5)
-    print(sqrt(2), M_PI, RAND_MAX)
-
-    ptr[i32] n = malloc(4)       // poproś C o 4 bajty pamięci
-    n.value = 7
-    print(n.value)
-    free(n)                      // i oddaj je
-
-    fprintf(stderr, "to idzie na wyjście błędów\n")
+    InitWindow(800, 450, "Finch")
+    while !WindowShouldClose() {
+        BeginDrawing()
+        ClearBackground(Color(r: 30, g: 30, b: 40, a: 255))
+        DrawCircleV(Vector2(400, 225), 50, Color(255, 136, 0, 255))
+        EndDrawing()
+    }
+    CloseWindow()
 }
 ```
 
-Pełny przykład z grafiką jest w `examples/window.fn`: okno GLFW + OpenGL, które zmienia kolor.
-`examples/llvm.fn` pokazuje, że Finch potrafi nawet sterować samym LLVM przez jego API w C.
+Żeby dać C funkcję do wywołania zwrotnego (np. porównywarkę dla `qsort`), użyj `addr(mojaFunkcja)`.
+Jej parametry muszą być typami C (liczby, wskaźniki, struktury C).
 
 ### Co jeszcze nie działa
 
-- Funkcje C, które przyjmują lub zwracają **`struct` przez wartość**, np. `div()`. Finch mówi o tym
-  wprost, jeśli spróbujesz. Funkcje przyjmujące *wskaźnik* na strukturę działają.
-- **Makra-funkcje** (`#define MAX(a,b) ...`) i makra, które nie są pojedynczą liczbą.
+- **Unie** C przez wartość i struktury z **polami bitowymi** przez wartość (wskaźniki do nich działają).
+- **Makra-funkcje** i makra, które nie są pojedynczą liczbą.
 - `long double`, liczby 128-bitowe.
-- Odczytywanie **pól** struktury C.
 
 ---
 
-## 12. Błędy
+## 18. Błędy
 
 ### Błędy kompilacji
-
-Finch zatrzymuje się na pierwszym problemie i pokazuje, gdzie jest:
 
 ```
 gra.fn:12:9: error: 'wynik' must be int, but this is str
@@ -473,70 +623,92 @@ gra.fn:12:9: error: 'wynik' must be int, but this is str
       |             ^
 ```
 
-Format: `plik:linijka:kolumna: error: wyjaśnienie`, a pod spodem linijka ze znakiem `^` pod miejscem błędu.
+Format: `plik:linijka:kolumna: error: wyjaśnienie`, a pod spodem linijka ze znakiem `^`.
 Komunikaty są po angielsku.
 
 ### Błędy w trakcie działania
 
-Niektóre problemy widać dopiero, gdy program działa. Zamiast niezdefiniowanego zachowania
-(jak w C) Finch zatrzymuje się z czytelnym komunikatem na wyjściu błędów i kodem wyjścia 1:
+Zamiast niezdefiniowanego zachowania (jak w C) Finch zatrzymuje się z komunikatem i kodem wyjścia 1:
 
 | Komunikat | Przyczyna |
 |---|---|
 | `runtime error: division by zero` | `/` albo `%` przez zmienną równą 0 |
 | `runtime error: division overflows …` | najmniejsza liczba ze znakiem podzielona przez −1 |
-| `runtime error: used .value on a null pointer` | odczyt lub zapis `p.value`, gdy `p` jest `null` |
+| `runtime error: index 5 is out of range (the length is 3)` | `a[5]` na krótszej tablicy albo tekście |
+| `runtime error: pop() on an empty array` | |
+| `runtime error: used .value on a null pointer` | także `.pole` i `[i]` przez `null` |
+| `runtime error: can't turn "x" into int` | `int(...)` / `float(...)` na tekście, który nie jest liczbą |
+| `runtime error: can't read the file "…"` | `read_file` na brakującym albo nieczytelnym pliku |
 
 ---
 
-## 13. Rozwiązywanie problemów
+## 19. Debugowanie
+
+```sh
+finch build gra.fn -g -O0 -o gra
+gdb ./gra
+(gdb) break gra.fn:12
+(gdb) run
+(gdb) bt                # gdzie jesteśmy, przez które funkcje
+(gdb) info locals       # wszystkie zmienne
+(gdb) print gracz.zycia
+```
+
+`-g` dodaje informacje dla debuggera (linijki, funkcje, zmienne, pola struktur). `-O0` zostawia wszystkie
+zmienne widoczne; bez niego optymalizator może część z nich usunąć.
+
+---
+
+## 20. Rozwiązywanie problemów
 
 | Problem | Rozwiązanie |
 |---|---|
-| `can't find the C header 'x.h'` | Brakuje plików deweloperskich biblioteki. Zainstaluj je (Debian: `libx-dev`; Nix: dopisz do `shell.nix`). Własny nagłówek połóż obok pliku `.fn`. |
+| `can't find the C header 'x.h'` | Brakuje plików deweloperskich biblioteki. Zainstaluj je (Debian: `libx-dev`; Nix: dopisz do `shell.nix`). |
 | `… come from "x.h", but its library isn't linked` | Dopisz `link "nazwa"` na górze pliku. |
-| `the library 'x' wasn't found` | Biblioteka nie jest zainstalowana albo nazwa jest zła. Na Niksie dopisz ją do `shell.nix` i pracuj wewnątrz `nix-shell`. |
-| `the C function 'f' can't be used from Finch yet` | Używa struktury przez wartość albo innego nieobsługiwanego typu. Poszukaj wariantu, który przyjmuje wskaźniki. |
-| `no C compiler found to link with` | Zainstaluj gcc lub clang albo ustaw `CC`. |
-| Program się kompiluje, ale przy starcie nie znajduje biblioteki C | Został zlinkowany ze ścieżki, której system nie przeszukuje. Uruchamiaj go w tym samym `nix-shell` albo zainstaluj bibliotekę systemowo. |
-| `unexpected character 'ż'` | Polska litera w nazwie. W nazwach używaj tylko a–z. |
-| CMake: `libclang not found` | Zainstaluj pakiet deweloperski libclang albo uruchom `cmake` w `nix-shell`. |
-| Budowanie kończy się błędami API LLVM | Masz inną wersję LLVM niż 21. |
+| `the library 'x' wasn't found` | Nie jest zainstalowana albo nazwa jest zła. Na Niksie dopisz ją do `shell.nix` i pracuj w `nix-shell`. |
+| `the C function 'f' can't be used from Finch yet` | Używa unii, pól bitowych albo innego nieobsługiwanego typu przez wartość. Poszukaj wariantu ze wskaźnikami. |
+| `can't find the module 'x'` | Połóż `x.fn` obok importującego pliku albo ustaw `FINCH_PATH`. |
+| `couldn't build the Finch runtime` | Brak działającego kompilatora C. Zainstaluj gcc lub clang albo ustaw `CC`. |
+| Biblioteka nie znajduje się przy starcie programu | Zlinkowano ją z folderu, którego system nie przeszukuje. Uruchamiaj w tym samym `nix-shell` albo zainstaluj ją systemowo. |
+| `clang` w `nix-shell` nie widzi `stdio.h` | Masz stary `shell.nix`: `llvmPackages.clang` musi być przed `llvmPackages.libclang`. |
 | Program nigdy się nie kończy | Warunek pętli nigdy nie staje się fałszywy. Naciśnij Ctrl+C. |
 
 ---
 
-## 14. Struktura projektu i testy
+## 21. Struktura projektu i testy
 
 ```
 Finch/
 ├── src/            kompilator (C++)
-├── examples/       przykładowe programy (hello, tour, types, c_import, window, llvm)
+├── runtime/        finch_rt.c: mała biblioteka uruchomieniowa (teksty, tablice, wejście, pliki)
+├── boot/           kompilator Fincha napisany w Finchu (zobacz przewodnik dla inżynierów)
+├── examples/       hello, tour, types, structs, todo, guess, c_import, window, raylib, llvm
 ├── tests/
-│   ├── run/        programy + dokładny wynik, który muszą wypisać (.out)
+│   ├── run/        programy + dokładny wynik (.out) i wejście (.in)
 │   ├── fail/       programy, które muszą się nie udać, z oczekiwanym błędem w 1. linijce
-│   └── run.sh      skrypt uruchamiający testy
+│   ├── run.sh      uruchamia testy (MEMCHECK=1 sprawdza też pamięć valgrindem)
+│   └── boot.sh     buduje kompilator samohostujący nim samym i porównuje
 ├── docs/           ta dokumentacja (en, pl)
 ├── shell.nix       środowisko deweloperskie Nix
 └── CMakeLists.txt
 ```
 
-Testy uruchomisz po zbudowaniu:
-
 ```sh
-tests/run.sh             # → 34 passed, 0 failed
+tests/run.sh                 # → 58 passed, 0 failed
+MEMCHECK=1 tests/run.sh      # to samo pod valgrindem: bez wycieków i złych dostępów do pamięci
+tests/boot.sh                # sprawdzenie samohostowania (wymaga clanga)
 ```
 
 ---
 
-## 15. Obecne ograniczenia
+## 22. Obecne ograniczenia
 
-Finch 1.0 to solidny rdzeń, a nie skończony język. Jeszcze nie ma:
+Finch 2.0 to kompletny mały język, ale nie skończony. Jeszcze nie ma:
 
-- `struct`, tablic, czytania z klawiatury (`input()`), sklejania tekstów (`"a" + "b"`).
-  Na razie użyj do tego funkcji z C (`scanf`, `snprintf`, `malloc`…).
-- Automatycznego zarządzania pamięcią (w planach: zwalnianie na końcu bloku i `defer`).
-- Modułów Fincha (na razie jeden program = jeden plik `.fn`).
+- Metod w strukturach, typów generycznych, słowników (map), `match`. (Używaj tablic struktur i funkcji.)
+- Błędów jako wartości: błąd w `int("x")` albo `read_file` zatrzymuje program. Sprawdzaj wcześniej (`file_exists`).
+- Tekstu świadomego Unicode: `.len`, `s[i]` i `upper()` działają na bajtach / ASCII.
+- Wątków.
 - Platform innych niż Linux x86-64.
 
 Plan rozwoju jest w [README](../../README.pl.md#plan-rozwoju).

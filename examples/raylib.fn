@@ -1,0 +1,15 @@
+// A raylib window with a circle: C structs (Color, Vector2) passed by value.
+// Needs raylib (in shell.nix).
+import "raylib.h"
+link "raylib"
+
+fn main() {
+    InitWindow(800, 450, "Finch")
+    while !WindowShouldClose() {
+        BeginDrawing()
+        ClearBackground(Color(r: 30, g: 30, b: 40, a: 255))
+        DrawCircleV(Vector2(400, 225), 50, Color(255, 136, 0, 255))
+        EndDrawing()
+    }
+    CloseWindow()
+}

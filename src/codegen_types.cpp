@@ -230,7 +230,8 @@ Value *Codegen::own(const Value_ &v) {
 }
 
 void Codegen::release(const Value_ &v) {
-    if (v.fresh && v.v && owning(v.type)) dropValue(v.v, v.type);
+    // constants (string literals, empty arrays) own no memory: nothing to free
+    if (v.fresh && v.v && !isa<Constant>(v.v) && owning(v.type)) dropValue(v.v, v.type);
 }
 
 Value *Codegen::copyValue(Value *v, const FType &t) {

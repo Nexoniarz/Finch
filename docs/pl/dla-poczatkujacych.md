@@ -20,10 +20,15 @@ Czytaj powoli, po jednym rozdziale, i przepisuj każdy przykład samodzielnie. T
 8. [Podejmowanie decyzji: if](#8-podejmowanie-decyzji-if)
 9. [Powtarzanie: pętle](#9-powtarzanie-pętle)
 10. [Własne polecenia: funkcje](#10-własne-polecenia-funkcje)
-11. [Kiedy coś pójdzie nie tak](#11-kiedy-coś-pójdzie-nie-tak)
-12. [Małe projekty do zrobienia](#12-małe-projekty-do-zrobienia)
-13. [Ściąga](#13-ściąga)
-14. [Słowniczek](#14-słowniczek)
+11. [Listy: wiele wartości w jednym pudełku](#11-listy-wiele-wartości-w-jednym-pudełku)
+12. [Zabawa tekstem](#12-zabawa-tekstem)
+13. [Pytanie użytkownika](#13-pytanie-użytkownika)
+14. [Własne rodzaje wartości: struktury](#14-własne-rodzaje-wartości-struktury)
+15. [Zapisywanie do pliku](#15-zapisywanie-do-pliku)
+16. [Kiedy coś pójdzie nie tak](#16-kiedy-coś-pójdzie-nie-tak)
+17. [Małe projekty do zrobienia](#17-małe-projekty-do-zrobienia)
+18. [Ściąga](#18-ściąga)
+19. [Słowniczek](#19-słowniczek)
 
 ---
 
@@ -72,7 +77,7 @@ Jeśli ostatnia linijka skończy się bez słowa `error`, Finch jest gotowy.
 ./build/finch version
 ```
 
-Powinieneś zobaczyć coś w stylu `finch 1.0.0`.
+Powinieneś zobaczyć coś w stylu `finch 2.0.0`.
 
 ---
 
@@ -446,7 +451,202 @@ Nie ma znaczenia, gdzie w pliku umieścisz swoje funkcje, nad czy pod `main`.
 
 ---
 
-## 11. Kiedy coś pójdzie nie tak
+## 11. Listy: wiele wartości w jednym pudełku
+
+Czasem jedno pudełko nie wystarczy. Na liście zakupów jest wiele rzeczy.
+**Lista** (programiści mówią też **tablica**) trzyma wiele wartości po kolei:
+
+```c
+fn main() {
+    owoce := ["jabłko", "banan", "wiśnia"]
+    print(owoce)
+    print("Mam", owoce.len, "owoce")
+    print("Pierwszy to", owoce[0])
+}
+```
+
+```
+["jabłko", "banan", "wiśnia"]
+Mam 3 owoce
+Pierwszy to jabłko
+```
+
+- Nawiasy kwadratowe `[ ]` tworzą listę. Wartości oddzielamy przecinkami.
+- `.len` mówi, ile rzeczy jest na liście.
+- `owoce[0]` to **pierwsza** rzecz. Liczymy od **0**, więc `owoce[1]` to druga, a `owoce[2]` trzecia.
+
+Jeśli zapytasz o miejsce, którego nie ma, np. `owoce[10]`, program się zatrzyma i powie:
+`index 10 is out of range (the length is 3)`, czyli „indeks 10 jest poza zakresem (długość to 3)”.
+
+### Dodawanie i zabieranie
+
+```c
+fn main() {
+    []int wyniki          // pusta lista liczb całkowitych
+    wyniki.push(10)       // dołóż 10 na koniec
+    wyniki.push(25)
+    wyniki.push(7)
+    print(wyniki)         // [10, 25, 7]
+
+    ostatni := wyniki.pop()  // zabierz ostatni
+    print(ostatni, wyniki)   // 7 [10, 25]
+
+    wyniki.sort()            // posortuj
+    print(wyniki)
+}
+```
+
+### Przechodzenie po liście
+
+`for ... in` odwiedza każdą wartość po kolei:
+
+```c
+fn main() {
+    suma := 0
+    for n in [3, 5, 2] {
+        suma += n
+    }
+    print("Suma:", suma)    // Suma: 10
+}
+```
+
+Listy umieją więcej: `contains` (czy zawiera), `find` (znajdź), `insert` (wstaw), `remove` (usuń),
+`sort` (sortuj), `reverse` (odwróć), `join` (połącz). Wszystkie opisuje [przewodnik dla techników](dla-technikow.md#tablice).
+
+---
+
+## 12. Zabawa tekstem
+
+Teksty sklejasz znakiem `+`:
+
+```c
+fn main() {
+    imie := "Ola"
+    powitanie := "Cześć, " + imie + "!"
+    print(powitanie)
+}
+```
+
+Żeby dokleić liczbę do tekstu, najpierw zamień ją na tekst przez `str(...)`:
+
+```c
+wiek := 10
+print("Wiek: " + str(wiek))
+```
+
+Teksty mają też przydatne narzędzia:
+
+```c
+fn main() {
+    slowo := "Finch"
+    print(slowo.len)            // 5 liter
+    print(slowo[0])             // F  (pierwsza litera)
+    print(slowo.upper())        // FINCH (wielkimi literami)
+    print(slowo.lower())        // finch (małymi literami)
+    print(slowo.contains("in")) // true (czy zawiera "in")
+    for litera in slowo {
+        print(litera)           // F, i, n, c, h, każda w osobnej linijce
+    }
+}
+```
+
+⚠️ `.len` liczy bajty, a polskie litery (ą, ę, ż…) zajmują po 2 bajty. `"żółw".len` to 7, a nie 4.
+
+---
+
+## 13. Pytanie użytkownika
+
+`input` pokazuje pytanie i czeka, aż ktoś wpisze odpowiedź i naciśnie Enter:
+
+```c
+fn main() {
+    imie := input("Jak masz na imię? ")
+    print("Miło cię poznać,", imie)
+}
+```
+
+Odpowiedź jest zawsze **tekstem**. Jeśli potrzebujesz liczby, zamień ją przez `int(...)`:
+
+```c
+fn main() {
+    odpowiedz := input("Ile masz lat? ")
+    wiek := int(odpowiedz)
+    print("Za rok będziesz mieć", wiek + 1)
+}
+```
+
+Jeśli ktoś wpisze coś, co nie jest liczbą, program zatrzyma się z komunikatem
+w stylu `can't turn "abc" into int` („nie da się zamienić "abc" na int”).
+
+---
+
+## 14. Własne rodzaje wartości: struktury
+
+Wyobraź sobie kartę w bibliotece: każda karta ma tytuł, autora i rok.
+**Struktura** (`struct`) pozwala zrobić własny rodzaj wartości z nazwanymi częściami:
+
+```c
+struct Ksiazka {
+    str tytul
+    str autor
+    int rok
+}
+
+fn main() {
+    k := Ksiazka(tytul: "Hobbit", autor: "Tolkien", rok: 1937)
+    print(k.tytul, "napisał", k.autor)
+    k.rok = 1938
+    print(k)
+}
+```
+
+```
+Hobbit napisał Tolkien
+Ksiazka(tytul: "Hobbit", autor: "Tolkien", rok: 1938)
+```
+
+- `struct Ksiazka { ... }` opisuje, co ma każda książka. Pisz to **poza** `main`.
+- `Ksiazka(tytul: ..., autor: ..., rok: ...)` tworzy jedną książkę.
+- `k.tytul` odczytuje jedną część, a `k.rok = 1938` ją zmienia.
+
+Częściom możesz nadać wartość początkową. Wtedy nie trzeba ich podawać:
+
+```c
+struct Gracz {
+    str imie
+    int zycia = 3
+}
+
+fn main() {
+    g := Gracz(imie: "Ola")
+    print(g.zycia)     // 3
+}
+```
+
+Możesz też trzymać wiele struktur na liście: `[]Ksiazka polka`, a potem `polka.push(k)`.
+
+---
+
+## 15. Zapisywanie do pliku
+
+Program zapomina wszystko, kiedy się kończy. Żeby coś zapamiętać, zapisz to do pliku:
+
+```c
+fn main() {
+    write_file("notatka.txt", "Kupić mleko")
+    print(read_file("notatka.txt"))
+}
+```
+
+- `write_file(nazwa, tekst)` zapisuje tekst w pliku (i zastępuje to, co tam było).
+- `read_file(nazwa)` oddaje tekst z pliku.
+- `file_exists(nazwa)` mówi, czy plik istnieje (`true` albo `false`).
+
+Plik pojawi się w folderze, w którym uruchomiłeś program.
+
+---
+
+## 16. Kiedy coś pójdzie nie tak
 
 Każdy się myli przy programowaniu, nawet eksperci, codziennie.
 Finch stara się tłumaczyć, co poszło nie tak, prostymi słowami (na razie po angielsku). Przykład:
@@ -485,10 +685,13 @@ Tutaj po prostu źle napisaliśmy `wiek`. Komunikat znaczy: „nie ma zmiennej o
 | `a condition must be bool` | `if` potrzebuje pytania tak/nie | Porównaj coś: `if x > 0` |
 | `unexpected character 'ż'` | Polska litera w nazwie | Zmień na zwykłą literę: `zolw` |
 | `runtime error: division by zero` | Program podzielił przez 0 w trakcie działania | Sprawdź liczbę przed dzieleniem |
+| `index 5 is out of range (the length is 3)` | Zapytałeś listę o miejsce, którego nie ma | Pamiętaj, że liczymy od 0; sprawdź `.len` |
+| `can't turn "abc" into int` | `int(...)` dostał tekst, który nie jest liczbą | Sprawdź, co wpisał użytkownik |
+| `can't use '+' on str and int` | Tekst plus liczba | Zamień liczbę na tekst przez `str(...)` |
 
 ---
 
-## 12. Małe projekty do zrobienia
+## 17. Małe projekty do zrobienia
 
 Spróbuj najpierw napisać każdy sam. Do rozwiązania zajrzyj dopiero, gdy utkniesz.
 
@@ -595,9 +798,59 @@ fn main() {
 ```
 </details>
 
+### Projekt 6: Zgadnij liczbę
+
+Komputer ma tajną liczbę. Gracz zgaduje, aż trafi, a komputer za każdym razem mówi „więcej” albo „mniej”.
+
+<details><summary>Rozwiązanie</summary>
+
+```c
+fn main() {
+    tajna := 42
+    proby := 0
+    while true {
+        strzal := int(input("Twój strzał: "))
+        proby += 1
+        if strzal < tajna {
+            print("Więcej!")
+        } else if strzal > tajna {
+            print("Mniej!")
+        } else {
+            print("Tak! Potrzebowałeś", proby, "prób")
+            return
+        }
+    }
+}
+```
+
+`return` w `main` kończy program. (Wersja z losową liczbą jest w `examples/guess.fn`.)
+</details>
+
+### Projekt 7: Średnia ocen
+
+Zapytaj o 3 oceny, zapisz je na liście, a potem pokaż listę i średnią.
+
+<details><summary>Rozwiązanie</summary>
+
+```c
+fn main() {
+    []int oceny
+    for i in 0..3 {
+        oceny.push(int(input("Ocena: ")))
+    }
+    suma := 0
+    for o in oceny {
+        suma += o
+    }
+    print("Oceny:", oceny)
+    print("Średnia:", float(suma) / oceny.len)
+}
+```
+</details>
+
 ---
 
-## 13. Ściąga
+## 18. Ściąga
 
 ```c
 // komentarz
@@ -630,11 +883,21 @@ fn main() {                       // tu zaczyna się program
 fn dodaj(int a, int b) -> int {   // własne polecenie
     return a + b
 }
+
+struct Zwierzak {                 // własny rodzaj wartości
+    str imie
+    int wiek = 1
+}
+
+// listy:  liczby := [1, 2, 3]   liczby.push(4)   liczby[0]   liczby.len   for n in liczby { }
+// tekst:  "a" + "b"   str(42)   int("42")   s.len   s.upper()   s.contains("x")
+// pytanie: imie := input("Imię? ")
+// pliki:  write_file("p.txt", tekst)   read_file("p.txt")
 ```
 
 ---
 
-## 14. Słowniczek
+## 19. Słowniczek
 
 | Słowo | Znaczenie |
 |---|---|
@@ -647,6 +910,10 @@ fn dodaj(int a, int b) -> int {   // własne polecenie
 | **funkcja** | Nazwana grupa kroków, której można używać wiele razy |
 | **pętla** | Kroki, które się powtarzają |
 | **warunek** | Pytanie tak/nie, np. `x > 5` |
+| **lista / tablica** | Wiele wartości po kolei, np. `[1, 2, 3]` |
+| **indeks** | Pozycja wartości na liście, liczona od 0 |
+| **struktura** (struct) | Własny rodzaj wartości złożony z nazwanych części |
+| **wejście** (input) | To, co użytkownik wpisuje do programu |
 | **błąd** (error) | Komunikat, że coś jest nie tak, i gdzie |
 | **bug** | Pomyłka w programie |
 
@@ -662,6 +929,10 @@ fn dodaj(int a, int b) -> int {   // własne polecenie
 | `return` | zwróć (oddaj) |
 | `true` / `false` | prawda / fałsz |
 | `fn` (od *function*) | funkcja |
+| `struct` | struktura |
+| `push` / `pop` | dołóż / zabierz |
+| `input` | wejście (pytanie) |
+| `len` (od *length*) | długość |
 | `error` | błąd |
 
 ---
