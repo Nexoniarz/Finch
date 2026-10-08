@@ -749,7 +749,7 @@ with the expected one. It takes about 2.3 s for the self-hosted compiler to comp
 - libclang: `find_path(clang-c/Index.h)` + `find_library(clang)`.
 - `runtime/finch_rt.c` is read at configure time into `build/rt_source.inc` as a raw string literal;
   `CMAKE_CONFIGURE_DEPENDS` re-runs the configure step when it changes.
-- `FINCH_VERSION` from `project(VERSION 2.0.0)`. C++17, `-Wall -Wextra`, warning-free.
+- `FINCH_VERSION` from `project(VERSION 2.3.0)`. C++17, `-Wall -Wextra` (MSVC: `/W3`), warning-free.
 - `shell.nix` lists `llvmPackages.clang` before `llvmPackages.libclang`: the latter also ships an
   unwrapped `clang` that can't find the system headers.
 

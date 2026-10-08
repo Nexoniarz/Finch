@@ -759,7 +759,7 @@ wynik z oczekiwanym. Kompilacja samego siebie zajmuje kompilatorowi samohostują
 - libclang: `find_path(clang-c/Index.h)` + `find_library(clang)`.
 - `runtime/finch_rt.c` jest wczytywany przy konfiguracji do `build/rt_source.inc` jako surowy literał
   napisowy; `CMAKE_CONFIGURE_DEPENDS` ponawia konfigurację, gdy plik się zmieni.
-- `FINCH_VERSION` z `project(VERSION 2.0.0)`. C++17, `-Wall -Wextra`, bez ostrzeżeń.
+- `FINCH_VERSION` z `project(VERSION 2.3.0)`. C++17, `-Wall -Wextra` (MSVC: `/W3`), bez ostrzeżeń.
 - `shell.nix` wymienia `llvmPackages.clang` przed `llvmPackages.libclang`: ten drugi dostarcza też
   „gołego” `clang`, który nie widzi nagłówków systemowych.
 
