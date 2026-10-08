@@ -1,0 +1,3 @@
+// expect: but Finch files now end in .fch
+import oldmodule
+fn main() {}

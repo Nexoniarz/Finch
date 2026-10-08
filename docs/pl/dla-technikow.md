@@ -38,7 +38,7 @@ kompilator działa w środku. Do tego służy [przewodnik dla inżynierów](dla-
 
 ## 1. Czym jest Finch
 
-Finch to język **kompilowany**. Narzędzie `finch` tłumaczy plik `.fn` na prawdziwy program
+Finch to język **kompilowany**. Narzędzie `finch` tłumaczy plik `.fch` na prawdziwy program
 (natywny plik wykonywalny, taki jak te z C). Korzysta przy tym z **LLVM**, tego samego zaplecza
 kompilatorów, na którym działają clang, Rust i Swift.
 
@@ -107,9 +107,9 @@ Inny kompilator wskażesz zmienną `CC`.
 ## 3. Polecenie finch
 
 ```
-finch run   <plik.fn> [argumenty...]   skompiluj i od razu uruchom
-finch build <plik.fn> [-o nazwa]       skompiluj do programu (domyślna nazwa: nazwa pliku)
-finch ir    <plik.fn>                  pokaż LLVM IR (dla ciekawskich)
+finch run   <plik.fch> [argumenty...]   skompiluj i od razu uruchom
+finch build <plik.fch> [-o nazwa]       skompiluj do programu (domyślna nazwa: nazwa pliku)
+finch ir    <plik.fch>                  pokaż LLVM IR (dla ciekawskich)
 finch version                          pokaż wersję
 
 opcje:
@@ -121,10 +121,10 @@ opcje:
 Przykłady:
 
 ```sh
-finch run hello.fn                 # wypisuje wynik
-finch run narzedzie.fn dane.txt -v # argumenty po nazwie pliku trafiają do programu
-finch build gra.fn -o mojagra      # tworzy ./mojagra
-finch build gra.fn -g -O0          # wersja dla debuggera
+finch run hello.fch                 # wypisuje wynik
+finch run narzedzie.fch dane.txt -v # argumenty po nazwie pliku trafiają do programu
+finch build gra.fch -o mojagra      # tworzy ./mojagra
+finch build gra.fch -g -O0          # wersja dla debuggera
 ```
 
 `finch run` przekazuje dalej kod wyjścia programu. Jeśli program się wysypie, powie jak
@@ -140,7 +140,7 @@ finch build gra.fn -g -O0          # wersja dla debuggera
    kilka linijek */
 
 import "math.h"          // nagłówki C (opcjonalne), na górze
-import ksztalty          // moduły Fincha (opcjonalne): ksztalty.fn obok tego pliku
+import ksztalty          // moduły Fincha (opcjonalne): ksztalty.fch obok tego pliku
 link "m"                 // biblioteki albo pliki C do dolinkowania (opcjonalne)
 
 struct Punkt {           // własne typy
@@ -503,11 +503,11 @@ Użycie `.value`, `.pole` albo `[i]` na wskaźniku `null` **zatrzymuje program**
 
 ## 16. Moduły
 
-Program możesz podzielić na pliki. `import ksztalty` wczytuje `ksztalty.fn` z tego samego folderu
+Program możesz podzielić na pliki. `import ksztalty` wczytuje `ksztalty.fch` z tego samego folderu
 (albo z folderu wymienionego w zmiennej środowiskowej `FINCH_PATH`, rozdzielonych `:`).
 
 ```c
-// ksztalty.fn
+// ksztalty.fch
 struct Pudlo {
     float w
     float h
@@ -519,7 +519,7 @@ fn pole(Pudlo p) -> float {
 ```
 
 ```c
-// main.fn
+// main.fch
 import ksztalty
 
 fn main() {
@@ -541,7 +541,7 @@ fn main() {
 ```c
 import "stdio.h"
 import "GLFW/glfw3.h"     // ścieżka w systemowych katalogach nagłówków
-import "mojalib.h"        // nagłówek obok twojego pliku .fn
+import "mojalib.h"        // nagłówek obok twojego pliku .fch
 ```
 
 Finch czyta nagłówek przez **libclang** (parser C z clanga) i udostępnia:
@@ -555,7 +555,7 @@ Finch czyta nagłówek przez **libclang** (parser C z clanga) i udostępnia:
 
 ```c
 link "glfw"              // używa libglfw.so (najpierw pyta pkg-config, jeśli jest)
-link "pomocnicze.c"      // skompiluj i dołącz własny plik C (obok pliku .fn)
+link "pomocnicze.c"      // skompiluj i dołącz własny plik C (obok pliku .fch)
 link "gotowe.a"          // albo plik obiektowy / bibliotekę statyczną
 ```
 
@@ -618,7 +618,7 @@ Jej parametry muszą być typami C (liczby, wskaźniki, struktury C).
 ### Błędy kompilacji
 
 ```
-gra.fn:12:9: error: 'wynik' must be int, but this is str
+gra.fch:12:9: error: 'wynik' must be int, but this is str
    12 |     wynik = "wysoki"
       |             ^
 ```
@@ -645,9 +645,9 @@ Zamiast niezdefiniowanego zachowania (jak w C) Finch zatrzymuje się z komunikat
 ## 19. Debugowanie
 
 ```sh
-finch build gra.fn -g -O0 -o gra
+finch build gra.fch -g -O0 -o gra
 gdb ./gra
-(gdb) break gra.fn:12
+(gdb) break gra.fch:12
 (gdb) run
 (gdb) bt                # gdzie jesteśmy, przez które funkcje
 (gdb) info locals       # wszystkie zmienne
@@ -667,7 +667,7 @@ zmienne widoczne; bez niego optymalizator może część z nich usunąć.
 | `… come from "x.h", but its library isn't linked` | Dopisz `link "nazwa"` na górze pliku. |
 | `the library 'x' wasn't found` | Nie jest zainstalowana albo nazwa jest zła. Na Niksie dopisz ją do `shell.nix` i pracuj w `nix-shell`. |
 | `the C function 'f' can't be used from Finch yet` | Używa unii, pól bitowych albo innego nieobsługiwanego typu przez wartość. Poszukaj wariantu ze wskaźnikami. |
-| `can't find the module 'x'` | Połóż `x.fn` obok importującego pliku albo ustaw `FINCH_PATH`. |
+| `can't find the module 'x'` | Połóż `x.fch` obok importującego pliku albo ustaw `FINCH_PATH`. |
 | `couldn't build the Finch runtime` | Brak działającego kompilatora C. Zainstaluj gcc lub clang albo ustaw `CC`. |
 | Biblioteka nie znajduje się przy starcie programu | Zlinkowano ją z folderu, którego system nie przeszukuje. Uruchamiaj w tym samym `nix-shell` albo zainstaluj ją systemowo. |
 | `clang` w `nix-shell` nie widzi `stdio.h` | Masz stary `shell.nix`: `llvmPackages.clang` musi być przed `llvmPackages.libclang`. |
@@ -694,7 +694,7 @@ Finch/
 ```
 
 ```sh
-tests/run.sh                 # → 58 passed, 0 failed
+tests/run.sh                 # → 59 passed, 0 failed
 MEMCHECK=1 tests/run.sh      # to samo pod valgrindem: bez wycieków i złych dostępów do pamięci
 tests/boot.sh                # sprawdzenie samohostowania (wymaga clanga)
 ```

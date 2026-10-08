@@ -48,7 +48,7 @@ Finch to jednoprzebiegowy front-end przed LLVM: sprawdzanie typów i generowanie
 po AST, bez własnej reprezentacji pośredniej.
 
 ```
- main.fn ──► Loader::load() ── lex() ── parse() ──► Program  (+ każdy importowany moduł, rekurencyjnie)
+ main.fch ──► Loader::load() ── lex() ── parse() ──► Program  (+ każdy importowany moduł, rekurencyjnie)
                                                        │
                 wszystkie `import "x.h"` ──► importHeaders() (libclang) ──► CImports
                                                        │
@@ -100,7 +100,7 @@ Decyzje, które kształtują resztę:
 | `src/abi.cpp` | 310 | Klasyfikacja System V x86-64, wywołania C ze strukturami przez wartość, wrappery wywoływalne z C |
 | `src/main.cpp` | 390 | Sterownik: CLI, ładowanie, maszyna docelowa, O2, emisja, cache runtime'u, linkowanie, porady przy błędach linkera, `run` |
 | `runtime/finch_rt.c` | 440 | Biblioteka uruchomieniowa (§12) |
-| `boot/*.fn` | 3080 | Kompilator samohostujący (§17) |
+| `boot/*.fch` | 3080 | Kompilator samohostujący (§17) |
 
 ---
 
@@ -199,7 +199,7 @@ Wszystkie węzły są w `src/ast.h`: małe hierarchie klas z jawnym `kind`, rozg
 | `Member` | `MemberExpr` | `obj`, `field` (`.x`, `.len`, `.ptr`, `.value`) |
 | `Index` | `IndexExpr` | `obj`, `index` |
 | `ArrayLit` | `ArrayLitExpr` | `elems` |
-| `Method` | `MethodExpr` | `obj`, `name`, `args`, `argNames`; także `modul.fn(...)` |
+| `Method` | `MethodExpr` | `obj`, `name`, `args`, `argNames`; także `modul.fch(...)` |
 
 | StmtKind | Węzeł |
 |---|---|
@@ -236,7 +236,7 @@ Równość jest strukturalna; dwa `Struct` są równe, gdy mają to samo `info`.
 
 `Loader::load(path, module, from)` w `main.cpp` czyta plik, dopisuje go do `g_files` (pozycje niosą
 indeks pliku w `Pos::file`), leksuje go i parsuje, a potem wczytuje każdy jeszcze niewidziany `import nazwa`:
-`nazwa.fn` obok importującego pliku albo w folderze z `FINCH_PATH`. Wynik to `std::vector<Program>`,
+`nazwa.fch` obok importującego pliku albo w folderze z `FINCH_PATH`. Wynik to `std::vector<Program>`,
 z głównym plikiem na początku. Cykle nie przeszkadzają: moduł jest oznaczany jako wczytany, zanim
 zaczniemy podążać za jego importami.
 
@@ -605,7 +605,7 @@ własność (`copy`, `own`, `drop`, `from_c`), tablice (`reserve`, `make`, `resi
 ### 13.1 Import nagłówków
 
 `importHeaders(imports, dirs)` parsuje każdy `import "x.h"` jako osobną jednostkę translacji z pliku
-w pamięci `#include "x.h"`, z `-x c -std=gnu11`, `-I` dla folderu każdego pliku `.fn` i `-isystem` dla
+w pamięci `#include "x.h"`, z `-x c -std=gnu11`, `-I` dla folderu każdego pliku `.fch` i `-isystem` dla
 każdego katalogu przeszukiwanego przez systemowy kompilator C (odczytanego z `$CC -E -v -x c /dev/null`,
 dzięki czemu działa to na NixOS). `gnu11`, bo glibc w trybie ścisłego ISO ukrywa `M_PI` i podobne.
 
@@ -657,7 +657,7 @@ i atrybutami, a wyniki-struktury odbudowuje w ten sam sposób.
 `cThunk(fn)` to odwrotność dla `addr(fn)`: wewnętrzna funkcja z sygnaturą C, która składa parametry-struktury
 z rejestrów albo pamięci `byval`, woła funkcję Fincha i obniża jej wynik. Akceptowane są tylko sygnatury zgodne z C.
 
-`tests/run/c_structs.fn` sprawdza `{float,float}`, `{float,float,float}`, `{u8×4}`, `{double,int}`,
+`tests/run/c_structs.fch` sprawdza `{float,float}`, `{float,float,float}`, `{u8×4}`, `{double,int}`,
 `{i64,i64}`, strukturę 24-bajtową, strukturę z `char[8]`, zagnieżdżone struktury, wyczerpanie rejestrów
 przy 13 argumentach-strukturach oraz wywołania zwrotne przyjmujące i zwracające struktury, na bibliotece C
 kompilowanej przez `link "abi.c"`. Wyniki zgadzają się z tymi samymi wywołaniami zrobionymi z C.
@@ -665,7 +665,7 @@ kompilowanej przez `link "abi.c"`. Wyniki zgadzają się z tymi samymi wywołani
 ### 13.4 Linkowanie kodu C
 
 `link "nazwa"` próbuje `pkg-config --libs nazwa`, a potem `-lnazwa`. `link "plik.c"` kompiluje plik
-(względem pliku `.fn`) przez `$CC -O2 -fPIC -c` do tymczasowego obiektu; pliki `.o` i `.a` przechodzą
+(względem pliku `.fch`) przez `$CC -O2 -fPIC -c` do tymczasowego obiektu; pliki `.o` i `.a` przechodzą
 bez zmian. Gdy linkowanie się nie uda, `linkFailed()` mapuje niezdefiniowane symbole na nagłówek, który
 je zadeklarował, i wypisuje linijkę `link` do dopisania.
 
@@ -676,7 +676,7 @@ je zadeklarował, i wypisuje linijkę `link` do dopisania.
 - **Cel:** `sys::getDefaultTargetTriple()`, CPU `generic`, `Reloc::PIC_`. Data layout jest ustawiany na
   module, zanim powstanie jakikolwiek IR (od niego zależy wyrównanie loadów i store'ów).
 - **Optymalizacja:** `PassBuilder::buildPerModuleDefaultPipeline(O2)`: środkowa część `-O2` z clanga.
-  `-O0` ją pomija (`finch ir plik.fn -O0` pokazuje surowe wyjście `Codegen`).
+  `-O0` ją pomija (`finch ir plik.fch -O0` pokazuje surowe wyjście `Codegen`).
 - **Emisja:** stary `PassManager` + `addPassesToEmitFile(ObjectFile)`.
 - **Linkowanie:** `$CC prog.o rt.o [obiekty użytkownika] -lm [biblioteki]`. Na Niksie wrapper cc zamienia
   ścieżki `-L` na `RPATH`, więc programy działają bez `LD_LIBRARY_PATH`.
@@ -717,11 +717,11 @@ wypisuje `internal compiler error (please report)` i kończy proces z kodem 2.
 
 | Plik | Zawartość |
 |---|---|
-| `boot/lexer.fn` | lekser (tokeny to `{kind, text, line, col, nl}`; rodzaje to słowa, a słowa kluczowe i operatory są swoim własnym rodzajem) |
-| `boot/ast.fn` | `Type` (`kind`, `elem` jako tablica 0/1 elementów, `name`, `module`), jeden ogólny `Node` na wszystko, `Program` |
-| `boot/parser.fn` | ta sama gramatyka i reguły nowych linii co parser C++, wspinanie się po priorytetach dla operatorów binarnych |
-| `boot/gen.fn` | sprawdzanie typów + generator **tekstowego LLVM IR**: zasięgi, miejsca, konwersje, kopie, helpery, wypisywanie, kontrole, metody tablic i tekstów |
-| `boot/main.fn` | ładowanie modułów i sterownik: zapisuje `.ll`, uruchamia `clang -O2 plik.ll runtime/finch_rt.c` |
+| `boot/lexer.fch` | lekser (tokeny to `{kind, text, line, col, nl}`; rodzaje to słowa, a słowa kluczowe i operatory są swoim własnym rodzajem) |
+| `boot/ast.fch` | `Type` (`kind`, `elem` jako tablica 0/1 elementów, `name`, `module`), jeden ogólny `Node` na wszystko, `Program` |
+| `boot/parser.fch` | ta sama gramatyka i reguły nowych linii co parser C++, wspinanie się po priorytetach dla operatorów binarnych |
+| `boot/gen.fch` | sprawdzanie typów + generator **tekstowego LLVM IR**: zasięgi, miejsca, konwersje, kopie, helpery, wypisywanie, kontrole, metody tablic i tekstów |
+| `boot/main.fch` | ładowanie modułów i sterownik: zapisuje `.ll`, uruchamia `clang -O2 plik.ll runtime/finch_rt.c` |
 
 Obsługuje rdzeń języka: `int float bool char str`, `[]T`, struktury (wartości domyślne, konstruktory po
 nazwie i po kolei), `ptr[T]`/`addr`/`new`/`free`/`null`, wszystkie instrukcje poza `defer`, moduły oraz
@@ -763,9 +763,9 @@ wynik z oczekiwanym. Kompilacja samego siebie zajmuje kompilatorowi samohostują
 
 ## 19. Testy
 
-- `tests/run.sh`: każdy `tests/run/*.fn` z `fn main` musi wypisać dokładnie swój `.out` (stdin z `.in`, jeśli
-  jest); pliki bez `main` to moduły albo pliki pomocnicze. Każdy `tests/fail/*.fn` musi się nie udać z tekstem
-  z linijki `// expect:`. Obecnie **58 passed, 0 failed**.
+- `tests/run.sh`: każdy `tests/run/*.fch` z `fn main` musi wypisać dokładnie swój `.out` (stdin z `.in`, jeśli
+  jest); pliki bez `main` to moduły albo pliki pomocnicze. Każdy `tests/fail/*.fch` musi się nie udać z tekstem
+  z linijki `// expect:`. Obecnie **59 passed, 0 failed**.
 - `MEMCHECK=1 tests/run.sh`: to samo plus valgrind na każdym programie (bez wycieków i złych dostępów).
 - `tests/boot.sh`: punkt stały samohostowania i przebieg na podzbiorze (§17).
 
@@ -797,7 +797,7 @@ wynik z oczekiwanym. Kompilacja samego siebie zajmuje kompilatorowi samohostują
 
 | Funkcja | Robi |
 |---|---|
-| `Loader::load` / `findModule` | czyta, leksuje i parsuje plik oraz rekurencyjnie jego moduły / szuka `nazwa.fn` |
+| `Loader::load` / `findModule` | czyta, leksuje i parsuje plik oraz rekurencyjnie jego moduły / szuka `nazwa.fch` |
 | `hostMachine`, `optimize`, `emitObject` | maszyna docelowa, potok O2, plik obiektowy |
 | `runtimeObject` | kompiluje runtime i trzyma go w cache |
 | `capture`, `libFlags`, `link` | uruchamia polecenie / pkg-config albo `-l` / linkowanie, z kompilacją plików z `link "x.c"` |
@@ -868,7 +868,7 @@ wynik z oczekiwanym. Kompilacja samego siebie zajmuje kompilatorowi samohostują
 
 **Funkcja wbudowana:** dodaj nazwę do `isBuiltin()`, obsłuż ją w `call()`, zaimplementuj (w IR albo jako
 funkcję runtime'u zadeklarowaną w tabeli `rt()`), dodaj przypadki w `tests/run/` i `tests/fail/`. Jeśli ma
-istnieć też w kompilatorze samohostującym, dodaj ją do `call()` i `runtimeDecls()` w `boot/gen.fn`.
+istnieć też w kompilatorze samohostującym, dodaj ją do `call()` i `runtimeDecls()` w `boot/gen.fch`.
 
 **Metoda tablicy albo tekstu:** dodaj gałąź w `arrayMethod()` albo w części `str` w `method()`; jeśli
 zmienia tablicę, dopisz jej nazwę do zbiorów `changing` w `method()` i `mutatesExpr()`, żeby pożyczanie

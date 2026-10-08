@@ -38,7 +38,7 @@ compiler works inside. For that, see the [guide for engineers](for-engineers.md)
 
 ## 1. What Finch is
 
-Finch is a **compiled** programming language. The `finch` tool translates your `.fn`
+Finch is a **compiled** programming language. The `finch` tool translates your `.fch`
 file into a real program (a native executable, like the ones made from C), using the
 **LLVM** compiler toolkit, the same backend that powers clang, Rust and Swift.
 
@@ -106,9 +106,9 @@ Finch's small runtime library, which is kept in `~/.cache/finch`. Set `CC` to us
 ## 3. The finch command
 
 ```
-finch run   <file.fn> [args...]    compile and run right away
-finch build <file.fn> [-o name]    compile into a program (default name: the file's name)
-finch ir    <file.fn>              print the LLVM IR (for the curious)
+finch run   <file.fch> [args...]    compile and run right away
+finch build <file.fch> [-o name]    compile into a program (default name: the file's name)
+finch ir    <file.fch>              print the LLVM IR (for the curious)
 finch version                      show the version
 
 options:
@@ -120,10 +120,10 @@ options:
 Examples:
 
 ```sh
-finch run hello.fn                 # prints the output
-finch run tool.fn input.txt -v     # arguments after the file go to the program
-finch build game.fn -o mygame      # creates ./mygame
-finch build game.fn -g -O0         # a build for the debugger
+finch run hello.fch                 # prints the output
+finch run tool.fch input.txt -v     # arguments after the file go to the program
+finch build game.fch -o mygame      # creates ./mygame
+finch build game.fch -g -O0         # a build for the debugger
 ```
 
 `finch run` passes on your program's exit code. If the program crashes, it says how
@@ -139,7 +139,7 @@ finch build game.fn -g -O0         # a build for the debugger
    several lines */
 
 import "math.h"          // C headers (optional), at the top
-import shapes            // Finch modules (optional): shapes.fn next to this file
+import shapes            // Finch modules (optional): shapes.fch next to this file
 link "m"                 // C libraries or C files to link (optional)
 
 struct Point {           // your own types
@@ -502,11 +502,11 @@ Using `.value`, `.field` or `[i]` on a `null` pointer **stops the program** with
 
 ## 16. Modules
 
-Split a program into files. `import shapes` loads `shapes.fn` from the same folder (or from a
+Split a program into files. `import shapes` loads `shapes.fch` from the same folder (or from a
 folder listed in the `FINCH_PATH` environment variable, separated by `:`).
 
 ```c
-// shapes.fn
+// shapes.fch
 struct Box {
     float w
     float h
@@ -518,7 +518,7 @@ fn area(Box b) -> float {
 ```
 
 ```c
-// main.fn
+// main.fch
 import shapes
 
 fn main() {
@@ -540,7 +540,7 @@ fn main() {
 ```c
 import "stdio.h"
 import "GLFW/glfw3.h"     // a path inside the system include folders
-import "mylib.h"          // a header next to your .fn file
+import "mylib.h"          // a header next to your .fch file
 ```
 
 Finch reads the header with **libclang** (clang's C parser) and makes these usable:
@@ -554,7 +554,7 @@ Finch reads the header with **libclang** (clang's C parser) and makes these usab
 
 ```c
 link "glfw"              // uses libglfw.so (pkg-config is asked first, if installed)
-link "helpers.c"         // compile and link your own C file (next to the .fn file)
+link "helpers.c"         // compile and link your own C file (next to the .fch file)
 link "prebuilt.a"        // or an object file / static library
 ```
 
@@ -617,7 +617,7 @@ Its parameters must be C types (numbers, pointers, C structs).
 ### Compile errors
 
 ```
-game.fn:12:9: error: 'score' must be int, but this is str
+game.fch:12:9: error: 'score' must be int, but this is str
    12 |     score = "high"
       |             ^
 ```
@@ -643,9 +643,9 @@ Instead of undefined behavior (as in C), Finch stops with a message and exit cod
 ## 19. Debugging
 
 ```sh
-finch build game.fn -g -O0 -o game
+finch build game.fch -g -O0 -o game
 gdb ./game
-(gdb) break game.fn:12
+(gdb) break game.fch:12
 (gdb) run
 (gdb) bt                # where are we, through which functions
 (gdb) info locals       # all variables
@@ -665,7 +665,7 @@ visible; without it the optimizer may remove some.
 | `… come from "x.h", but its library isn't linked` | Add `link "name"` at the top of the file. |
 | `the library 'x' wasn't found` | Not installed, or a wrong name. On Nix, add it to `shell.nix` and run inside `nix-shell`. |
 | `the C function 'f' can't be used from Finch yet` | It uses a union, bit fields or another unsupported type by value. Look for a variant that takes pointers. |
-| `can't find the module 'x'` | Put `x.fn` next to the importing file, or set `FINCH_PATH`. |
+| `can't find the module 'x'` | Put `x.fch` next to the importing file, or set `FINCH_PATH`. |
 | `couldn't build the Finch runtime` | No working C compiler. Install gcc or clang, or set `CC`. |
 | A library is not found when the program starts | It was linked from a folder the system doesn't search. Run inside the same `nix-shell`, or install it system-wide. |
 | `clang` inside `nix-shell` can't find `stdio.h` | You have an old `shell.nix`: `llvmPackages.clang` must be listed before `llvmPackages.libclang`. |
@@ -692,7 +692,7 @@ Finch/
 ```
 
 ```sh
-tests/run.sh                 # → 58 passed, 0 failed
+tests/run.sh                 # → 59 passed, 0 failed
 MEMCHECK=1 tests/run.sh      # the same under valgrind: no leaks, no bad memory access
 tests/boot.sh                # the self-hosting check (needs clang)
 ```

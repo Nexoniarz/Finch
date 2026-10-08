@@ -137,7 +137,7 @@ private:
         expect(Tok::Link);
         l.lib = expect(Tok::String, "a library name in quotes, like link \"glfw\"").text;
         auto ends = [&](const char *x) { size_t n = std::strlen(x); return l.lib.size() > n && l.lib.compare(l.lib.size() - n, n, x) == 0; };
-        if (ends(".c") || ends(".o") || ends(".a")) return l;  // your own C code, next to the .fn file
+        if (ends(".c") || ends(".o") || ends(".a")) return l;  // your own C code, next to the .fch file
         if (l.lib.rfind("lib", 0) == 0 || l.lib.find(".so") != std::string::npos || l.lib.find('/') != std::string::npos)
             fail(l.pos.line, l.pos.col, "write just the library's name: for libglfw.so that's  link \"glfw\"");
         return l;

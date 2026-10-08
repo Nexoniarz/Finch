@@ -92,11 +92,11 @@ fn main() {
 }
 ```
 
-3. Save it in the `Finch` folder as **`hello.fn`**. The `.fn` at the end tells everyone it is a Finch program.
+3. Save it in the `Finch` folder as **`hello.fch`**. The `.fch` at the end tells everyone it is a Finch program.
 4. In the Terminal, type:
 
 ```sh
-./build/finch run hello.fn
+./build/finch run hello.fch
 ```
 
 You will see:
@@ -652,14 +652,14 @@ fn main() {
 ```
 
 ```
-hello.fn:3:11: error: there is no variable named 'agee'
+hello.fch:3:11: error: there is no variable named 'agee'
     3 |     print(agee)
       |           ^
 ```
 
 How to read it:
 
-- `hello.fn` is the file,
+- `hello.fch` is the file,
 - `3` is the **line** number,
 - `11` is how far into the line (the **column**),
 - then the explanation, and the line itself with a `^` pointing at the problem.
@@ -816,7 +816,7 @@ fn main() {
 }
 ```
 
-`return` inside `main` ends the program. (A version with a random number is in `examples/guess.fn`.)
+`return` inside `main` ends the program. (A version with a random number is in `examples/guess.fch`.)
 </details>
 
 ### Project 7: Class average

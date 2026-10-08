@@ -48,7 +48,7 @@ Finch is a single-pass front end in front of LLVM: type checking and IR generati
 over the AST, with no intermediate representation of its own.
 
 ```
- main.fn ──► Loader::load() ── lex() ── parse() ──► Program  (+ each imported module, recursively)
+ main.fch ──► Loader::load() ── lex() ── parse() ──► Program  (+ each imported module, recursively)
                                                        │
                      all `import "x.h"` ──► importHeaders() (libclang) ──► CImports
                                                        │
@@ -100,7 +100,7 @@ Design decisions that shape the rest:
 | `src/abi.cpp` | 310 | System V x86-64 classification, C calls with structs by value, C-callable thunks |
 | `src/main.cpp` | 390 | Driver: CLI, loader, target machine, O2, object emission, runtime cache, linking, link-error advice, `run` |
 | `runtime/finch_rt.c` | 440 | The runtime library (§12) |
-| `boot/*.fn` | 3080 | The self-hosted compiler (§17) |
+| `boot/*.fch` | 3080 | The self-hosted compiler (§17) |
 
 ---
 
@@ -198,7 +198,7 @@ All nodes are in `src/ast.h`: small class hierarchies with an explicit `kind`, d
 | `Member` | `MemberExpr` | `obj`, `field` (`.x`, `.len`, `.ptr`, `.value`) |
 | `Index` | `IndexExpr` | `obj`, `index` |
 | `ArrayLit` | `ArrayLitExpr` | `elems` |
-| `Method` | `MethodExpr` | `obj`, `name`, `args`, `argNames`; also `module.fn(...)` |
+| `Method` | `MethodExpr` | `obj`, `name`, `args`, `argNames`; also `module.fch(...)` |
 
 | StmtKind | Node |
 |---|---|
@@ -236,7 +236,7 @@ Equality is structural; two `Struct`s are equal iff they share `info`.
 
 `Loader::load(path, module, from)` in `main.cpp` reads a file, appends it to `g_files` (positions carry
 the file index in `Pos::file`), lexes and parses it, then loads each `import name` that wasn't seen yet:
-`name.fn` next to the importing file, or in a `FINCH_PATH` folder. The result is a `std::vector<Program>`,
+`name.fch` next to the importing file, or in a `FINCH_PATH` folder. The result is a `std::vector<Program>`,
 main file first. Cycles are fine: a module is marked loaded before its own imports are followed.
 
 All files become **one LLVM module**. Each Finch module has a `ModuleScope` (functions, structs, the set
@@ -597,7 +597,7 @@ string building (`concat`, `from_int/uint/float/char/bool`, `sub`, `trim`, `uppe
 ### 13.1 Importing headers
 
 `importHeaders(imports, dirs)` parses each `import "x.h"` as its own translation unit from an in-memory
-`#include "x.h"`, with `-x c -std=gnu11`, `-I` for every `.fn` file's folder, and `-isystem` for each
+`#include "x.h"`, with `-x c -std=gnu11`, `-I` for every `.fch` file's folder, and `-isystem` for each
 directory the system C compiler searches (read from `$CC -E -v -x c /dev/null`, which is what makes it work
 on NixOS). `gnu11` because glibc hides `M_PI` and friends in strict ISO mode.
 
@@ -647,7 +647,7 @@ type and attributes, and rebuilds struct results the same way.
 struct parameters from registers or `byval` memory, calls the Finch function and lowers its result. Only
 C-compatible signatures are accepted.
 
-`tests/run/c_structs.fn` exercises `{float,float}`, `{float,float,float}`, `{u8×4}`, `{double,int}`,
+`tests/run/c_structs.fch` exercises `{float,float}`, `{float,float,float}`, `{u8×4}`, `{double,int}`,
 `{i64,i64}`, a 24-byte struct, a struct with a `char[8]`, nested structs, register exhaustion with 13
 struct arguments, and callbacks taking and returning structs, against a C library compiled with
 `link "abi.c"`. The results match the same calls made from C.
@@ -655,7 +655,7 @@ struct arguments, and callbacks taking and returning structs, against a C librar
 ### 13.4 Linking C code
 
 `link "name"` tries `pkg-config --libs name`, then `-lname`. `link "file.c"` compiles the file (relative
-to the `.fn` file) with `$CC -O2 -fPIC -c` into a temporary object; `.o` and `.a` files are passed
+to the `.fch` file) with `$CC -O2 -fPIC -c` into a temporary object; `.o` and `.a` files are passed
 through. When linking fails, `linkFailed()` maps undefined symbols back to the header that declared them
 and prints the `link` line to add.
 
@@ -666,7 +666,7 @@ and prints the `link` line to add.
 - **Target:** `sys::getDefaultTargetTriple()`, CPU `generic`, `Reloc::PIC_`. The data layout is set on the
   module before any IR is built (alignment of loads/stores depends on it).
 - **Optimization:** `PassBuilder::buildPerModuleDefaultPipeline(O2)`: clang's `-O2` middle end. `-O0`
-  skips it (`finch ir file.fn -O0` shows `Codegen`'s raw output).
+  skips it (`finch ir file.fch -O0` shows `Codegen`'s raw output).
 - **Emission:** legacy `PassManager` + `addPassesToEmitFile(ObjectFile)`.
 - **Linking:** `$CC prog.o rt.o [user objects] -lm [libs]`. On Nix the cc wrapper turns `-L` paths into
   `RPATH`, so programs run without `LD_LIBRARY_PATH`.
@@ -707,11 +707,11 @@ there's an obvious fix, how to fix it. There are no warnings. An LLVM verifier f
 
 | File | Contents |
 |---|---|
-| `boot/lexer.fn` | the lexer (tokens are `{kind, text, line, col, nl}`; kinds are words, keywords and operators are their own kind) |
-| `boot/ast.fn` | `Type` (`kind`, `elem` as a 0/1-element array, `name`, `module`), one generic `Node` for everything, `Program` |
-| `boot/parser.fn` | the same grammar and newline rules as the C++ parser, precedence climbing for binary operators |
-| `boot/gen.fn` | type checker + **textual LLVM IR** generator: scopes, places, coercions, copies, helpers, printing, runtime checks, array/str methods |
-| `boot/main.fn` | loader for modules and the driver: writes `.ll`, runs `clang -O2 file.ll runtime/finch_rt.c` |
+| `boot/lexer.fch` | the lexer (tokens are `{kind, text, line, col, nl}`; kinds are words, keywords and operators are their own kind) |
+| `boot/ast.fch` | `Type` (`kind`, `elem` as a 0/1-element array, `name`, `module`), one generic `Node` for everything, `Program` |
+| `boot/parser.fch` | the same grammar and newline rules as the C++ parser, precedence climbing for binary operators |
+| `boot/gen.fch` | type checker + **textual LLVM IR** generator: scopes, places, coercions, copies, helpers, printing, runtime checks, array/str methods |
+| `boot/main.fch` | loader for modules and the driver: writes `.ll`, runs `clang -O2 file.ll runtime/finch_rt.c` |
 
 It supports the core language: `int float bool char str`, `[]T`, structs (defaults, named/positional
 constructors), `ptr[T]`/`addr`/`new`/`free`/`null`, all statements except `defer`, modules, and the
@@ -753,9 +753,9 @@ with the expected one. It takes about 2.3 s for the self-hosted compiler to comp
 
 ## 19. Testing
 
-- `tests/run.sh`: every `tests/run/*.fn` with `fn main` must print exactly its `.out` (stdin from `.in`
-  if present); files without `main` are modules or helpers. Every `tests/fail/*.fn` must fail with the text
-  from its `// expect:` line. Currently **58 passed, 0 failed**.
+- `tests/run.sh`: every `tests/run/*.fch` with `fn main` must print exactly its `.out` (stdin from `.in`
+  if present); files without `main` are modules or helpers. Every `tests/fail/*.fch` must fail with the text
+  from its `// expect:` line. Currently **59 passed, 0 failed**.
 - `MEMCHECK=1 tests/run.sh`: the same, plus valgrind on every program (no leaks, no invalid access).
 - `tests/boot.sh`: the self-hosting fixpoint and the subset run (§17).
 
@@ -787,7 +787,7 @@ with the expected one. It takes about 2.3 s for the self-hosted compiler to comp
 
 | Function | Does |
 |---|---|
-| `Loader::load` / `findModule` | read, lex, parse a file and recursively its modules / locate `name.fn` |
+| `Loader::load` / `findModule` | read, lex, parse a file and recursively its modules / locate `name.fch` |
 | `hostMachine`, `optimize`, `emitObject` | target machine, O2 pipeline, object file |
 | `runtimeObject` | compile and cache the runtime |
 | `capture`, `libFlags`, `link` | run a command / pkg-config or `-l` / the link step, compiling `link "x.c"` files |
@@ -858,7 +858,7 @@ with the expected one. It takes about 2.3 s for the self-hosted compiler to comp
 
 **A built-in function:** add the name to `isBuiltin()`, handle it in `call()`, implement it (in IR, or as
 a runtime function declared in `rt()`'s table), add `tests/run/` and `tests/fail/` cases. If it should
-exist in the self-hosted compiler too, add it to `boot/gen.fn`'s `call()` and `runtimeDecls()`.
+exist in the self-hosted compiler too, add it to `boot/gen.fch`'s `call()` and `runtimeDecls()`.
 
 **An array or str method:** add a branch in `arrayMethod()` or the str part of `method()`; if it changes
 the array, add its name to the `changing` sets in `method()` and `mutatesExpr()`, so borrowing stays correct.

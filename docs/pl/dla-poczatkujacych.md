@@ -92,11 +92,11 @@ fn main() {
 }
 ```
 
-3. Zapisz plik w folderze `Finch` pod nazwą **`czesc.fn`**. Końcówka `.fn` mówi, że to program w Finchu.
+3. Zapisz plik w folderze `Finch` pod nazwą **`czesc.fch`**. Końcówka `.fch` mówi, że to program w Finchu.
 4. W Terminalu wpisz:
 
 ```sh
-./build/finch run czesc.fn
+./build/finch run czesc.fch
 ```
 
 Zobaczysz:
@@ -659,14 +659,14 @@ fn main() {
 ```
 
 ```
-czesc.fn:3:11: error: there is no variable named 'wiekk'
+czesc.fch:3:11: error: there is no variable named 'wiekk'
     3 |     print(wiekk)
       |           ^
 ```
 
 Jak to czytać:
 
-- `czesc.fn` to plik,
+- `czesc.fch` to plik,
 - `3` to numer **linijki**,
 - `11` to który znak w linijce (**kolumna**),
 - potem wyjaśnienie, a pod nim ta linijka ze strzałką `^` wskazującą problem.
@@ -823,7 +823,7 @@ fn main() {
 }
 ```
 
-`return` w `main` kończy program. (Wersja z losową liczbą jest w `examples/guess.fn`.)
+`return` w `main` kończy program. (Wersja z losową liczbą jest w `examples/guess.fch`.)
 </details>
 
 ### Projekt 7: Średnia ocen

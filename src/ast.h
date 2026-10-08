@@ -298,10 +298,10 @@ struct Import {
 
 struct Link {
     Pos pos;
-    std::string lib;  // "glfw" -> libglfw.so; "helpers.c" / ".o" / ".a" -> a file next to the .fn file
+    std::string lib;  // "glfw" -> libglfw.so; "helpers.c" / ".o" / ".a" -> a file next to the .fch file
 };
 
-// One .fn file.
+// One .fch file.
 struct Program {
     std::string module;  // "" for the main file, else the module's name
     std::string path;

@@ -40,7 +40,7 @@ fn main() {
   powodować niezdefiniowane zachowanie. Priorytety operatorów nie gryzą (`x & 1 == 0` znaczy to, co widać).
 - **Błędy mówią po ludzku:**
   ```
-  gra.fn:3:13: error: 'y' must be i32, but this is int (use i32(...) to convert)
+  gra.fch:3:13: error: 'y' must be i32, but this is int (use i32(...) to convert)
       3 |     i32 y = x
         |             ^
   ```
@@ -60,9 +60,9 @@ nix-shell                           # albo zainstaluj samodzielnie LLVM 21 + lib
 cmake -S . -B build -G Ninja
 ninja -C build
 
-./build/finch run examples/hello.fn
-./build/finch build examples/tour.fn -o tour && ./tour
-tests/run.sh                        # 58 passed, 0 failed
+./build/finch run examples/hello.fch
+./build/finch build examples/tour.fch -o tour && ./tour
+tests/run.sh                        # 59 passed, 0 failed
 tests/boot.sh                       # kompilator napisany w Finchu buduje sam siebie
 ```
 
@@ -97,16 +97,16 @@ Wybierz przewodnik dla siebie:
 
 | Plik | Pokazuje |
 |---|---|
-| [`examples/hello.fn`](examples/hello.fn) | najmniejszy program |
-| [`examples/tour.fn`](examples/tour.fn) | zmienne, funkcje, warunki, pętle |
-| [`examples/guess.fn`](examples/guess.fn) | gra w zgadywanie: wejście, pętle, `rand` z C |
-| [`examples/todo.fn`](examples/todo.fn) | struktury, tablice, teksty i pliki |
-| [`examples/structs.fn`](examples/structs.fn) | struktury, tablice struktur, lista wiązana z `new`/`free` |
-| [`examples/types.fn`](examples/types.fn) | liczby z rozmiarem i wskaźniki |
-| [`examples/c_import.fn`](examples/c_import.fn) | `printf`, `math.h`, `malloc`/`free`, `stderr` |
-| [`examples/window.fn`](examples/window.fn) | okno GLFW + OpenGL |
-| [`examples/raylib.fn`](examples/raylib.fn) | raylib ze strukturami C przez wartość |
-| [`examples/llvm.fn`](examples/llvm.fn) | Finch budujący LLVM IR przez API LLVM-C |
+| [`examples/hello.fch`](examples/hello.fch) | najmniejszy program |
+| [`examples/tour.fch`](examples/tour.fch) | zmienne, funkcje, warunki, pętle |
+| [`examples/guess.fch`](examples/guess.fch) | gra w zgadywanie: wejście, pętle, `rand` z C |
+| [`examples/todo.fch`](examples/todo.fch) | struktury, tablice, teksty i pliki |
+| [`examples/structs.fch`](examples/structs.fch) | struktury, tablice struktur, lista wiązana z `new`/`free` |
+| [`examples/types.fch`](examples/types.fch) | liczby z rozmiarem i wskaźniki |
+| [`examples/c_import.fch`](examples/c_import.fch) | `printf`, `math.h`, `malloc`/`free`, `stderr` |
+| [`examples/window.fch`](examples/window.fch) | okno GLFW + OpenGL |
+| [`examples/raylib.fch`](examples/raylib.fch) | raylib ze strukturami C przez wartość |
+| [`examples/llvm.fch`](examples/llvm.fch) | Finch budujący LLVM IR przez API LLVM-C |
 | [`boot/`](boot/) | kompilator Fincha napisany w Finchu |
 
 ## Plan rozwoju

@@ -7,10 +7,10 @@ cd "$(dirname "$0")/.."
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-build/finch build boot/main.fn -o "$tmp/boot1" || exit 1
-"$tmp/boot1" build boot/main.fn -o "$tmp/boot2" || exit 1
-"$tmp/boot1" ir boot/main.fn > "$tmp/stage2.ll"
-"$tmp/boot2" ir boot/main.fn > "$tmp/stage3.ll"
+build/finch build boot/main.fch -o "$tmp/boot1" || exit 1
+"$tmp/boot1" build boot/main.fch -o "$tmp/boot2" || exit 1
+"$tmp/boot1" ir boot/main.fch > "$tmp/stage2.ll"
+"$tmp/boot2" ir boot/main.fch > "$tmp/stage3.ll"
 if cmp -s "$tmp/stage2.ll" "$tmp/stage3.ll"; then
     echo "bootstrap: stage 2 and stage 3 are identical ($(wc -l < "$tmp/stage3.ll") lines of IR)"
 else
@@ -19,17 +19,17 @@ else
 fi
 
 pass=0; failed=0; skipped=0
-for f in tests/run/*.fn; do
+for f in tests/run/*.fch; do
     grep -q "^fn main" "$f" || continue
     # the bootstrap compiler doesn't do C imports, sized numbers or defer
     # (checked in the test and in the modules it imports)
     files="$f"
-    for m in $(sed -n 's/^import \([a-z_]*\)$/\1/p' "$f"); do files="$files tests/run/$m.fn"; done
+    for m in $(sed -n 's/^import \([a-z_]*\)$/\1/p' "$f"); do files="$files tests/run/$m.fch"; done
     if grep -qE '^import "|^link |\b(u8|u16|u32|u64|i8|i16|i32|f32|f64)\b|defer |0x' $files; then
         skipped=$((skipped + 1))
         continue
     fi
-    input="${f%.fn}.in"
+    input="${f%.fch}.in"
     [ -f "$input" ] || input=/dev/null
     if ! "$tmp/boot2" build "$f" -o "$tmp/prog" > "$tmp/err" 2>&1; then
         failed=$((failed + 1))
@@ -38,12 +38,12 @@ for f in tests/run/*.fn; do
         continue
     fi
     got=$("$tmp/prog" < "$input" 2>&1)
-    if [ "$got" == "$(cat "${f%.fn}.out")" ]; then
+    if [ "$got" == "$(cat "${f%.fch}.out")" ]; then
         pass=$((pass + 1))
     else
         failed=$((failed + 1))
         echo "FAIL (output) $f"
-        diff <(echo "$got") "${f%.fn}.out" | head -10
+        diff <(echo "$got") "${f%.fch}.out" | head -10
     fi
 done
 echo "self-hosted compiler: $pass passed, $failed failed, $skipped skipped (features it doesn't have)"

@@ -1,7 +1,7 @@
 // finch-boot: the Finch compiler written in Finch.
 //
-//   finch-boot build <file.fn> [-o name]    compile a program
-//   finch-boot ir    <file.fn>              print the LLVM IR
+//   finch-boot build <file.fch> [-o name]    compile a program
+//   finch-boot ir    <file.fch>              print the LLVM IR
 //
 // It reads the program and the modules it imports, checks it, writes LLVM IR as text
 // and lets clang turn that into a program, linked with Finch's C runtime.
@@ -42,6 +42,11 @@ struct Loader {
 fn load(ptr[Loader] l, str path, str module) {
     if !file_exists(path) {
         if module.len > 0 {
+            old := path.sub(0, path.len - 4) + ".fn"
+            if file_exists(old) {
+                print("error: found " + old + ", but Finch files now end in .fch: rename it to " + path)
+                exit(1)
+            }
             print("error: can't find the module '" + module + "' (looked for " + path + ")")
         } else {
             print("error: can't open '" + path + "'")
@@ -59,15 +64,15 @@ fn load(ptr[Loader] l, str path, str module) {
     for name in imports {
         if !l.loaded.contains(name) {
             l.loaded.push(name)
-            load(l, dirOf(path) + "/" + name + ".fn", name)
+            load(l, dirOf(path) + "/" + name + ".fch", name)
         }
     }
 }
 
 fn usage() {
     print("finch-boot - the Finch compiler written in Finch")
-    print("usage: finch-boot build <file.fn> [-o name]")
-    print("       finch-boot ir <file.fn>")
+    print("usage: finch-boot build <file.fch> [-o name]")
+    print("       finch-boot ir <file.fch>")
     exit(1)
 }
 

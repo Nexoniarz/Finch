@@ -34,9 +34,9 @@ static void usage() {
     std::fprintf(stderr,
                  "Finch " FINCH_VERSION " - small, quick, sharp.\n\n"
                  "usage:\n"
-                 "  finch run   <file.fn> [args...]    compile and run\n"
-                 "  finch build <file.fn> [-o name]    compile to a program\n"
-                 "  finch ir    <file.fn>              show the generated LLVM IR\n"
+                 "  finch run   <file.fch> [args...]    compile and run\n"
+                 "  finch build <file.fch> [-o name]    compile to a program\n"
+                 "  finch ir    <file.fch>              show the generated LLVM IR\n"
                  "  finch version                      show the version\n"
                  "\n"
                  "  -l <lib>   link a C library, same as  link \"lib\"  in the file\n"
@@ -68,7 +68,12 @@ struct Loader {
     void load(const std::string &path, const std::string &module, Pos from) {
         std::string text;
         if (!readFile(path, text)) {
-            if (from.line) failAt(from.file, from.line, from.col, "can't find the module '" + module + "' (looked for " + path + ")");
+            if (from.line) {
+                std::string old = path.substr(0, path.size() - 4) + ".fn";
+                if (sys::fs::exists(old))
+                    failAt(from.file, from.line, from.col, "found " + old + ", but Finch files now end in .fch: rename it to " + path);
+                failAt(from.file, from.line, from.col, "can't find the module '" + module + "' (looked for " + path + ")");
+            }
             std::fprintf(stderr, "error: can't open '%s'\n", path.c_str());
             std::exit(1);
         }
@@ -91,12 +96,12 @@ struct Loader {
 
     // next to the importing file, then in $FINCH_PATH folders
     static std::string findModule(const std::string &dir, const std::string &name) {
-        std::string here = dir + "/" + name + ".fn";
+        std::string here = dir + "/" + name + ".fch";
         if (sys::fs::exists(here)) return here;
         if (const char *fp = std::getenv("FINCH_PATH")) {
             std::stringstream ss(fp);
             for (std::string d; std::getline(ss, d, ':');)
-                if (!d.empty() && sys::fs::exists(d + "/" + name + ".fn")) return d + "/" + name + ".fn";
+                if (!d.empty() && sys::fs::exists(d + "/" + name + ".fch")) return d + "/" + name + ".fch";
         }
         return here;
     }

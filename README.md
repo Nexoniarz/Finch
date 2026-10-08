@@ -40,7 +40,7 @@ fn main() {
   Operator precedence that does not bite (`x & 1 == 0` means what it says).
 - **Errors that talk like a person:**
   ```
-  game.fn:3:13: error: 'y' must be i32, but this is int (use i32(...) to convert)
+  game.fch:3:13: error: 'y' must be i32, but this is int (use i32(...) to convert)
       3 |     i32 y = x
         |             ^
   ```
@@ -60,9 +60,9 @@ nix-shell                           # or install LLVM 21 + libclang + cmake + ni
 cmake -S . -B build -G Ninja
 ninja -C build
 
-./build/finch run examples/hello.fn
-./build/finch build examples/tour.fn -o tour && ./tour
-tests/run.sh                        # 58 passed, 0 failed
+./build/finch run examples/hello.fch
+./build/finch build examples/tour.fch -o tour && ./tour
+tests/run.sh                        # 59 passed, 0 failed
 tests/boot.sh                       # the compiler written in Finch builds itself
 ```
 
@@ -97,16 +97,16 @@ Pick the guide that fits you:
 
 | File | Shows |
 |---|---|
-| [`examples/hello.fn`](examples/hello.fn) | the smallest program |
-| [`examples/tour.fn`](examples/tour.fn) | variables, functions, conditions, loops |
-| [`examples/guess.fn`](examples/guess.fn) | a guessing game: input, loops, C's `rand` |
-| [`examples/todo.fn`](examples/todo.fn) | structs, arrays, strings and files |
-| [`examples/structs.fn`](examples/structs.fn) | structs, arrays of structs, a linked list with `new`/`free` |
-| [`examples/types.fn`](examples/types.fn) | sized numbers and pointers |
-| [`examples/c_import.fn`](examples/c_import.fn) | `printf`, `math.h`, `malloc`/`free`, `stderr` |
-| [`examples/window.fn`](examples/window.fn) | a GLFW + OpenGL window |
-| [`examples/raylib.fn`](examples/raylib.fn) | raylib with C structs by value |
-| [`examples/llvm.fn`](examples/llvm.fn) | Finch building LLVM IR through the LLVM-C API |
+| [`examples/hello.fch`](examples/hello.fch) | the smallest program |
+| [`examples/tour.fch`](examples/tour.fch) | variables, functions, conditions, loops |
+| [`examples/guess.fch`](examples/guess.fch) | a guessing game: input, loops, C's `rand` |
+| [`examples/todo.fch`](examples/todo.fch) | structs, arrays, strings and files |
+| [`examples/structs.fch`](examples/structs.fch) | structs, arrays of structs, a linked list with `new`/`free` |
+| [`examples/types.fch`](examples/types.fch) | sized numbers and pointers |
+| [`examples/c_import.fch`](examples/c_import.fch) | `printf`, `math.h`, `malloc`/`free`, `stderr` |
+| [`examples/window.fch`](examples/window.fch) | a GLFW + OpenGL window |
+| [`examples/raylib.fch`](examples/raylib.fch) | raylib with C structs by value |
+| [`examples/llvm.fch`](examples/llvm.fch) | Finch building LLVM IR through the LLVM-C API |
 | [`boot/`](boot/) | the Finch compiler, written in Finch |
 
 ## Roadmap

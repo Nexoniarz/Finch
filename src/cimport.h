@@ -52,5 +52,5 @@ struct CImports {
     std::map<std::string, CStruct> structs;
 };
 
-// `dirs`: folders searched first for "local.h" headers (the .fn files' folders).
+// `dirs`: folders searched first for "local.h" headers (the .fch files' folders).
 CImports importHeaders(const std::vector<Import> &imports, const std::vector<std::string> &dirs);
