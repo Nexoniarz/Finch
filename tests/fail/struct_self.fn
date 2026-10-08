@@ -1,0 +1,5 @@
+// expect: contains itself; use ptr[A] or []A
+struct A {
+    A inner
+}
+fn main() {}

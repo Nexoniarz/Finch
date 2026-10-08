@@ -1,0 +1,98 @@
+struct Node {
+    str name
+    ptr[Node] next
+    []str tags
+}
+
+fn build(int n) -> []str {
+    []str out
+    out.resize(n)
+    return out
+}
+
+fn firstLong([]str words) -> str {
+    for w in words {
+        tmp := w + "!"
+        if w.len > 3 {
+            return tmp
+        }
+    }
+    return "none"
+}
+
+fn loops() -> int {
+    count := 0
+    for i in 0..10 {
+        s := "item " + str(i)
+        if i == 2 {
+            continue
+        }
+        if i == 6 {
+            break
+        }
+        count += s.len
+    }
+    while true {
+        t := "x" + "y"
+        if t.len == 2 {
+            break
+        }
+    }
+    return count
+}
+
+fn deferred() -> str {
+    log := "start"
+    defer print("deferred ran, log was:", log)
+    log = log + " middle"
+    names := ["a", "b"]
+    defer print("names:", names)
+    return log + " end"
+}
+
+fn main([]str args) {
+    print(args.len > 0)
+    print(firstLong(["hi", "hello", "hey"]))
+    print(firstLong(["a"]))
+    print(loops())
+    print(deferred())
+
+    s := "ab"
+    s = s + s
+    s = s
+    print(s)
+
+    list := ["one", "two", "three"]
+    for w in list {
+        if w == "two" {
+            list.push("four")
+        }
+    }
+    print(list)
+    last := list.pop()
+    print(last, list)
+
+    head := new(Node(name: "first", tags: ["t1"]))
+    head.next = new(Node(name: "second"))
+    print(head.name, head.next.name, head.tags)
+    n := head
+    while n != null {
+        print("node", n.name)
+        n = n.next
+    }
+    free(head.next)
+    free(head)
+
+    []str words
+    for i in 0..3 {
+        words.push("w" + str(i))
+    }
+    words.clear()
+    words.resize(2)
+    print(words, words.len)
+    print([1, 2, 3].slice(1, 3), "abc".bytes())
+    x := ["keep"]
+    y := x
+    x[0] = "changed"
+    print(x, y)
+}

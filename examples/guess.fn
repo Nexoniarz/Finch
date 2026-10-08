@@ -1,0 +1,27 @@
+// Guess the number: input, loops and conversions.
+import "stdlib.h"
+import "time.h"
+
+fn main() {
+    srand(u32(time(null)))
+    secret := rand() % 100 + 1
+    tries := 0
+    print("I'm thinking of a number from 1 to 100.")
+    while true {
+        answer := input("Your guess: ")
+        if answer.len == 0 {
+            print("Bye!")
+            return
+        }
+        guess := int(answer)
+        tries += 1
+        if guess < secret {
+            print("Higher!")
+        } else if guess > secret {
+            print("Lower!")
+        } else {
+            print("Yes! It was", secret, "- you needed", tries, "tries.")
+            return
+        }
+    }
+}

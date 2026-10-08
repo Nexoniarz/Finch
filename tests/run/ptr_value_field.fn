@@ -1,0 +1,23 @@
+struct Node {
+    int value
+    ptr[Node] next
+}
+
+struct Box {
+    int size
+}
+
+fn main() {
+    last := new(Node(value: 2, next: null))
+    first := Node(value: 1, next: last)
+    p := addr(first)
+    print(p.value, p.next.value)
+    p.value = 10
+    print(first.value)
+    b := Box(3)
+    q := addr(b)
+    print(q.value, q.size)
+    q.value = Box(7)
+    print(b)
+    free(last)
+}

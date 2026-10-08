@@ -1,0 +1,34 @@
+import "abi.h"
+link "abi.c"
+
+fn pairTimes(Pair p, int k) -> Pair {
+    return Pair(a: p.a * k, b: p.b + k)
+}
+
+fn flip(Vec2 v) -> Vec2 {
+    return Vec2(x: v.y, y: v.x * 10)
+}
+
+fn main() {
+    print(vec2_add(Vec2(1.5, 2), Vec2(x: 0.5, y: 3)))
+    print(vec3_scale(Vec3(1, 2, 3), 2))
+    print(color_invert(Color(r: 10, g: 20, b: 30, a: 255)))
+    print(mixed_bump(Mixed(d: 1.25, i: 41)))
+    print(pair_swap(Pair(1, 2)))
+    big := big_sum(Big(1, 2, 3), Big(10, 20, 30))
+    print(big, big_total(big))
+    Named n
+    n.name[0] = 'h'
+    n.name[1] = 'i'
+    n.count = 5
+    print(named_len(n), n.name.len)
+    s := sprite_move(Sprite(pos: Vec2(1, 1), color: Color(1, 2, 3, 4)), 2.5)
+    print(s)
+    v := Vec2(1, 0)
+    print(many(v, v, v, v, v, v, v, v, Vec2(2, 3), Pair(1, 0), Pair(0, 2), Pair(3, 0), Pair(0, 4)))
+    print(apply_pair(addr(pairTimes), Pair(2, 3), 5))
+    print(apply_vec(addr(flip), Vec2(1, 2)))
+    second := Item(value: 2, next: null)
+    first := Item(value: 1, next: addr(second))
+    print(item_sum(addr(first)))
+}

@@ -1,0 +1,8 @@
+// expect: P has 2 fields, but got 1 values
+struct P {
+    int x
+    int y
+}
+fn main() {
+    p := P(1)
+}

@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <climits>
 #include <cstdlib>
+#include <cstring>
 #include <unordered_map>
 
 bool typeFromName(const std::string &name, Type &out) {
@@ -29,28 +30,32 @@ bool isTypeName(const std::string &name) {
 
 class Parser {
 public:
-    explicit Parser(const std::vector<Token> &t) : toks(t) {}
+    Parser(const std::vector<Token> &t, int f) : toks(t), file(f) {}
 
     Program program() {
         Program p;
         while (!at(Tok::End)) {
-            if (at(Tok::Import)) p.imports.push_back(import());
-            else if (at(Tok::Link)) p.links.push_back(link());
-            else p.fns.push_back(function());
+            switch (cur().kind) {
+            case Tok::Import: p.imports.push_back(import()); break;
+            case Tok::Link: p.links.push_back(link()); break;
+            case Tok::Struct: p.structs.push_back(structDecl()); break;
+            default: p.fns.push_back(function()); break;
+            }
         }
         return p;
     }
 
 private:
     const std::vector<Token> &toks;
+    int file;
     size_t i = 0;
-    int parenDepth = 0;  // inside ( ) newlines don't end anything
+    int parenDepth = 0;  // inside ( ) and [ ] newlines don't end anything
 
     const Token &cur() const { return toks[i]; }
     const Token &peekTok(size_t off = 1) const { return toks[std::min(i + off, toks.size() - 1)]; }
     const Token &next() { return toks[i++]; }
     bool at(Tok k) const { return cur().kind == k; }
-    Pos pos() const { return {cur().line, cur().col}; }
+    Pos pos() const { return {cur().line, cur().col, file}; }
 
     std::string describe(const Token &t) const {
         return t.kind == Tok::Ident ? "'" + t.text + "'" : tokName(t.kind);
@@ -71,27 +76,44 @@ private:
         fail(cur().line, cur().col, "unexpected " + describe(cur()) + " " + ctx);
     }
 
-    // A token can continue an expression only if it is on the same line (or we're inside parens).
+    // A token can continue an expression only if it is on the same line (or we're inside brackets).
     bool sameLine() const { return parenDepth > 0 || !cur().newlineBefore; }
 
-    // int, u8, ptr, ptr[int], ptr[ptr[u8]] ...
+    // int, u8, ptr, ptr[int], []str, Point, math.Vec ...
     Type type() {
-        if (!at(Tok::Ident) || !isTypeName(cur().text))
-            unexpected("(expected a type like int, float, u8, str or ptr[int])");
+        if (accept(Tok::LBracket)) {
+            expect(Tok::RBracket, "']' (an array type looks like []int)");
+            return Type::arrayOf(type());
+        }
+        if (!at(Tok::Ident)) unexpected("(expected a type like int, str, []int, ptr[int] or a struct name)");
+        std::string name = next().text;
         Type t;
-        typeFromName(next().text, t);
-        if (t.kind == Type::Ptr && accept(Tok::LBracket)) {
-            t = Type::ptrTo(type());
-            expect(Tok::RBracket);
+        if (typeFromName(name, t)) {
+            if (t.kind == Type::Ptr && accept(Tok::LBracket)) {
+                t = Type::ptrTo(type());
+                expect(Tok::RBracket);
+            }
+            return t;
+        }
+        t = Type(Type::Named);
+        t.name = name;
+        if (at(Tok::Dot) && peekTok().kind == Tok::Ident) {  // module.Struct
+            next();
+            t.module = name;
+            t.name = next().text;
         }
         return t;
     }
 
-    // Does a declaration like `int x` or `ptr[int] p` start here?
+    // Does a declaration like `int x`, `ptr[int] p`, `[]int a`, `Point p` or `math.Vec v` start here?
     bool atDeclaration() const {
-        if (!at(Tok::Ident) || !isTypeName(cur().text)) return false;
+        if (at(Tok::LBracket)) return peekTok().kind == Tok::RBracket;
+        if (!at(Tok::Ident)) return false;
         Tok n = peekTok().kind;
-        return n == Tok::Ident || (cur().text == "ptr" && n == Tok::LBracket);
+        if (n == Tok::Ident) return !peekTok().newlineBefore;
+        if (cur().text == "ptr" && n == Tok::LBracket) return true;
+        return n == Tok::Dot && peekTok(2).kind == Tok::Ident && peekTok(3).kind == Tok::Ident &&
+               !peekTok(3).newlineBefore;
     }
 
     // ---------- top level ----------
@@ -100,9 +122,12 @@ private:
         Import im;
         im.pos = pos();
         expect(Tok::Import);
-        if (at(Tok::Ident))
-            fail(im.pos.line, im.pos.col, "Finch modules are not ready yet; for C headers write import \"stdio.h\"");
-        im.path = expect(Tok::String, "a header name in quotes, like \"stdio.h\"").text;
+        if (at(Tok::Ident)) {
+            im.isC = false;
+            im.path = next().text;
+        } else {
+            im.path = expect(Tok::String, "a module name (import math) or a C header in quotes (import \"stdio.h\")").text;
+        }
         return im;
     }
 
@@ -111,9 +136,36 @@ private:
         l.pos = pos();
         expect(Tok::Link);
         l.lib = expect(Tok::String, "a library name in quotes, like link \"glfw\"").text;
+        auto ends = [&](const char *x) { size_t n = std::strlen(x); return l.lib.size() > n && l.lib.compare(l.lib.size() - n, n, x) == 0; };
+        if (ends(".c") || ends(".o") || ends(".a")) return l;  // your own C code, next to the .fn file
         if (l.lib.rfind("lib", 0) == 0 || l.lib.find(".so") != std::string::npos || l.lib.find('/') != std::string::npos)
             fail(l.pos.line, l.pos.col, "write just the library's name: for libglfw.so that's  link \"glfw\"");
         return l;
+    }
+
+    StructDecl structDecl() {
+        StructDecl s;
+        s.pos = pos();
+        expect(Tok::Struct);
+        s.name = expect(Tok::Ident, "a struct name").text;
+        if (isTypeName(s.name)) fail(s.pos.line, s.pos.col, "'" + s.name + "' is a built-in type name, pick another");
+        Pos open = pos();
+        expect(Tok::LBrace);
+        while (!at(Tok::RBrace)) {
+            if (at(Tok::End)) fail(open.line, open.col, "this '{' is never closed (missing '}')");
+            Field f;
+            f.pos = pos();
+            if (!atDeclaration()) unexpected("(a field looks like: int x  or  str name = \"default\")");
+            f.type = type();
+            f.name = expect(Tok::Ident, "a field name").text;
+            for (const Field &other : s.fields)
+                if (other.name == f.name) fail(f.pos.line, f.pos.col, "the field '" + f.name + "' is listed twice");
+            if (accept(Tok::Assign)) f.init = expr();
+            s.fields.push_back(std::move(f));
+            endOfStatement();
+        }
+        next();
+        return s;
     }
 
     FnDecl function() {
@@ -121,7 +173,7 @@ private:
         fn.pos = pos();
         if (at(Tok::Ident) && isTypeName(cur().text))
             fail(fn.pos.line, fn.pos.col, "functions start with 'fn', like: fn add(int a, int b) -> int { ... }");
-        expect(Tok::Fn, "'fn' (every function starts with fn)");
+        expect(Tok::Fn, "'fn', 'struct', 'import' or 'link' (every function starts with fn)");
 
         fn.name = expect(Tok::Ident, "a function name").text;
         expect(Tok::LParen);
@@ -177,12 +229,20 @@ private:
         }
         case Tok::For: {
             next();
-            auto s = std::make_unique<ForStmt>(p);
-            s->var = expect(Tok::Ident, "a loop variable name").text;
+            std::string var = expect(Tok::Ident, "a loop variable name").text;
             expect(Tok::In);
-            s->from = expr();
-            expect(Tok::DotDot, "'..' (like 'for i in 0..10')");
-            s->to = expr();
+            ExprPtr first = expr();
+            if (accept(Tok::DotDot)) {  // for i in 0..10
+                auto s = std::make_unique<ForStmt>(p);
+                s->var = var;
+                s->from = std::move(first);
+                s->to = expr();
+                s->body = block();
+                return s;
+            }
+            auto s = std::make_unique<ForEachStmt>(p);  // for x in list
+            s->var = var;
+            s->list = std::move(first);
             s->body = block();
             return s;
         }
@@ -194,19 +254,25 @@ private:
         }
         case Tok::Break: next(); return std::make_unique<BreakStmt>(p);
         case Tok::Continue: next(); return std::make_unique<ContinueStmt>(p);
+        case Tok::Defer: {
+            next();
+            if (at(Tok::Defer)) fail(p.line, p.col, "defer inside defer is not allowed");
+            return std::make_unique<DeferStmt>(p, statement());
+        }
         case Tok::LBrace: return block();
         case Tok::Fn: fail(p.line, p.col, "functions can't be inside other functions (move it out)");
+        case Tok::Struct: fail(p.line, p.col, "structs go outside functions, at the top level of the file");
         case Tok::Import:
         case Tok::Link: fail(p.line, p.col, "import and link go at the top of the file, outside functions");
         default: break;
         }
 
-        // int x = 5
+        // int x = 5, Point p, []int a
         if (atDeclaration()) {
             auto s = std::make_unique<VarDeclStmt>(p);
             s->hasType = true;
             s->type = type();
-            s->name = next().text;
+            s->name = expect(Tok::Ident, "a variable name").text;
             if (accept(Tok::Assign)) s->init = expr();
             return s;
         }
@@ -223,7 +289,7 @@ private:
 
         ExprPtr e = expr();
 
-        // x = 5, p.value += 1, ...
+        // x = 5, p.value += 1, a[i] = 2, ...
         char op = 0;
         switch (cur().kind) {
         case Tok::Assign: op = '='; break;
@@ -237,8 +303,8 @@ private:
         default: break;
         }
         if (op && sameLine()) {
-            if (e->kind != ExprKind::Var && e->kind != ExprKind::Member)
-                fail(p.line, p.col, "only a variable or p.value can be assigned to");
+            if (e->kind != ExprKind::Var && e->kind != ExprKind::Member && e->kind != ExprKind::Index)
+                fail(p.line, p.col, "only a variable, a field, an element or p.value can be assigned to");
             auto s = std::make_unique<AssignStmt>(p);
             s->target = std::move(e);
             s->op = op;
@@ -247,7 +313,8 @@ private:
             return s;
         }
 
-        if (e->kind != ExprKind::Call) fail(p.line, p.col, "this value is computed but never used");
+        if (e->kind != ExprKind::Call && e->kind != ExprKind::Method)
+            fail(p.line, p.col, "this value is computed but never used");
         return std::make_unique<ExprStmt>(p, std::move(e));
     }
 
@@ -355,29 +422,51 @@ private:
         return postfix();
     }
 
-    // p.value
+    // p.value, a.len, a[i], a.push(x), math.sqrt(2)
     ExprPtr postfix() {
         ExprPtr e = primary();
-        while (sameLine() && at(Tok::Dot)) {
+        while (sameLine()) {
             Pos p = pos();
-            next();
-            e = std::make_unique<MemberExpr>(p, std::move(e), expect(Tok::Ident, "a name after '.'").text);
+            if (accept(Tok::Dot)) {
+                std::string name = expect(Tok::Ident, "a name after '.'").text;
+                if (at(Tok::LParen) && !cur().newlineBefore) {
+                    auto m = std::make_unique<MethodExpr>(p, std::move(e), name);
+                    args(m->args, m->argNames);
+                    e = std::move(m);
+                } else {
+                    e = std::make_unique<MemberExpr>(p, std::move(e), name);
+                }
+            } else if (at(Tok::LBracket)) {
+                next();
+                parenDepth++;
+                ExprPtr index = expr();
+                parenDepth--;
+                expect(Tok::RBracket);
+                e = std::make_unique<IndexExpr>(p, std::move(e), std::move(index));
+            } else {
+                return e;
+            }
         }
         return e;
     }
 
-    // name(arg, arg, ...) -- we are at the '('
-    ExprPtr callArgs(Pos p, const std::string &name) {
-        auto call = std::make_unique<CallExpr>(p, name);
+    // ( arg, name: arg, ... ) -- we are at the '('
+    void args(std::vector<ExprPtr> &out, std::vector<std::string> &names) {
         expect(Tok::LParen);
         parenDepth++;
         if (!at(Tok::RParen)) {
-            do call->args.push_back(expr());
-            while (accept(Tok::Comma));
+            do {
+                std::string name;
+                if (at(Tok::Ident) && peekTok().kind == Tok::Colon) {
+                    name = next().text;
+                    next();
+                }
+                names.push_back(name);
+                out.push_back(expr());
+            } while (accept(Tok::Comma));
         }
         parenDepth--;
         expect(Tok::RParen);
-        return call;
     }
 
     ExprPtr primary() {
@@ -406,9 +495,25 @@ private:
             expect(Tok::RParen);
             return e;
         }
+        case Tok::LBracket: {  // [1, 2, 3]
+            next();
+            auto a = std::make_unique<ArrayLitExpr>(p);
+            parenDepth++;
+            while (!at(Tok::RBracket)) {
+                a->elems.push_back(expr());
+                if (!accept(Tok::Comma)) break;  // a trailing comma is fine
+            }
+            parenDepth--;
+            expect(Tok::RBracket);
+            return a;
+        }
         case Tok::Ident: {
             next();
-            if (at(Tok::LParen) && !cur().newlineBefore) return callArgs(p, t.text);
+            if (at(Tok::LParen) && !cur().newlineBefore) {
+                auto call = std::make_unique<CallExpr>(p, t.text);
+                args(call->args, call->argNames);
+                return call;
+            }
             if (isTypeName(t.text))
                 fail(p.line, p.col, "a type name alone is not a value (did you mean " + t.text + "(...)?)");
             return std::make_unique<VarExpr>(p, t.text);
@@ -420,6 +525,6 @@ private:
 
 }  // namespace
 
-Program parse(const std::vector<Token> &tokens) {
-    return Parser(tokens).program();
+Program parse(const std::vector<Token> &tokens, int file) {
+    return Parser(tokens, file).program();
 }

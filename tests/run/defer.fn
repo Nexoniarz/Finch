@@ -1,0 +1,20 @@
+fn work(int n) -> int {
+    defer print("cleanup", n)
+    if n > 1 {
+        return n * 10
+    }
+    defer print("only when small")
+    return n
+}
+
+fn main() {
+    print(work(1))
+    print(work(2))
+    for i in 0..3 {
+        defer print("end of round", i)
+        if i == 1 {
+            continue
+        }
+        print("round", i)
+    }
+}

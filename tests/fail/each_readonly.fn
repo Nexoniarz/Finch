@@ -1,0 +1,6 @@
+// expect: the loop variable 'x' can't be changed
+fn main() {
+    for x in [1, 2] {
+        x = 3
+    }
+}

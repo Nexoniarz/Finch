@@ -1,0 +1,5 @@
+// expect: runtime error: index 5 is out of range (the length is 3)
+fn main() {
+    a := [1, 2, 3]
+    print(a[5])
+}

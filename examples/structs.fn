@@ -1,0 +1,49 @@
+// Structs, arrays of structs, and a linked list on the heap.
+import "math.h"
+
+struct Point {
+    float x
+    float y
+}
+
+struct Shape {
+    str name
+    []Point corners
+    int color = 0xFF8800
+}
+
+struct Node {
+    int value
+    ptr[Node] next
+}
+
+fn perimeter(Shape s) -> float {
+    total := 0.0
+    for i in 0..s.corners.len {
+        a := s.corners[i]
+        b := s.corners[(i + 1) % s.corners.len]
+        dx := b.x - a.x
+        dy := b.y - a.y
+        total += sqrt(dx * dx + dy * dy)
+    }
+    return total
+}
+
+fn main() {
+    square := Shape(name: "square", corners: [Point(0, 0), Point(1, 0), Point(1, 1), Point(0, 1)])
+    print(square.name, square.corners.len, "corners, perimeter", perimeter(square))
+    print(square)
+
+    // a linked list: new(...) puts a value on the heap, free(...) gives it back
+    ptr[Node] head = null
+    for i in 0..3 {
+        head = new(Node(value: i, next: head))
+    }
+    n := head
+    while n != null {
+        print("node", n.value)
+        next := n.next
+        free(n)
+        n = next
+    }
+}

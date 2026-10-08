@@ -1,0 +1,10 @@
+import geometry
+
+struct Box {
+    geometry.Vec corner
+    geometry.Vec size
+}
+
+fn area(Box b) -> float {
+    return b.size.x * b.size.y
+}

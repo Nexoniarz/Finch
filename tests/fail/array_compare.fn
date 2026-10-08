@@ -1,0 +1,4 @@
+// expect: compare the parts one by one
+fn main() {
+    print([1] == [1])
+}

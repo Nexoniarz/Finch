@@ -1,0 +1,53 @@
+// A tiny to-do list: structs, arrays, strings and files.
+
+struct Task {
+    str text
+    bool done = false
+}
+
+fn show([]Task tasks) {
+    if tasks.len == 0 {
+        print("(nothing to do)")
+    }
+    for i in 0..tasks.len {
+        mark := " "
+        if tasks[i].done {
+            mark = "x"
+        }
+        print("[" + mark + "]", i + 1, tasks[i].text)
+    }
+}
+
+fn save([]Task tasks, str path) {
+    []str lines
+    for t in tasks {
+        lines.push(str(t.done) + "|" + t.text)
+    }
+    write_file(path, lines.join("\n"))
+}
+
+fn load(str path) -> []Task {
+    []Task tasks
+    if !file_exists(path) {
+        return tasks
+    }
+    for line in read_file(path).split("\n") {
+        if line.len == 0 {
+            continue
+        }
+        parts := line.split("|")
+        tasks.push(Task(text: parts[1], done: parts[0] == "true"))
+    }
+    return tasks
+}
+
+fn main() {
+    path := "todo.txt"
+    tasks := load(path)
+    tasks.push(Task(text: "learn Finch"))
+    tasks.push(Task(text: "write a game"))
+    tasks[0].done = true
+    show(tasks)
+    save(tasks, path)
+    print("saved", tasks.len, "tasks to", path)
+}

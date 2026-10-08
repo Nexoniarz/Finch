@@ -4,10 +4,23 @@
 #include <string>
 #include <vector>
 
+struct StructInfo;  // filled in by codegen: fields, LLVM type, ownership
+
 struct Type {
-    enum Kind { Void, Bool, Char, I8, I16, I32, I64, U8, U16, U32, U64, F32, F64, Str, Ptr, Null };
+    enum Kind {
+        Void, Bool, Char, I8, I16, I32, I64, U8, U16, U32, U64, F32, F64,
+        Str, Ptr, Null,
+        Array,   // []T: growable, owns its elements
+        Fixed,   // [N]T: only inside C structs
+        Struct,  // a resolved struct
+        Named,   // a struct name as written, before codegen resolves it
+    };
     Kind kind = Void;
-    std::shared_ptr<Type> elem;  // what a Ptr points to; null for the untyped `ptr`
+    std::shared_ptr<Type> elem;  // Ptr (null = untyped `ptr`), Array, Fixed
+    long long count = 0;         // Fixed
+    std::string name;            // Named / Struct
+    std::string module;          // Named: written qualifier ("" = none); Struct: defining module
+    StructInfo *info = nullptr;  // Struct
 
     Type() = default;
     Type(Kind k) : kind(k) {}
@@ -15,6 +28,11 @@ struct Type {
         Type p(Ptr);
         p.elem = std::make_shared<Type>(t);
         return p;
+    }
+    static Type arrayOf(const Type &t) {
+        Type a(Array);
+        a.elem = std::make_shared<Type>(t);
+        return a;
     }
 
     bool isInt() const { return kind >= I8 && kind <= U64; }
@@ -35,13 +53,21 @@ struct Type {
 
     bool operator==(const Type &o) const {
         if (kind != o.kind) return false;
-        if (kind != Ptr) return true;
-        if (!elem || !o.elem) return !elem && !o.elem;
-        return *elem == *o.elem;
+        switch (kind) {
+        case Ptr:
+            if (!elem || !o.elem) return !elem && !o.elem;
+            return *elem == *o.elem;
+        case Array: return *elem == *o.elem;
+        case Fixed: return count == o.count && *elem == *o.elem;
+        case Struct: return info == o.info;
+        case Named: return name == o.name && module == o.module;
+        default: return true;
+        }
     }
     bool operator!=(const Type &o) const { return !(*this == o); }
 
-    std::string name() const {
+    // How the type is written in Finch, for error messages.
+    std::string show() const {
         switch (kind) {
         case Void: return "nothing";
         case Bool: return "bool";
@@ -57,8 +83,12 @@ struct Type {
         case F32: return "f32";
         case F64: return "float";
         case Str: return "str";
-        case Ptr: return elem ? "ptr[" + elem->name() + "]" : "ptr";
+        case Ptr: return elem ? "ptr[" + elem->show() + "]" : "ptr";
         case Null: return "null";
+        case Array: return "[]" + elem->show();
+        case Fixed: return "[" + std::to_string(count) + "]" + elem->show();
+        case Struct:
+        case Named: return module.empty() ? name : module + "." + name;
         }
         return "?";
     }
@@ -69,11 +99,12 @@ bool typeFromName(const std::string &name, Type &out);
 
 struct Pos {
     int line = 0, col = 0;
+    int file = 0;  // index into the list of source files (see error.h)
 };
 
 // ---------- expressions ----------
 
-enum class ExprKind { Int, Float, Bool, Char, Str, Null, Var, Unary, Binary, Call, Member };
+enum class ExprKind { Int, Float, Bool, Char, Str, Null, Var, Unary, Binary, Call, Member, Index, ArrayLit, Method };
 
 struct Expr {
     ExprKind kind;
@@ -127,21 +158,39 @@ struct BinaryExpr : Expr {
     BinaryExpr(Pos p, BinOp o, ExprPtr l, ExprPtr r)
         : Expr(ExprKind::Binary, p), op(o), lhs(std::move(l)), rhs(std::move(r)) {}
 };
+// name(args): a function, a built-in, a conversion or a struct constructor.
 struct CallExpr : Expr {
     std::string callee;
     std::vector<ExprPtr> args;
+    std::vector<std::string> argNames;  // "" for positional; Point(x: 1, y: 2)
     CallExpr(Pos p, std::string c) : Expr(ExprKind::Call, p), callee(std::move(c)) {}
 };
-struct MemberExpr : Expr {  // obj.field  (for now only p.value)
+struct MemberExpr : Expr {  // obj.field, p.value, a.len
     ExprPtr obj;
     std::string field;
     MemberExpr(Pos p, ExprPtr o, std::string f)
         : Expr(ExprKind::Member, p), obj(std::move(o)), field(std::move(f)) {}
 };
+struct IndexExpr : Expr {  // a[i]
+    ExprPtr obj, index;
+    IndexExpr(Pos p, ExprPtr o, ExprPtr i) : Expr(ExprKind::Index, p), obj(std::move(o)), index(std::move(i)) {}
+};
+struct ArrayLitExpr : Expr {  // [1, 2, 3]
+    std::vector<ExprPtr> elems;
+    explicit ArrayLitExpr(Pos p) : Expr(ExprKind::ArrayLit, p) {}
+};
+// obj.name(args): a.push(x), s.find("x"), and math.sqrt(2) / math.Vec(1, 2) for modules
+struct MethodExpr : Expr {
+    ExprPtr obj;
+    std::string name;
+    std::vector<ExprPtr> args;
+    std::vector<std::string> argNames;
+    MethodExpr(Pos p, ExprPtr o, std::string n) : Expr(ExprKind::Method, p), obj(std::move(o)), name(std::move(n)) {}
+};
 
 // ---------- statements ----------
 
-enum class StmtKind { VarDecl, Assign, Expr, If, While, For, Return, Break, Continue, Block };
+enum class StmtKind { VarDecl, Assign, Expr, If, While, For, ForEach, Return, Break, Continue, Block, Defer };
 
 struct Stmt {
     StmtKind kind;
@@ -165,7 +214,7 @@ struct VarDeclStmt : Stmt {
     VarDeclStmt(Pos p) : Stmt(StmtKind::VarDecl, p) {}
 };
 struct AssignStmt : Stmt {
-    ExprPtr target;  // a variable or p.value
+    ExprPtr target;  // a variable, field, element or p.value
     char op;         // '=', '+', '-', '*', '/', '%'
     ExprPtr value;
     AssignStmt(Pos p) : Stmt(StmtKind::Assign, p) {}
@@ -191,6 +240,12 @@ struct ForStmt : Stmt {
     BlockPtr body;
     ForStmt(Pos p) : Stmt(StmtKind::For, p) {}
 };
+struct ForEachStmt : Stmt {
+    std::string var;
+    ExprPtr list;  // for var in list  (an array or a str)
+    BlockPtr body;
+    ForEachStmt(Pos p) : Stmt(StmtKind::ForEach, p) {}
+};
 struct ReturnStmt : Stmt {
     ExprPtr value;  // may be null
     ReturnStmt(Pos p) : Stmt(StmtKind::Return, p) {}
@@ -200,6 +255,10 @@ struct BreakStmt : Stmt {
 };
 struct ContinueStmt : Stmt {
     explicit ContinueStmt(Pos p) : Stmt(StmtKind::Continue, p) {}
+};
+struct DeferStmt : Stmt {  // defer <statement>: runs when the block ends
+    StmtPtr body;
+    DeferStmt(Pos p, StmtPtr s) : Stmt(StmtKind::Defer, p), body(std::move(s)) {}
 };
 
 // ---------- top level ----------
@@ -218,18 +277,36 @@ struct FnDecl {
     BlockPtr body;
 };
 
+struct Field {
+    Type type;
+    std::string name;
+    ExprPtr init;  // default value, may be null
+    Pos pos;
+};
+
+struct StructDecl {
+    Pos pos;
+    std::string name;
+    std::vector<Field> fields;
+};
+
 struct Import {
     Pos pos;
-    std::string path;  // "stdio.h" for C headers
+    std::string path;  // "stdio.h" (C header, isC) or "math" (Finch module)
+    bool isC = true;
 };
 
 struct Link {
     Pos pos;
-    std::string lib;  // "glfw" -> libglfw.so
+    std::string lib;  // "glfw" -> libglfw.so; "helpers.c" / ".o" / ".a" -> a file next to the .fn file
 };
 
+// One .fn file.
 struct Program {
+    std::string module;  // "" for the main file, else the module's name
+    std::string path;
     std::vector<Import> imports;
     std::vector<Link> links;
+    std::vector<StructDecl> structs;
     std::vector<FnDecl> fns;
 };

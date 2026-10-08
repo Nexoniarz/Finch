@@ -1,0 +1,3 @@
+// expect: can't find the module 'nothere'
+import nothere
+fn main() {}

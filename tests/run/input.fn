@@ -1,0 +1,7 @@
+fn main() {
+    name := input("Name? ")
+    age := int(input("Age? "))
+    print("Hi", name, "next year you will be", age + 1)
+    rest := input()
+    print("rest:", rest, rest.len)
+}

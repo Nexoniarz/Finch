@@ -1,0 +1,16 @@
+true
+hello!
+none
+30
+names: ["a", "b"]
+deferred ran, log was: start middle
+start middle end
+abab
+["one", "two", "three", "four"]
+four ["one", "two", "three"]
+first second ["t1"]
+node first
+node second
+["", ""] 2
+[2, 3] [97, 98, 99]
+["changed"] ["keep"]

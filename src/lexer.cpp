@@ -9,12 +9,13 @@ static const std::unordered_map<std::string, Tok> keywords = {
     {"else", Tok::Else},   {"while", Tok::While},   {"for", Tok::For},
     {"in", Tok::In},       {"break", Tok::Break},   {"continue", Tok::Continue},
     {"true", Tok::True},   {"false", Tok::False},   {"null", Tok::Null},
-    {"import", Tok::Import}, {"link", Tok::Link},
+    {"import", Tok::Import}, {"link", Tok::Link},   {"struct", Tok::Struct},
+    {"defer", Tok::Defer},
 };
 
-std::vector<Token> lex(const std::string &src, const std::string &file) {
-    g_file = file;
-    g_source = src;
+std::vector<Token> lex(int file) {
+    g_curFile = file;
+    const std::string &src = g_files[file].text;
     std::vector<Token> out;
     size_t i = 0;
     int line = 1, col = 1;
@@ -126,10 +127,7 @@ std::vector<Token> lex(const std::string &src, const std::string &file) {
             case '!': n == '=' ? two(Tok::NotEq) : one(Tok::Not); break;
             case '<': n == '=' ? two(Tok::LessEq) : n == '<' ? two(Tok::Shl) : one(Tok::Less); break;
             case '>': n == '=' ? two(Tok::GreaterEq) : n == '>' ? two(Tok::Shr) : one(Tok::Greater); break;
-            case ':':
-                if (n != '=') fail(line, col, "unexpected ':' (did you mean ':='?)");
-                two(Tok::Declare);
-                break;
+            case ':': n == '=' ? two(Tok::Declare) : one(Tok::Colon); break;
             case '&': n == '&' ? two(Tok::And) : one(Tok::Amp); break;
             case '|': n == '|' ? two(Tok::Or) : one(Tok::Pipe); break;
             default: {
@@ -169,6 +167,9 @@ const char *tokName(Tok t) {
     case Tok::Null: return "'null'";
     case Tok::Import: return "'import'";
     case Tok::Link: return "'link'";
+    case Tok::Struct: return "'struct'";
+    case Tok::Defer: return "'defer'";
+    case Tok::Colon: return "':'";
     case Tok::LParen: return "'('";
     case Tok::RParen: return "')'";
     case Tok::LBrace: return "'{'";

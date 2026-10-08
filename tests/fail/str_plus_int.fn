@@ -1,0 +1,4 @@
+// expect: turn the other side into text first: str(...)
+fn main() {
+    s := "a" + 5
+}

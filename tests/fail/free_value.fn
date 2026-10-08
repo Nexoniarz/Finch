@@ -1,0 +1,5 @@
+// expect: arrays, str and structs are freed by Finch
+fn main() {
+    x := 5
+    free(x)
+}

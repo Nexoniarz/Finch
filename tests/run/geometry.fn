@@ -1,0 +1,18 @@
+import "math.h"
+
+struct Vec {
+    float x
+    float y
+}
+
+fn length(Vec v) -> float {
+    return sqrt(v.x * v.x + v.y * v.y)
+}
+
+fn add(Vec a, Vec b) -> Vec {
+    return Vec(a.x + b.x, a.y + b.y)
+}
+
+fn describe(Vec v) -> str {
+    return "(" + str(v.x) + ", " + str(v.y) + ") of length " + str(length(v))
+}

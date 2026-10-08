@@ -1,0 +1,78 @@
+struct Point {
+    int x
+    int y
+}
+
+struct Player {
+    str name = "nobody"
+    Point pos
+    []int scores
+    int lives = 3
+}
+
+fn moved(Point p, int dx) -> Point {
+    return Point(x: p.x + dx, y: p.y)
+}
+
+fn total([]int xs) -> int {
+    sum := 0
+    for x in xs {
+        sum += x
+    }
+    return sum
+}
+
+fn addScore(Player p, int s) -> Player {
+    p.scores.push(s)
+    return p
+}
+
+fn main() {
+    p := Point(1, 2)
+    print(p, p.x, p.y)
+    q := moved(p, 10)
+    print(q)
+
+    pl := Player(name: "Ola")
+    print(pl)
+    pl.scores.push(10)
+    pl.scores.push(20)
+    pl.pos.x = 5
+    print(pl.name, pl.lives, pl.scores, pl.pos)
+
+    copy := pl
+    copy.name = "Tom"
+    copy.scores.push(30)
+    print(pl.name, pl.scores.len, copy.name, copy.scores.len)
+
+    pl2 := addScore(pl, 99)
+    print(pl.scores, pl2.scores)
+
+    nums := [5, 3, 8, 1]
+    nums.sort()
+    print(nums, total(nums), nums.len)
+    print(nums.pop(), nums)
+    nums.insert(0, 42)
+    nums.remove(1)
+    print(nums, nums.contains(8), nums.find(3))
+
+    names := ["b", "a", "c"]
+    names.sort()
+    print(names, names.join("-"))
+
+    s := "Hello"
+    s += ", Finch"
+    print(s, s.len, s[0], s.upper(), s.sub(0, 5))
+    words := "a,b,,c".split(",")
+    print(words, words.len)
+    print("  trim  ".trim(), "x".repeat(3), "abc".replace("b", "BB"), "hello".contains("ell"))
+    print(str(42) + "!", str(3.5), str(true), int("123") + 1, float("2.5") * 2)
+    s[0] = 'J'
+    print(s)
+    for c in "hi" {
+        print(c)
+    }
+    grid := [[1, 2], [3, 4]]
+    grid[1].push(5)
+    print(grid, grid[1][2])
+}

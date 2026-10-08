@@ -1,0 +1,4 @@
+// expect: to use a module, add  import geometry
+fn main() {
+    v := geometry.Vec(1, 2)
+}

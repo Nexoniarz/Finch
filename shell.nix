@@ -2,10 +2,10 @@
 
 pkgs.mkShell {
   packages = with pkgs; [
-    # building Finch
+    # building Finch (the clang wrapper first, so `clang` finds the system headers)
+    llvmPackages.clang
     llvmPackages.llvm
     llvmPackages.libclang   # reads C headers for `import "stdio.h"`
-    llvmPackages.clang
     cmake
     ninja
     pkg-config              # finds the right flags for `link "..."`

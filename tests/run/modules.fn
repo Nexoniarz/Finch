@@ -1,0 +1,18 @@
+import geometry
+import shapes
+
+fn main() {
+    v := geometry.Vec(3, 4)
+    print(geometry.length(v))
+    w := geometry.add(v, geometry.Vec(x: 1, y: 1))
+    print(geometry.describe(w))
+    geometry.Vec z
+    print(z)
+    b := shapes.Box(size: geometry.Vec(2, 5))
+    print(shapes.area(b), b)
+    total := 0
+    for i in 0..3 {
+        total += i
+    }
+    print("total", total)
+}

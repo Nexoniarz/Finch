@@ -1,0 +1,8 @@
+// expect: the struct P has no field 'y' (it has: x)
+struct P {
+    int x
+}
+fn main() {
+    p := P(1)
+    print(p.y)
+}

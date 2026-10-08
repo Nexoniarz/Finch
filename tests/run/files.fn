@@ -1,0 +1,9 @@
+fn main() {
+    path := "/tmp/finch_test_file.txt"
+    ok := write_file(path, "line one\nline two\n")
+    print(ok, file_exists(path))
+    text := read_file(path)
+    lines := text.trim().split("\n")
+    print(lines, lines.len)
+    print(file_exists("/definitely/not/here"))
+}

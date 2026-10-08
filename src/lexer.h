@@ -8,10 +8,10 @@ enum class Tok {
     Ident, Int, Float, String, Char,
 
     // keywords
-    Fn, Return, If, Else, While, For, In, Break, Continue, True, False, Null, Import, Link,
+    Fn, Return, If, Else, While, For, In, Break, Continue, True, False, Null, Import, Link, Struct, Defer,
 
     // punctuation
-    LParen, RParen, LBrace, RBrace, LBracket, RBracket, Comma, Dot, DotDot, Arrow,
+    LParen, RParen, LBrace, RBrace, LBracket, RBracket, Comma, Colon, Dot, DotDot, Arrow,
 
     // operators
     Plus, Minus, Star, Slash, Percent,
@@ -30,5 +30,6 @@ struct Token {
     bool newlineBefore;  // token starts a new line: ends the previous statement
 };
 
-std::vector<Token> lex(const std::string &src, const std::string &file);
+// Lexes g_files[file].text.
+std::vector<Token> lex(int file);
 const char *tokName(Tok t);

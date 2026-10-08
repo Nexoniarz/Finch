@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(finch VERSION 1.0.0 LANGUAGES CXX)
+project(finch VERSION 2.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,8 +13,18 @@ add_executable(finch
     src/lexer.cpp
     src/parser.cpp
     src/codegen.cpp
+    src/codegen_types.cpp
+    src/codegen_builtins.cpp
+    src/abi.cpp
     src/cimport.cpp
 )
+
+# The runtime (runtime/finch_rt.c) is embedded into the compiler as a string;
+# finch compiles it once into ~/.cache/finch and links it into every program.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/runtime/finch_rt.c)
+file(READ ${CMAKE_SOURCE_DIR}/runtime/finch_rt.c FINCH_RT_SOURCE)
+file(WRITE ${CMAKE_BINARY_DIR}/rt_source.inc "static const char *kRuntimeSource = R\"FINCHRT(${FINCH_RT_SOURCE})FINCHRT\";\n")
+target_include_directories(finch PRIVATE ${CMAKE_BINARY_DIR})
 
 # libclang reads C headers for `import "stdio.h"`
 find_path(LIBCLANG_INCLUDE clang-c/Index.h HINTS ${LLVM_INCLUDE_DIRS})

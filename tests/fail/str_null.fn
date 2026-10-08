@@ -1,0 +1,6 @@
+// expect: a str is never null
+fn main() {
+    s := "a"
+    if s == null {
+    }
+}

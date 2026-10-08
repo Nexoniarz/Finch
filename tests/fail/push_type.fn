@@ -1,0 +1,5 @@
+// expect: the element must be int, but this is str
+fn main() {
+    a := [1, 2]
+    a.push("x")
+}

@@ -1,0 +1,4 @@
+// expect: can't turn "12x" into int
+fn main() {
+    print(int("12x"))
+}

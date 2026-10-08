@@ -1,0 +1,5 @@
+// expect: runtime error: pop() on an empty array
+fn main() {
+    []int a
+    a.pop()
+}

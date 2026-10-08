@@ -1,0 +1,12 @@
+Vec2(x: 2, y: 5)
+Vec3(x: 2, y: 4, z: 6)
+Color(r: 245, g: 235, b: 225, a: 255)
+Mixed(d: 1.75, i: 42)
+Pair(a: 2, b: 1)
+Big(a: 11, b: 22, c: 33) 66
+205 8
+Sprite(pos: Vec2(x: 3.5, y: 1), color: Color(r: 1, g: 2, b: 3, a: 7))
+23
+10008
+12
+3

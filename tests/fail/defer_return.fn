@@ -1,0 +1,4 @@
+// expect: return can't be used inside defer
+fn main() {
+    defer return
+}

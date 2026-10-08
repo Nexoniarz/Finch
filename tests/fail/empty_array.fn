@@ -1,0 +1,4 @@
+// expect: an empty [] needs a type
+fn main() {
+    a := []
+}
