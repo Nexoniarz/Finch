@@ -38,7 +38,10 @@ Język z perspektywy użytkownika opisuje [przewodnik dla techników](dla-techni
 20. [Semantyka a C](#20-semantyka-a-c)
 21. [Spis funkcji](#21-spis-funkcji)
 22. [Rozbudowa kompilatora](#22-rozbudowa-kompilatora)
-23. [Znane ograniczenia](#23-znane-ograniczenia)
+23. [Platformy i Windows](#23-platformy-i-windows)
+24. [Serwer języka](#24-serwer-języka)
+25. [Rozszerzenie VS Code](#25-rozszerzenie-vs-code)
+26. [Znane ograniczenia](#26-znane-ograniczenia)
 
 ---
 
@@ -886,12 +889,103 @@ przed wyskokiem z zasięgów.
 
 ---
 
-## 23. Znane ograniczenia
+## 23. Platformy i Windows
+
+`src/target.h` trzyma `g_target`: triple LLVM, flagi `windows` / `msvc` / `cross`, kompilator C (`cc`)
+i rozszerzenie plików wykonywalnych. `setTarget()` wybiera kompilator C: `FINCH_CC`, potem `CC` (nie przy
+kompilacji krzyżowej), potem `x86_64-w64-mingw32-gcc` dla `--target windows` z Linuksa, `clang` na
+Windowsie, `cc` na Uniksie. Przez tę warstwę idzie wszystko, co zależy od platformy:
+
+- **Nagłówki:** libclang parsuje z `--target=<triple>` (więc `long` ma 32 bity na Windowsie i używane są
+  właściwe nagłówki), a na Windowsie z `-D_USE_MATH_DEFINES`. Katalogi nagłówków pochodzą z `<cc> -E -v`.
+- **Procesy:** `capture()` / `runCommand()` opakowują `popen` / `system` (`_popen` na Windowsie) i dekodują
+  kody wyjścia (POSIX `WIFEXITED`/sygnały albo kody Windowsa i wyjątki NTSTATUS, np. `0xC0000005`).
+  `shellQuote()` cytuje dla `sh` (`'…'`) albo `cmd.exe` (`"…"`); linia polecenia dla `cmd /c`, która
+  zaczyna się od cudzysłowu, dostaje dodatkową parę cudzysłowów.
+- **Linkowanie:** bez `-lm` przy MSVC; nazwy `.exe`; klucz cache runtime'u obejmuje triple i kompilator C.
+  Komunikaty linkera MSVC (`LNK2019 unresolved external symbol`, `LNK1104`/`LNK1181 cannot open file`) są
+  tłumaczone tak jak komunikaty GNU ld.
+- **Uruchamianie:** program dla Windowsa zbudowany na Linuksie uruchamia się przez `wine`.
+- **Informacje dla debuggera:** CodeView dla celów MSVC, DWARF w pozostałych.
+- **Runtime:** na Windowsie nie ma `getline` ani `sys/wait.h`; `stdin`/`stdout`/`stderr` są tam makrami,
+  więc `finch_std_stream(i)` udostępnia je Finchowi, gdy nagłówek nie ma dla nich zmiennej `extern`.
+- **Wypisywanie wskaźników** jest wszędzie takie samo: `null` albo `0x…`.
+
+### Konwencja wywołań Microsoft x64
+
+`classify()` rozgałęzia się po `g_target.windows`. Struktura o rozmiarze dokładnie 1, 2, 4 albo 8 bajtów
+idzie jako **jedna liczba całkowita** tego rozmiaru, nawet jeśli zawiera floaty (`{float, float}` → `i64`).
+Każda inna struktura jest **pośrednia (Indirect)**: wywołujący kopiuje ją na swój stos i przekazuje adres
+kopii (bez `byval`: funkcja dostaje zwykły wskaźnik). Wyniki 1/2/4/8-bajtowe wracają w `rax` jako liczba;
+wszystko inne przez ukryty wskaźnik `sret`. Każdy argument zajmuje jedno miejsce, więc nie ma liczenia
+rejestrów. `cThunk()` robi to samo w drugą stronę dla callbacków.
+
+`tests/windows.sh` buduje każdy test z `--target windows`, uruchamia go w Wine i porównuje wynik: przechodzą
+wszystkie, łącznie z `c_structs` (który wtedy sprawdza reguły Microsoftu na bibliotece C zbudowanej MinGW).
+CI dodatkowo buduje `finch.exe` przez MSVC na Windows Server i uruchamia tam `tests/run.sh`.
+
+### Budowanie finch.exe
+
+CI używa Visual Studio 2022, Ninja i oficjalnego pakietu `clang+llvm-21.x-x86_64-pc-windows-msvc`
+(biblioteki statyczne, `/MT`, więc `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`). Dwa szczegóły Windowsa
+w `CMakeLists.txt`: ten pakiet podaje ścieżkę do biblioteki DIA SDK z maszyny, na której zbudowano LLVM,
+więc jest ona przekierowywana na zainstalowane Visual Studio; a osadzony runtime jest zapisywany jako
+kilka surowych napisów, bo MSVC ogranicza jeden literał do 16 KB. LLVM jest inicjalizowany tylko z
+natywnym backendem, żeby budowanie statyczne nie wciągało wszystkich architektur.
+
+---
+
+## 24. Serwer języka
+
+`finch lsp` (`src/lsp.cpp`) mówi protokołem LSP przez stdin/stdout, używając `llvm::json`. Przy
+`didOpen`/`didChange` uruchamia na dokumencie prawdziwy front-end: `Loader` (z tekstem otwartych
+dokumentów jako nadpisaniem plików), `importHeaders` (w cache na zestaw importów, bo czytanie nagłówków
+jest najwolniejsze) i `generate()` bez optymalizacji i emisji. Dwa przełączniki pozwalają użyć
+kompilatora wewnątrz serwera:
+
+- `g_throwErrors`: `failAt()` rzuca `FinchError{file, line, col, msg}` zamiast wypisywać i kończyć proces.
+  Serwer publikuje to jako diagnostykę (dla właściwego pliku, także wewnątrz importowanego modułu) i czyści
+  diagnostyki, które zniknęły.
+- `g_index`: podczas generowania kodu `Codegen::note()` zapisuje `SymRef` dla każdej rozwiązywanej nazwy
+  (zmienne, parametry, pola, funkcje, konstruktory, funkcje i stałe C, funkcje wbudowane, metody, elementy
+  modułów): jej zakres, opis w markdownie i pozycję definicji. `define()` i `declareStructs()` dokładają
+  `FnInfo` / `StructIndex`; `addVar()` dokłada `VarInfo` z zakresem linii otaczającej funkcji. Pozycje nazw
+  pochodzą z pól `namePos`, które zapisuje parser.
+
+Zapytania korzystają z tego indeksu:
+
+| Zapytanie | Źródło |
+|---|---|
+| hover, definition | `SymRef` pod kursorem |
+| completion | słowa kluczowe, typy, funkcje wbudowane, zmienne otaczającej funkcji, funkcje, struktury, importowane moduły, nazwy z C pasujące do wpisanego początku; po `nazwa.`: pola struktury (także przez `ptr[T]`), metody tablic/tekstów albo zawartość modułu |
+| signatureHelp | cofa się do niezamkniętego `(`, liczy przecinki na najwyższym poziomie i szuka sygnatury Fincha / C / wbudowanej |
+| documentSymbol | funkcje i struktury (z polami) z pliku |
+
+Kod w trakcie pisania (`p.`, `add(1, `) się nie kompiluje, więc serwer trzyma **ostatnią udaną** analizę
+każdego dokumentu i dołącza z niej funkcje, struktury i zmienne do podpowiedzi. `tests/lsp_test.py`
+steruje serwerem tak jak edytor i sprawdza każdą funkcję.
+
+`src/builtins_doc.h` to jedyny opis funkcji wbudowanych i metod, używany przy hover, podpowiedziach
+i podpowiedziach parametrów (i odwzorowany w ściągach).
+
+---
+
+## 25. Rozszerzenie VS Code
+
+`editors/vscode` to zwykłe rozszerzenie w JavaScripcie: `extension.js` uruchamia `finch lsp` przez
+`vscode-languageclient` (ścieżka z ustawienia `finch.path`) i dodaje **Run** / **Build** jako zadania
+`ProcessExecution` (bez cytowania dla powłoki; matcher `$finch` zamienia linie `plik:linia:kol: error:`
+w wpisy w Problems). `syntaxes/finch.tmLanguage.json` to gramatyka TextMate, testowana przez `npm test`
+z `vscode-textmate` + `vscode-oniguruma` (tym samym silnikiem, którego używa VS Code);
+`language-configuration.json` daje komentarze, nawiasy, automatyczne domykanie i wcięcia; `snippets/`
+szablony. CI pakuje je przez `vsce` do `finch-lang.vsix`.
+
+## 26. Znane ograniczenia
 
 - Brak metod w strukturach, typów generycznych, map, `match`, domknięć i błędów jako wartości (`int("x")`, `read_file` robią panic).
 - Teksty to bajty: `.len`, `s[i]`, `upper()` nie znają Unicode.
 - Wiszące wskaźniki (`addr` zmiennej, która zniknęła, użycie po `free`) nie są wykrywane.
 - Wielkość przesunięć i konwersje float→int nie są sprawdzane (poison w LLVM, jak w C).
 - C: unie i struktury z polami bitowymi przez wartość, makra-funkcje, `long double`.
-- Testowana jedna platforma: Linux x86-64 (kod ABI jest specyficzny dla System V x86-64).
+- Dwa systemy: Linux i Windows, oba x86-64 (ABI System V i Microsoft x64). Jeszcze bez macOS i ARM.
 - Kompilator samohostujący nie ma importu C, liczb z rozmiarem ani `defer` i nie zwalnia pamięci.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Talks to `finch lsp` like an editor would and checks the answers."""
-import json, os, subprocess, sys, tempfile
+import json, os, pathlib, subprocess, sys, tempfile
 
 FINCH = os.environ.get("FINCH", os.path.join(os.path.dirname(__file__), "..", "build", "finch"))
 failures = 0
@@ -76,7 +76,7 @@ def pos(line_no, text):  # 0-based position of `text` in a 1-based line
 d = tempfile.mkdtemp()
 path = os.path.join(d, "demo.fch")
 open(path, "w").write(src)
-uri = "file://" + path
+uri = pathlib.Path(path).resolve().as_uri()
 td = {"uri": uri}
 
 c = Client()

@@ -29,10 +29,11 @@ kompilator działa w środku. Do tego służy [przewodnik dla inżynierów](dla-
 16. [Moduły](#16-moduły)
 17. [Biblioteki z C](#17-biblioteki-z-c)
 18. [Błędy](#18-błędy)
-19. [Debugowanie](#19-debugowanie)
-20. [Rozwiązywanie problemów](#20-rozwiązywanie-problemów)
-21. [Struktura projektu i testy](#21-struktura-projektu-i-testy)
-22. [Obecne ograniczenia](#22-obecne-ograniczenia)
+19. [Edytor: VS Code](#19-edytor-vs-code)
+20. [Debugowanie](#20-debugowanie)
+21. [Rozwiązywanie problemów](#21-rozwiązywanie-problemów)
+22. [Struktura projektu i testy](#22-struktura-projektu-i-testy)
+23. [Obecne ograniczenia](#23-obecne-ograniczenia)
 
 ---
 
@@ -59,8 +60,24 @@ i komunikaty błędów, które mówią, jak problem naprawić.
 
 ## 2. Instalacja
 
-Finch działa obecnie na **Linuksie x86-64**. Testowany był z **LLVM 21**.
-Z innymi wersjami LLVM prawdopodobnie się nie skompiluje, bo API C++ LLVM zmienia się między wydaniami.
+Finch działa na **Linuksie i Windowsie, x86-64**, i jest budowany z **LLVM 21**.
+
+### Windows
+
+1. Pobierz **`finch-windows-x64.zip`** z [wydań](https://github.com/Nexoniarz/Finch/releases) i rozpakuj,
+   np. do `C:\finch`. W środku są `finch.exe` i `libclang.dll`.
+2. Zainstaluj **LLVM 21** (`LLVM-21.x.x-win64.exe` z [wydań LLVM](https://github.com/llvm/llvm-project/releases))
+   i zaznacz *Add LLVM to the system PATH*. Finch używa jego `clang` do linkowania programów.
+3. Zainstaluj **Visual Studio Build Tools 2022** z pakietem *Desktop development with C++*: dostarcza biblioteki
+   Windowsa, z którymi linkowany jest każdy program.
+4. Dodaj `C:\finch` do PATH, otwórz nowy terminal i wpisz `finch version`.
+
+Programy to zwykłe pliki `.exe`. Żeby zbudować Fincha ze źródeł na Windowsie, idź za `.github/workflows/ci.yml`
+(Visual Studio 2022 + pakiet `clang+llvm-21.x-x86_64-pc-windows-msvc` z wydań LLVM).
+
+### Linux
+
+Z innymi wersjami LLVM Finch prawdopodobnie się nie skompiluje, bo API C++ LLVM zmienia się między wydaniami.
 
 ### Opcja A: Nix (zalecana, nic nie instalujesz ręcznie)
 
@@ -70,7 +87,7 @@ cd Finch
 nix-shell                        # pobiera LLVM, libclang, clang, cmake, ninja, pkg-config
 cmake -S . -B build -G Ninja
 ninja -C build
-./build/finch version            # finch 2.0.0 (LLVM 21.x)
+./build/finch version            # finch 2.3.0 (LLVM 21.x)
 ```
 
 ### Opcja B: pakiety z twojej dystrybucji
@@ -89,6 +106,16 @@ Ta opcja nie była testowana. Jeśli CMake nie znajduje LLVM, wskaż mu katalog:
 ```sh
 cmake -S . -B build -G Ninja -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm
 ninja -C build
+```
+
+### Budowanie programów na Windowsa pod Linuksem
+
+Z zainstalowanym kompilatorem krzyżowym MinGW-w64 (`x86_64-w64-mingw32-gcc`; na Niksie
+`pkgsCross.mingwW64.buildPackages.gcc`):
+
+```sh
+finch build gra.fch --target windows       # gra.exe
+finch run gra.fch --target windows         # uruchamia ją w Wine, jeśli jest zainstalowane
 ```
 
 ### Dodanie `finch` do PATH (opcjonalnie)
@@ -669,7 +696,18 @@ Zamiast niezdefiniowanego zachowania (jak w C) Finch zatrzymuje się z komunikat
 
 ---
 
-## 19. Debugowanie
+## 19. Edytor: VS Code
+
+Rozszerzenie **Finch** (`editors/vscode`, dołączane też do każdego wydania jako plik `.vsix`) daje:
+podświetlanie składni, błędy na bieżąco, podpowiedzi (także pola i metody po `.`), typy po najechaniu
+myszą, idź do definicji (F12), konspekt pliku, podpowiedzi parametrów, szablony i przycisk ▶ **Run**
+(`Ctrl+F5`). Błędy z **Finch: Build This File** trafiają do panelu Problems.
+
+Instalacja: Rozszerzenia → `…` → *Install from VSIX…* → wybierz `finch-lang-*.vsix`. Rozszerzenie uruchamia
+`finch` z PATH; jeśli jest gdzie indziej, ustaw **Finch: Path** w ustawieniach. Inne edytory obsługujące
+Language Server Protocol (Neovim, Helix, Zed, Emacs, Sublime) mogą używać `finch lsp` bezpośrednio.
+
+## 20. Debugowanie
 
 ```sh
 finch build gra.fch -g -O0 -o gra
@@ -682,11 +720,12 @@ gdb ./gra
 ```
 
 `-g` dodaje informacje dla debuggera (linijki, funkcje, zmienne, pola struktur). `-O0` zostawia wszystkie
-zmienne widoczne; bez niego optymalizator może część z nich usunąć.
+zmienne widoczne; bez niego optymalizator może część z nich usunąć. Na Windowsie `-g` zapisuje format
+CodeView, który czyta debugger Visual Studio i WinDbg.
 
 ---
 
-## 20. Rozwiązywanie problemów
+## 21. Rozwiązywanie problemów
 
 | Problem | Rozwiązanie |
 |---|---|
@@ -697,12 +736,14 @@ zmienne widoczne; bez niego optymalizator może część z nich usunąć.
 | `can't find the module 'x'` | Połóż `x.fch` obok importującego pliku albo ustaw `FINCH_PATH`. |
 | `couldn't build the Finch runtime` | Brak działającego kompilatora C. Zainstaluj gcc lub clang albo ustaw `CC`. |
 | Biblioteka nie znajduje się przy starcie programu | Zlinkowano ją z folderu, którego system nie przeszukuje. Uruchamiaj w tym samym `nix-shell` albo zainstaluj ją systemowo. |
+| Windows: `finch` nie linkuje (błędy `LNK…` o `libcmt`, `kernel32`) | Zainstaluj Visual Studio Build Tools z *Desktop development with C++*. |
+| Windows: `finch.exe` się nie uruchamia (brak `libclang.dll`) | Trzymaj `libclang.dll` obok `finch.exe`. |
 | `clang` w `nix-shell` nie widzi `stdio.h` | Masz stary `shell.nix`: `llvmPackages.clang` musi być przed `llvmPackages.libclang`. |
 | Program nigdy się nie kończy | Warunek pętli nigdy nie staje się fałszywy. Naciśnij Ctrl+C. |
 
 ---
 
-## 21. Struktura projektu i testy
+## 22. Struktura projektu i testy
 
 ```
 Finch/
@@ -715,7 +756,8 @@ Finch/
 │   ├── fail/       programy, które muszą się nie udać, z oczekiwanym błędem w 1. linijce
 │   ├── run.sh      uruchamia testy (MEMCHECK=1 sprawdza też pamięć valgrindem)
 │   └── boot.sh     buduje kompilator samohostujący nim samym i porównuje
-├── docs/           ta dokumentacja (en, pl)
+├── editors/vscode/ rozszerzenie VS Code
+├── docs/           ta dokumentacja (en, pl), łącznie ze ściągą
 ├── shell.nix       środowisko deweloperskie Nix
 └── CMakeLists.txt
 ```
@@ -724,11 +766,13 @@ Finch/
 tests/run.sh                 # → 59 passed, 0 failed
 MEMCHECK=1 tests/run.sh      # to samo pod valgrindem: bez wycieków i złych dostępów do pamięci
 tests/boot.sh                # sprawdzenie samohostowania (wymaga clanga)
+tests/windows.sh             # każdy test zbudowany na Windowsa i uruchomiony w Wine
+python3 tests/lsp_test.py    # serwer języka
 ```
 
 ---
 
-## 22. Obecne ograniczenia
+## 23. Obecne ograniczenia
 
 Finch 2.0 to kompletny mały język, ale nie skończony. Jeszcze nie ma:
 
@@ -736,6 +780,6 @@ Finch 2.0 to kompletny mały język, ale nie skończony. Jeszcze nie ma:
 - Błędów jako wartości: błąd w `int("x")` albo `read_file` zatrzymuje program. Sprawdzaj wcześniej (`file_exists`).
 - Tekstu świadomego Unicode: `.len`, `s[i]` i `upper()` działają na bajtach / ASCII.
 - Wątków.
-- Platform innych niż Linux x86-64.
+- Platform innych niż Linux i Windows na x86-64 (macOS, ARM).
 
 Plan rozwoju jest w [README](../../README.pl.md#plan-rozwoju).

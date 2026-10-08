@@ -51,7 +51,11 @@ fn main() {
 
 ## Szybki start
 
-Linux x86-64, LLVM 21.
+**Windows:** pobierz `finch-windows-x64.zip` z [wydań](https://github.com/Nexoniarz/Finch/releases),
+zainstaluj LLVM 21 i Visual Studio Build Tools (C++), a potem przejdź przez
+[kroki instalacji](docs/pl/dla-technikow.md#windows). **VS Code:** zainstaluj plik `.vsix` `finch-lang` z tego samego wydania.
+
+**Linux** x86-64, LLVM 21:
 
 ```sh
 git clone https://github.com/Nexoniarz/Finch.git
@@ -75,6 +79,7 @@ Wybierz przewodnik dla siebie:
 | **Początkujący** | Nigdy nie programowałeś: uczniowie, seniorzy, ciekawscy | [dla-poczatkujacych.md](docs/pl/dla-poczatkujacych.md) | [for-beginners.md](docs/en/for-beginners.md) |
 | **Technicy** | Znasz komputery, programowanie jest nowe: instalacja, cały język, biblioteki C, problemy | [dla-technikow.md](docs/pl/dla-technikow.md) | [for-technicians.md](docs/en/for-technicians.md) |
 | **Inżynierowie** | Wszystko: lekser, gramatyka, AST, reguły typów, tłumaczenie na IR, import przez libclang, ABI, wnętrze | [dla-inzynierow.md](docs/pl/dla-inzynierow.md) | [for-engineers.md](docs/en/for-engineers.md) |
+| **Ściąga** | Każda funkcja, metoda, operator i polecenie na jednej stronie | [sciaga.md](docs/pl/sciaga.md) | [cheatsheet.md](docs/en/cheatsheet.md) |
 
 ## Język w pigułce
 
@@ -125,9 +130,11 @@ Wybierz przewodnik dla siebie:
 - [x] Moduły Fincha (`import nazwa`)
 - [x] Informacje dla debuggera (`-g`)
 - [x] Bootstrap: kompilator Fincha napisany w Finchu, który buduje sam siebie
-- [ ] Metody w strukturach, mapy, `match`
+- [x] Windows: `finch.exe`, programy `.exe`, ABI Microsoft x64; budowanie na Windowsa z Linuksa (`--target windows`)
+- [x] Serwer języka (`finch lsp`) i rozszerzenie VS Code
+- [ ] Mapy, metody w strukturach, `match`
 - [ ] Błędy jako wartości zamiast zatrzymywania programu
-- [ ] Więcej platform (ARM64, macOS)
+- [ ] Więcej platform (macOS, ARM64)
 
 ## Struktura
 
@@ -136,7 +143,8 @@ src/        kompilator: lekser, parser, AST, codegen, import C + ABI, sterownik 
 runtime/    mały runtime w C dołączany do każdego programu
 boot/       kompilator Fincha napisany w Finchu (ok. 3 tys. linii)
 examples/   przykładowe programy
-tests/      run/ (wzorcowe wyjście), fail/ (oczekiwane błędy), run.sh, boot.sh
+editors/    rozszerzenie VS Code
+tests/      run/ (wzorcowe wyjście), fail/ (oczekiwane błędy), run.sh, boot.sh, windows.sh, lsp_test.py
 docs/       przewodniki en/ i pl/ dla trzech grup odbiorców
 ```
 

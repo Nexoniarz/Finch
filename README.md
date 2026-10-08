@@ -51,7 +51,11 @@ fn main() {
 
 ## Quick start
 
-Linux x86-64, LLVM 21.
+**Windows:** download `finch-windows-x64.zip` from the [releases](https://github.com/Nexoniarz/Finch/releases),
+install LLVM 21 and Visual Studio Build Tools (C++), and see the
+[install steps](docs/en/for-technicians.md#windows). **VS Code:** install the `finch-lang` `.vsix` from the same release.
+
+**Linux** x86-64, LLVM 21:
 
 ```sh
 git clone https://github.com/Nexoniarz/Finch.git
@@ -75,6 +79,7 @@ Pick the guide that fits you:
 | **Beginners** | Never programmed: students, seniors, anyone curious | [for-beginners.md](docs/en/for-beginners.md) | [dla-poczatkujacych.md](docs/pl/dla-poczatkujacych.md) |
 | **Technicians** | Know computers, new to programming: install, whole language, C libraries, troubleshooting | [for-technicians.md](docs/en/for-technicians.md) | [dla-technikow.md](docs/pl/dla-technikow.md) |
 | **Engineers** | Everything: lexer, grammar, AST, type rules, IR lowering, libclang import, ABI, internals | [for-engineers.md](docs/en/for-engineers.md) | [dla-inzynierow.md](docs/pl/dla-inzynierow.md) |
+| **Cheat sheet** | Every function, method, operator and command on one page | [cheatsheet.md](docs/en/cheatsheet.md) | [sciaga.md](docs/pl/sciaga.md) |
 
 ## The language at a glance
 
@@ -125,9 +130,11 @@ Pick the guide that fits you:
 - [x] Finch modules (`import name`)
 - [x] Debug info (`-g`)
 - [x] Bootstrap: a Finch compiler written in Finch that builds itself
-- [ ] Methods on structs, maps, `match`
+- [x] Windows: `finch.exe`, `.exe` programs, the Microsoft x64 ABI; cross-building from Linux (`--target windows`)
+- [x] Language server (`finch lsp`) and a VS Code extension
+- [ ] Maps, methods on structs, `match`
 - [ ] Error values instead of stopping the program
-- [ ] More platforms (ARM64, macOS)
+- [ ] More platforms (macOS, ARM64)
 
 ## Layout
 
@@ -136,7 +143,8 @@ src/        compiler: lexer, parser, AST, codegen, C import + ABI, driver (C++17
 runtime/    the small C runtime linked into every program
 boot/       the Finch compiler written in Finch (~3k lines)
 examples/   example programs
-tests/      run/ (golden output), fail/ (expected errors), run.sh, boot.sh
+editors/    the VS Code extension
+tests/      run/ (golden output), fail/ (expected errors), run.sh, boot.sh, windows.sh, lsp_test.py
 docs/       en/ and pl/ guides for three audiences
 ```
 

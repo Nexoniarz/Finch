@@ -38,7 +38,10 @@ For the language from a user's point of view, see the [technicians' guide](for-t
 20. [Semantics vs. C](#20-semantics-vs-c)
 21. [Function reference](#21-function-reference)
 22. [Extending the compiler](#22-extending-the-compiler)
-23. [Known limitations](#23-known-limitations)
+23. [Targets and Windows](#23-targets-and-windows)
+24. [The language server](#24-the-language-server)
+25. [The VS Code extension](#25-the-vs-code-extension)
+26. [Known limitations](#26-known-limitations)
 
 ---
 
@@ -874,12 +877,102 @@ emission in `arithOp`/`compare`, an explanation in `badOperands`.
 
 ---
 
-## 23. Known limitations
+## 23. Targets and Windows
+
+`src/target.h` holds `g_target`: the LLVM triple, `windows` / `msvc` / `cross` flags, the C compiler (`cc`)
+and the executable suffix. `setTarget()` picks the C compiler: `FINCH_CC`, else `CC` (not when
+cross-compiling), else `x86_64-w64-mingw32-gcc` for `--target windows` from Linux, `clang` on Windows,
+`cc` on Unix. Everything platform-dependent goes through it:
+
+- **Headers:** libclang parses with `--target=<triple>` (so `long` is 32 bits on Windows and the right
+  headers are used) and, on Windows, `-D_USE_MATH_DEFINES`. Include folders come from `<cc> -E -v`.
+- **Processes:** `capture()` / `runCommand()` wrap `popen` / `system` (`_popen` on Windows) and decode exit
+  statuses (POSIX `WIFEXITED`/signals, or Windows exit codes and NTSTATUS crashes like `0xC0000005`).
+  `shellQuote()` quotes for `sh` (`'…'`) or `cmd.exe` (`"…"`); a command line handed to `cmd /c` that
+  starts with a quote gets one extra pair of quotes.
+- **Linking:** no `-lm` with MSVC; `.exe` names; the runtime cache key includes the triple and the C compiler.
+  MSVC linker messages (`LNK2019 unresolved external symbol`, `LNK1104`/`LNK1181 cannot open file`) are
+  translated like GNU ld's.
+- **Running:** a Windows program built on Linux runs with `wine`.
+- **Debug info:** CodeView for MSVC targets, DWARF elsewhere.
+- **Runtime:** no `getline` or `sys/wait.h` on Windows; `stdin`/`stdout`/`stderr` are macros there, so
+  `finch_std_stream(i)` gives them to Finch when a header has no `extern` variable for them.
+- **Printing pointers** is the same everywhere: `null` or `0x…`.
+
+### The Microsoft x64 calling convention
+
+`classify()` switches on `g_target.windows`. A struct of exactly 1, 2, 4 or 8 bytes travels as **one
+integer** of that size, even if it holds floats (`{float, float}` → `i64`). Any other struct is
+**Indirect**: the caller copies it to its own stack and passes the copy's address (no `byval`: the callee
+receives a plain pointer). Results of 1/2/4/8 bytes come back in `rax` as an integer; anything else
+through a hidden `sret` pointer. Each argument takes one slot, so there is no register counting.
+`cThunk()` mirrors this for callbacks.
+
+`tests/windows.sh` builds every test with `--target windows`, runs it with Wine and compares the output:
+all of them pass, including `c_structs` (which then exercises the Microsoft rules against a C library built
+with MinGW). CI additionally builds `finch.exe` with MSVC on Windows Server and runs `tests/run.sh` there.
+
+### Building finch.exe
+
+CI uses Visual Studio 2022, Ninja and the official `clang+llvm-21.x-x86_64-pc-windows-msvc` package
+(static libraries, `/MT`, so `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`). Two Windows details in
+`CMakeLists.txt`: that package names the DIA SDK library at the path of the machine LLVM was built on, so
+it is redirected to the installed Visual Studio; and the embedded runtime is written as several raw
+string pieces, because MSVC limits one literal to 16 KB. LLVM is initialized with the native target only,
+so the static build doesn't pull in every backend.
+
+---
+
+## 24. The language server
+
+`finch lsp` (`src/lsp.cpp`) speaks LSP over stdin/stdout with `llvm::json`. On `didOpen`/`didChange`
+it runs the real front end on the document: `Loader` (with the open documents' text as overrides),
+`importHeaders` (cached per set of imports, since reading headers is the slow part), and `generate()`
+without optimizing or emitting. Two switches make the compiler usable inside a server:
+
+- `g_throwErrors`: `failAt()` throws `FinchError{file, line, col, msg}` instead of printing and exiting.
+  The server publishes it as a diagnostic (for the right file, also inside an imported module) and clears
+  diagnostics that disappeared.
+- `g_index`: while generating code, `Codegen::note()` records a `SymRef` for every name it resolves
+  (variables, parameters, fields, functions, constructors, C functions and constants, built-ins, methods,
+  module members): its span, a markdown hover, and the definition position. `define()` and
+  `declareStructs()` add `FnInfo` / `StructIndex`; `addVar()` adds `VarInfo` with the enclosing function's
+  line range. Positions of names come from `namePos` fields the parser records.
+
+Requests use that index:
+
+| Request | From |
+|---|---|
+| hover, definition | the `SymRef` under the cursor |
+| completion | keywords, types, built-ins, variables of the enclosing function, functions, structs, imported modules, C names matching the typed prefix; after `name.`: struct fields (also through `ptr[T]`), array/str methods, or a module's members |
+| signatureHelp | scans back to the unmatched `(`, counts top-level commas, looks up the Finch / C / built-in signature |
+| documentSymbol | functions and structs (with fields) of the file |
+
+Half-typed code (`p.`, `add(1, `) doesn't compile, so the server keeps the **last successful** analysis of
+each document and merges its functions, structs and variables in for completion and signature help.
+`tests/lsp_test.py` drives the server like an editor and checks every feature.
+
+`src/builtins_doc.h` is the single description of built-ins and methods, used for hover, completion and
+signature help (and mirrored by the cheat sheets).
+
+---
+
+## 25. The VS Code extension
+
+`editors/vscode` is a plain JavaScript extension: `extension.js` starts `finch lsp` through
+`vscode-languageclient` (path from the `finch.path` setting) and adds **Run** / **Build** as
+`ProcessExecution` tasks (no shell quoting, the `$finch` problem matcher turns `file:line:col: error:`
+lines into Problems). `syntaxes/finch.tmLanguage.json` is the TextMate grammar, tested by `npm test` with
+`vscode-textmate` + `vscode-oniguruma` (the engine VS Code itself uses);
+`language-configuration.json` gives comments, brackets, auto-closing and indentation; `snippets/` the
+templates. CI packages it with `vsce` into `finch-lang.vsix`.
+
+## 26. Known limitations
 
 - No methods on structs, generics, maps, `match`, closures, error values (`int("x")`, `read_file` panic).
 - Strings are bytes: `.len`, `s[i]`, `upper()` are not Unicode-aware.
 - Dangling pointers (`addr` of a local that went away, use after `free`) are not detected.
 - Shift amounts and float→int conversions are not range-checked (LLVM poison, as in C).
 - C: unions and bit-field structs by value, function-like macros, `long double`.
-- One target tested: Linux x86-64 (the ABI code is System V x86-64 specific).
+- Two systems: Linux and Windows, both x86-64 (System V and Microsoft x64 ABIs). No macOS or ARM yet.
 - The self-hosted compiler has no C imports, sized integers or `defer`, and doesn't free memory.

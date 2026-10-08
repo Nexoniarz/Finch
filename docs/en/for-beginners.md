@@ -77,7 +77,7 @@ To check it works, type:
 ./build/finch version
 ```
 
-You should see something like `finch 2.0.0`.
+You should see something like `finch 2.3.0`.
 
 ---
 

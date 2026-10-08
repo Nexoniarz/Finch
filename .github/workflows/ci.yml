@@ -88,6 +88,8 @@ jobs:
         run: |
           export PATH="/c/llvm/bin:$PATH"
           tests/run.sh
+      - name: Language server
+        run: python tests/lsp_test.py
       - name: Package
         run: |
           mkdir -p dist/finch

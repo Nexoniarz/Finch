@@ -29,10 +29,11 @@ compiler works inside. For that, see the [guide for engineers](for-engineers.md)
 16. [Modules](#16-modules)
 17. [Using C libraries](#17-using-c-libraries)
 18. [Errors](#18-errors)
-19. [Debugging](#19-debugging)
-20. [Troubleshooting](#20-troubleshooting)
-21. [Project layout and tests](#21-project-layout-and-tests)
-22. [Current limits](#22-current-limits)
+19. [Editor: VS Code](#19-editor-vs-code)
+20. [Debugging](#20-debugging)
+21. [Troubleshooting](#21-troubleshooting)
+22. [Project layout and tests](#22-project-layout-and-tests)
+23. [Current limits](#23-current-limits)
 
 ---
 
@@ -59,7 +60,24 @@ messages that tell you how to fix the problem.
 
 ## 2. Installing
 
-Finch currently runs on **Linux, x86-64**. It has been tested with **LLVM 21**.
+Finch runs on **Linux and Windows, x86-64**, and is built with **LLVM 21**.
+
+### Windows
+
+1. Download **`finch-windows-x64.zip`** from the [releases](https://github.com/Nexoniarz/Finch/releases)
+   and unpack it, for example to `C:\finch`. It contains `finch.exe` and `libclang.dll`.
+2. Install **LLVM 21** (`LLVM-21.x.x-win64.exe` from the
+   [LLVM releases](https://github.com/llvm/llvm-project/releases)) and tick *Add LLVM to the system PATH*.
+   Finch uses its `clang` to link programs.
+3. Install **Visual Studio Build Tools 2022** with *Desktop development with C++*: it provides the Windows
+   libraries every program is linked with.
+4. Add `C:\finch` to your PATH, open a new terminal, and run `finch version`.
+
+Programs are normal `.exe` files. To build from source on Windows instead, follow `.github/workflows/ci.yml`
+(Visual Studio 2022 + the `clang+llvm-21.x-x86_64-pc-windows-msvc` package from LLVM's releases).
+
+### Linux
+
 Other LLVM versions will likely fail to compile, because LLVM's C++ API changes between releases.
 
 ### Option A: Nix (recommended, nothing to install by hand)
@@ -70,7 +88,7 @@ cd Finch
 nix-shell                        # downloads LLVM, libclang, clang, cmake, ninja, pkg-config
 cmake -S . -B build -G Ninja
 ninja -C build
-./build/finch version            # finch 2.0.0 (LLVM 21.x)
+./build/finch version            # finch 2.3.0 (LLVM 21.x)
 ```
 
 ### Option B: your distribution's packages
@@ -89,6 +107,16 @@ These have not been tested; if CMake cannot find LLVM, point it there:
 ```sh
 cmake -S . -B build -G Ninja -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm
 ninja -C build
+```
+
+### Building Windows programs on Linux
+
+With the MinGW-w64 cross compiler installed (`x86_64-w64-mingw32-gcc`; on Nix
+`pkgsCross.mingwW64.buildPackages.gcc`):
+
+```sh
+finch build game.fch --target windows      # game.exe
+finch run game.fch --target windows        # runs it with Wine, if installed
 ```
 
 ### Putting `finch` on your PATH (optional)
@@ -667,7 +695,18 @@ Instead of undefined behavior (as in C), Finch stops with a message and exit cod
 
 ---
 
-## 19. Debugging
+## 19. Editor: VS Code
+
+The **Finch** extension (`editors/vscode`, also attached to each release as a `.vsix` file) gives you:
+highlighting, errors as you type, completion (also fields and methods after `.`), types on hover,
+go to definition (F12), an outline of the file, parameter hints, snippets, and a ▶ **Run** button
+(`Ctrl+F5`). Errors from **Finch: Build This File** appear in the Problems panel.
+
+Install: Extensions → `…` → *Install from VSIX…* → pick `finch-lang-*.vsix`. The extension runs `finch`
+from your PATH; if it is somewhere else, set **Finch: Path** in the settings. Other editors that speak the
+Language Server Protocol (Neovim, Helix, Zed, Emacs, Sublime) can use `finch lsp` directly.
+
+## 20. Debugging
 
 ```sh
 finch build game.fch -g -O0 -o game
@@ -680,11 +719,12 @@ gdb ./game
 ```
 
 `-g` adds debug info (lines, functions, variables, struct fields). `-O0` keeps every variable
-visible; without it the optimizer may remove some.
+visible; without it the optimizer may remove some. On Windows, `-g` writes CodeView, which the
+Visual Studio debugger and WinDbg read.
 
 ---
 
-## 20. Troubleshooting
+## 21. Troubleshooting
 
 | Problem | Solution |
 |---|---|
@@ -695,12 +735,14 @@ visible; without it the optimizer may remove some.
 | `can't find the module 'x'` | Put `x.fch` next to the importing file, or set `FINCH_PATH`. |
 | `couldn't build the Finch runtime` | No working C compiler. Install gcc or clang, or set `CC`. |
 | A library is not found when the program starts | It was linked from a folder the system doesn't search. Run inside the same `nix-shell`, or install it system-wide. |
+| Windows: `finch` can't link (`LNK…` errors about `libcmt`, `kernel32`) | Install Visual Studio Build Tools with *Desktop development with C++*. |
+| Windows: `finch.exe` doesn't start (missing `libclang.dll`) | Keep `libclang.dll` next to `finch.exe`. |
 | `clang` inside `nix-shell` can't find `stdio.h` | You have an old `shell.nix`: `llvmPackages.clang` must be listed before `llvmPackages.libclang`. |
 | A program never ends | A loop condition never becomes false. Press Ctrl+C. |
 
 ---
 
-## 21. Project layout and tests
+## 22. Project layout and tests
 
 ```
 Finch/
@@ -713,7 +755,8 @@ Finch/
 │   ├── fail/       programs that must fail, with the expected error in line 1
 │   ├── run.sh      the test runner (MEMCHECK=1 also checks memory with valgrind)
 │   └── boot.sh     builds the self-hosted compiler with itself and compares
-├── docs/           this documentation (en, pl)
+├── editors/vscode/ the VS Code extension
+├── docs/           this documentation (en, pl), including the cheat sheet
 ├── shell.nix       the Nix development environment
 └── CMakeLists.txt
 ```
@@ -722,11 +765,13 @@ Finch/
 tests/run.sh                 # → 59 passed, 0 failed
 MEMCHECK=1 tests/run.sh      # the same under valgrind: no leaks, no bad memory access
 tests/boot.sh                # the self-hosting check (needs clang)
+tests/windows.sh             # every test built for Windows and run with Wine
+python3 tests/lsp_test.py    # the language server
 ```
 
 ---
 
-## 22. Current limits
+## 23. Current limits
 
 Finch 2.0 is a complete small language, but not a finished one. Not there yet:
 
@@ -734,6 +779,6 @@ Finch 2.0 is a complete small language, but not a finished one. Not there yet:
 - Error values: errors in `int("x")` or `read_file` stop the program. Check first (`file_exists`).
 - Unicode-aware text: `.len`, `s[i]` and `upper()` work on bytes / ASCII.
 - Threads.
-- Platforms other than Linux x86-64.
+- Platforms other than Linux and Windows on x86-64 (macOS, ARM).
 
 See the [roadmap in the README](../../README.md#roadmap).
