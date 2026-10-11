@@ -8,7 +8,7 @@ enum class Tok {
     Ident, Int, Float, String, Char,
 
     // keywords
-    Fn, Return, If, Else, While, For, In, Break, Continue, True, False, Null, Import, Link, Struct, Defer,
+    Fn, Export, Return, If, Else, While, For, In, Break, Continue, True, False, Null, Import, Link, Struct, Defer,
     OrElse, Try,  // or, try
 
     // punctuation

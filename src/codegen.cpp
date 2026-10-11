@@ -4,6 +4,7 @@
 
 #include "codegen_impl.h"
 #include "builtins_doc.h"
+#include "target.h"
 
 using namespace llvm;
 
@@ -36,12 +37,29 @@ Codegen::Codegen(LLVMContext &c, const std::vector<Program> &ps, const CImports 
 std::unique_ptr<Module> Codegen::run() {
     declareStructs();
     declareFns();
-    if (!modules[""].fns.count("main")) failAt(0, 1, 1, "there is no main function (add 'fn main() { ... }')");
+    if (g_target.shared) {
+        if (modules[""].fns.count("main")) {
+            const Pos &pos = modules[""].fns["main"].decl->namePos;
+            failAt(pos.file, pos.line, pos.col, "a library (--shared) has no main: the program that loads it calls its 'export fn's");
+        }
+    } else if (!modules[""].fns.count("main")) {
+        failAt(0, 1, 1, "there is no main function (add 'fn main() { ... }')");
+    }
     for (auto &[name, m] : modules)
         for (auto &[fname, fn] : m.fns) define(fn);
     for (auto &[s, ms] : methods)
         for (auto &[mname, fn] : ms) define(fn);
-    defineMainWrapper();
+    if (!g_target.shared) defineMainWrapper();
+    for (const auto &[module, name] : exportNames) defineExport(modules[module].fns[name]);
+    if (g_target.shared) {  // finch_module_on_fatal(handler): the host's say on runtime errors (see finch_rt.c)
+        Function *w = Function::Create(FunctionType::get(b.getVoidTy(), {b.getPtrTy()}, false), Function::ExternalLinkage,
+                                       "finch_module_on_fatal", mod.get());
+        if (g_target.windows) w->setDLLStorageClass(GlobalValue::DLLExportStorageClass);
+        b.SetInsertPoint(BasicBlock::Create(ctx, "entry", w));
+        b.SetCurrentDebugLocation(DebugLoc());
+        b.CreateCall(rt("finch_on_fatal"), {w->getArg(0)});
+        b.CreateRetVoid();
+    }
     if (di) di->finalize();
 
     std::string err;
@@ -188,8 +206,44 @@ void Codegen::declare(const Program &p, const FnDecl &fn) {
     // User functions get a prefix so they never clash with C library names.
     std::string name = "finch." + (p.module.empty() ? "" : p.module + ".") + (recv ? recv->name + "." : "") + fn.name;
     f.llvm = Function::Create(FunctionType::get(retType(f), params, false), Function::InternalLinkage, name, mod.get());
+    if (fn.exported) {
+        if (recv) failAt(pos.file, pos.line, pos.col, "methods can't be exported (export a plain fn that calls it)");
+        if (f.fallible) failAt(pos.file, pos.line, pos.col, "an export fn can't fail (C has no errors as values): handle them inside it");
+        auto cType = [](const FType &t) { return t.isNumber() || t.kind == FType::Bool || t.kind == FType::Char || t.kind == FType::Ptr; };
+        for (size_t i = 0; i < f.params.size(); i++)
+            if (!cType(f.params[i]))
+                failAt(fn.params[i].pos.file, fn.params[i].pos.line, fn.params[i].pos.col,
+                       "an export fn takes numbers, bool, char and pointers only (this is " + f.params[i].show() +
+                           "; pass text as ptr[char] and make it a str inside)");
+        if (f.ret.kind != FType::Void && !cType(f.ret))
+            failAt(pos.file, pos.line, pos.col, "an export fn returns nothing, a number, bool, char or a pointer (not " + f.ret.show() + ")");
+        for (const auto &[mname, other] : modules)
+            if (const auto it = other.fns.find(fn.name); it != other.fns.end() && it->second.decl->exported)
+                failAt(pos.file, pos.line, pos.col, "'" + fn.name + "' is exported twice (from two modules)");
+    }
     if (recv) methods[recv][fn.name] = f;
     else m.fns[fn.name] = f;
+    if (fn.exported) exportNames.push_back({p.module, fn.name});
+}
+
+// export fn name(...): a C function called `name` that calls the Finch one (bool is a C byte).
+void Codegen::defineExport(Fn &fn) {
+    auto cTy = [&](const FType &t) -> llvm::Type * { return t.kind == FType::Bool ? b.getInt8Ty() : ty(t); };
+    std::vector<llvm::Type *> params;
+    for (const FType &t : fn.params) params.push_back(cTy(t));
+    llvm::Type *ret = fn.ret.kind == FType::Void ? b.getVoidTy() : cTy(fn.ret);
+    Function *w = Function::Create(FunctionType::get(ret, params, false), Function::ExternalLinkage, fn.decl->name, mod.get());
+    if (g_target.windows) w->setDLLStorageClass(GlobalValue::DLLExportStorageClass);
+    b.SetInsertPoint(BasicBlock::Create(ctx, "entry", w));
+    b.SetCurrentDebugLocation(DebugLoc());
+    std::vector<Value *> args;
+    for (size_t i = 0; i < fn.params.size(); i++) {
+        Value *a = w->getArg(unsigned(i));
+        args.push_back(fn.params[i].kind == FType::Bool ? b.CreateICmpNE(a, b.getInt8(0)) : a);
+    }
+    Value *r = b.CreateCall(fn.llvm, args);
+    if (fn.ret.kind == FType::Void) b.CreateRetVoid();
+    else b.CreateRet(fn.ret.kind == FType::Bool ? b.CreateZExt(r, b.getInt8Ty()) : r);
 }
 
 // The real C `main` calls the Finch one and turns its result into an exit code.

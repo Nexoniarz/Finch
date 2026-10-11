@@ -5,7 +5,7 @@
 #include <unordered_map>
 
 static const std::unordered_map<std::string, Tok> keywords = {
-    {"fn", Tok::Fn},       {"return", Tok::Return}, {"if", Tok::If},
+    {"fn", Tok::Fn},       {"export", Tok::Export},       {"return", Tok::Return}, {"if", Tok::If},
     {"else", Tok::Else},   {"while", Tok::While},   {"for", Tok::For},
     {"in", Tok::In},       {"break", Tok::Break},   {"continue", Tok::Continue},
     {"true", Tok::True},   {"false", Tok::False},   {"null", Tok::Null},
@@ -154,6 +154,7 @@ const char *tokName(Tok t) {
     case Tok::String: return "a string";
     case Tok::Char: return "a char";
     case Tok::Fn: return "'fn'";
+    case Tok::Export: return "'export'";
     case Tok::Return: return "'return'";
     case Tok::If: return "'if'";
     case Tok::Else: return "'else'";

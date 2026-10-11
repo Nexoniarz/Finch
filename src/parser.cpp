@@ -180,9 +180,10 @@ private:
     FnDecl function() {
         FnDecl fn;
         fn.pos = pos();
+        fn.exported = accept(Tok::Export);
         if (at(Tok::Ident) && isTypeName(cur().text))
             fail(fn.pos.line, fn.pos.col, "functions start with 'fn', like: fn add(int a, int b) -> int { ... }");
-        expect(Tok::Fn, "'fn', 'struct', 'import' or 'link' (every function starts with fn)");
+        expect(Tok::Fn, fn.exported ? "'fn' (export fn name(...))" : "'fn', 'struct', 'import' or 'link' (every function starts with fn)");
 
         fn.namePos = pos();
         fn.name = expect(Tok::Ident, "a function name").text;

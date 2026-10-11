@@ -14,6 +14,7 @@ struct TargetInfo {
     bool cross = false;     // compiling for another system than the one we run on
     std::string cc;         // the C compiler that links programs and builds the runtime
     std::string exe;        // ".exe" or ""
+    bool shared = false;    // finch build --shared: a library (.so / .dll / .dylib) with no main
 };
 
 inline TargetInfo g_target;

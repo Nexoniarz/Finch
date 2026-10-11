@@ -42,6 +42,7 @@ static void usage() {
                  "  finch lsp                          the language server, for editors (VS Code, Kate, ...)\n"
                  "\n"
                  "  -l <lib>          link a C library, same as  link \"lib\"  in the file\n"
+                 "  --shared          (build) a library with no main: lib<name>.so / <name>.dll, its export fn's callable from C\n"
                  "  --target <name>   build for another system: windows, linux, arm64 (Linux), macos,\n"
                  "                    or an LLVM triple\n"
                  "  -g                add debug info (gdb / lldb / Visual Studio)\n"
@@ -230,6 +231,7 @@ static bool endsWith(const std::string &s, const char *x) {
 static void link(const std::string &obj, const std::string &exe, const std::vector<std::string> &libs,
                  const CImports &c) {
     std::string cmd = g_target.cc + " " + shellQuote(obj) + " " + shellQuote(runtimeObject()) + " -o " + shellQuote(exe);
+    if (g_target.shared) cmd += g_target.darwin ? " -dynamiclib" : " -shared";
     if (!g_target.msvc) cmd += " -lm";
     std::vector<std::string> temps;
     for (const std::string &l : libs) {
@@ -289,6 +291,7 @@ int main(int argc, char **argv) {
         else if (a == "--target" && i + 1 < argc) targetName = argv[++i];
         else if (a == "-O0") optimizeCode = false;
         else if (a == "-g") debug = true;
+        else if (a == "--shared" && cmd == "build") g_target.shared = true;
         else if (a == "-l" && i + 1 < argc) libs.push_back(argv[++i]);
         else if (a.rfind("-l", 0) == 0 && a.size() > 2) libs.push_back(a.substr(2));
         else if (cmd == "run") programArgs.push_back(a);
@@ -296,7 +299,8 @@ int main(int argc, char **argv) {
     }
 
     setTarget(targetName);
-    if (!outGiven) out += g_target.exe;
+    if (!outGiven) out = g_target.shared ? (g_target.windows ? out + ".dll" : "lib" + out + (g_target.darwin ? ".dylib" : ".so"))
+                                         : out + g_target.exe;
 
     Loader loader;
     loader.load(file, "", Pos{});

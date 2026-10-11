@@ -50,6 +50,7 @@ Function *Codegen::rt(const std::string &name) {
     struct Sig { llvm::Type *ret; std::vector<llvm::Type *> params; };
     std::map<std::string, Sig> sigs = {
         {"finch_panic", {V, {P, I, P}}},
+        {"finch_on_fatal", {V, {P}}},
         {"finch_panic_index", {V, {P, I, I, I}}},
         {"finch_alloc", {P, {I}}},
         {"finch_zalloc", {P, {I}}},

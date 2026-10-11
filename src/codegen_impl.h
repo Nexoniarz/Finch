@@ -174,6 +174,8 @@ public:
     void declare(const Program &p, const FnDecl &fn);
     void define(Fn &fn);
     void defineMainWrapper();
+    void defineExport(Fn &fn);
+    std::vector<std::pair<std::string, std::string>> exportNames;  // (module, name) of each export fn
     void block(const BlockStmt &blk);
     void blockBody(const BlockStmt &blk);
     void stmt(const Stmt &s);

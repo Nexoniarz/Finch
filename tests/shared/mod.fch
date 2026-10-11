@@ -1,0 +1,22 @@
+import "host.h"
+
+fn greet(str who) -> str {
+    return "hello " + who
+}
+
+export fn add(int a, int b) -> int {
+    return a + b
+}
+
+export fn hello(ptr[char] name) {
+    host_print(greet(str(name)))
+}
+
+export fn crash(int i) -> int {
+    xs := [1, 2, 3]
+    return xs[i]
+}
+
+export fn is_even(int n) -> bool {
+    return n % 2 == 0
+}

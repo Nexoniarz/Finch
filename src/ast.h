@@ -315,6 +315,7 @@ struct FnDecl {
     Pos recvPos;
     Type ret;  // Void when there is no `-> type`
     bool fallible = false;  // -> int!  /  -> !  : can fail with an error
+    bool exported = false;  // export fn: callable from C by its own name (a library's entry point)
     std::vector<Param> params;
     BlockPtr body;
 };
