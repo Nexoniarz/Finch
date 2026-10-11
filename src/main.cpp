@@ -42,6 +42,7 @@ static void usage() {
                  "  finch lsp                          the language server, for editors (VS Code, Kate, ...)\n"
                  "\n"
                  "  -l <lib>          link a C library, same as  link \"lib\"  in the file\n"
+                 "  -I <dir>          also look for imported C headers in dir\n"
                  "  --shared          (build) a library with no main: lib<name>.so / <name>.dll, its export fn's callable from C\n"
                  "  --target <name>   build for another system: windows, linux, arm64 (Linux), macos,\n"
                  "                    or an LLVM triple\n"
@@ -281,7 +282,7 @@ int main(int argc, char **argv) {
     std::string cmd = argv[1], file = argv[2];
     if (cmd != "run" && cmd != "build" && cmd != "ir") usage();
     std::string out = stem(file);
-    std::vector<std::string> libs, programArgs;
+    std::vector<std::string> libs, programArgs, includeDirs;
     std::string targetName;
     bool optimizeCode = true, debug = false, outGiven = false;
     for (int i = 3; i < argc; i++) {
@@ -292,6 +293,8 @@ int main(int argc, char **argv) {
         else if (a == "-O0") optimizeCode = false;
         else if (a == "-g") debug = true;
         else if (a == "--shared" && cmd == "build") g_target.shared = true;
+        else if (a == "-I" && i + 1 < argc) includeDirs.push_back(argv[++i]);
+        else if (a.rfind("-I", 0) == 0 && a.size() > 2) includeDirs.push_back(a.substr(2));
         else if (a == "-l" && i + 1 < argc) libs.push_back(argv[++i]);
         else if (a.rfind("-l", 0) == 0 && a.size() > 2) libs.push_back(a.substr(2));
         else if (cmd == "run") programArgs.push_back(a);
@@ -316,6 +319,7 @@ int main(int argc, char **argv) {
         }
         if (std::find(dirs.begin(), dirs.end(), dirOf(p.path)) == dirs.end()) dirs.push_back(dirOf(p.path));
     }
+    dirs.insert(dirs.end(), includeDirs.begin(), includeDirs.end());  // -I: after the files' own folders
     CImports c = importHeaders(allImports, dirs);
     LLVMContext ctx;
     TargetMachine *tm = targetMachine();
