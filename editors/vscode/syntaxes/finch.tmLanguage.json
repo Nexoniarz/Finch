@@ -74,7 +74,7 @@
       ]
     },
     "struct": {
-      "match": "\\b(struct)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "match": "\\b(struct|enum)\\s+([A-Za-z_][A-Za-z0-9_]*)",
       "captures": {
         "1": {
           "name": "storage.type.struct.finch"
@@ -117,7 +117,7 @@
         },
         {
           "name": "keyword.control.finch",
-          "match": "\\b(if|else|while|for|in|break|continue|return|defer|or|try)\\b"
+          "match": "\\b(if|else|while|for|in|break|continue|return|defer|or|try|match)\\b"
         },
         {
           "name": "storage.type.function.finch",
@@ -125,7 +125,11 @@
         },
         {
           "name": "storage.type.struct.finch",
-          "match": "\\bstruct\\b"
+          "match": "\\b(struct|enum)\\b"
+        },
+        {
+          "name": "storage.modifier.finch",
+          "match": "\\bexport\\b"
         },
         {
           "name": "constant.language.finch",

@@ -63,8 +63,7 @@ these lines one by one, pressing **Enter** after each:
 git clone https://github.com/Nexoniarz/Finch.git
 cd Finch
 nix-shell
-cmake -S . -B build -G Ninja
-ninja -C build
+bootstrap/build.sh
 ```
 
 If the last line finishes without the word `error`, Finch is ready.
@@ -77,7 +76,7 @@ To check it works, type:
 ./build/finch version
 ```
 
-You should see something like `finch 2.4.0`.
+You should see something like `Finch 2.4.0`.
 
 ---
 

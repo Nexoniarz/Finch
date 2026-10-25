@@ -156,5 +156,43 @@
       "}"
     ],
     "description": "Every key and value of a map (or index and element of an array)"
+  },
+  "enum": {
+    "prefix": "enum",
+    "body": [
+      "enum ${1:Name} {",
+      "\t${2:First},",
+      "\t${3:Second}",
+      "}"
+    ],
+    "description": "An enum: a type with a few named values"
+  },
+  "match": {
+    "prefix": "match",
+    "body": [
+      "match ${1:value} {",
+      "\t${2:pattern} -> $0",
+      "\telse -> ",
+      "}"
+    ],
+    "description": "match: pick what to do from a value"
+  },
+  "generic function": {
+    "prefix": "fng",
+    "body": [
+      "fn ${1:name}[${2:T}](${3:T x}) -> ${2:T} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "A function that works for any type"
+  },
+  "generic struct": {
+    "prefix": "structg",
+    "body": [
+      "struct ${1:Name}[${2:T}] {",
+      "\t$0",
+      "}"
+    ],
+    "description": "A struct that holds any type"
   }
 }

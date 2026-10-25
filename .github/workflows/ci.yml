@@ -1,13 +1,14 @@
 name: CI
 
+# The compiler is written in Finch. It is built from bootstrap/<system>.ll, its own LLVM IR (see bootstrap/README.md),
+# then from itself. Linux x86-64 and ARM64 have seeds; macOS and Windows machines can't build the compiler yet
+# (programs for them are built from Linux with --target, and tested here under Wine and qemu).
+
 on:
   push:
     branches: [main, "ci/**"]
     tags: ["v*"]
   pull_request:
-
-env:
-  LLVM_VERSION: 21.1.8
 
 jobs:
   linux:
@@ -21,77 +22,57 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install LLVM 21, libclang, tools
+      - name: Install clang 21, libclang, tools
         run: |
           wget -q https://apt.llvm.org/llvm.sh
           sudo bash llvm.sh 21
-          sudo apt-get install -y llvm-21-dev libclang-21-dev ninja-build valgrind
+          sudo apt-get install -y libclang-21-dev pkg-config valgrind
           echo "/usr/lib/llvm-21/bin" >> $GITHUB_PATH
-      - name: Build
+      - name: Build the compiler (seed, then itself, and the two must agree)
         run: |
-          cmake -S . -B build -G Ninja -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm -DCMAKE_BUILD_TYPE=Release
-          ninja -C build
+          export FINCH_LIBCLANG="-L/usr/lib/llvm-21/lib -lclang-21"
+          bootstrap/build.sh
           build/finch version
-      - name: Tests
+      - name: Tests (programs, refusals, -g, a shared library, the language server)
         run: tests/run.sh
-      - name: Shared library
-        run: tests/shared.sh
       - name: Tests under valgrind
         if: matrix.arch == 'x64'
         run: MEMCHECK=1 tests/run.sh
-      - name: Self-hosting
-        run: tests/boot.sh
-      - name: Language server
-        run: python3 tests/lsp_test.py
       - name: Package
         run: |
-          mkdir -p dist/finch && cp build/finch README.md LICENSE dist/finch/ && cp -r examples dist/finch/
+          mkdir -p dist/finch && cp build/finch README.md LICENSE dist/finch/ && cp -r runtime std examples dist/finch/
           tar -czf finch-linux-${{ matrix.arch }}.tar.gz -C dist finch
       - uses: actions/upload-artifact@v4
         with:
           name: finch-linux-${{ matrix.arch }}
           path: finch-linux-${{ matrix.arch }}.tar.gz
 
-  macos:
-    runs-on: macos-15
+  cross:
+    name: programs for ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [windows, arm64]
     steps:
       - uses: actions/checkout@v4
-      - name: Install LLVM 21
+      - name: Install clang 21, libclang, cross compilers and emulators
         run: |
-          brew install llvm@21 ninja
-          echo "$(brew --prefix llvm@21)/bin" >> $GITHUB_PATH
-      - name: Build
+          wget -q https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh 21
+          sudo apt-get install -y libclang-21-dev pkg-config gcc-mingw-w64-x86-64 wine64 gcc-aarch64-linux-gnu qemu-user libc6-arm64-cross
+          echo "/usr/lib/llvm-21/bin" >> $GITHUB_PATH
+      - name: Build the compiler
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR="$(brew --prefix llvm@21)/lib/cmake/llvm"
-          ninja -C build
-          build/finch version
-      - name: Tests
-        run: CC=/usr/bin/clang tests/run.sh
-      - name: Self-hosting
-        run: CC=/usr/bin/clang tests/boot.sh
-      - name: Language server
-        run: python3 tests/lsp_test.py
-      - name: Apple frameworks
+          export FINCH_LIBCLANG="-L/usr/lib/llvm-21/lib -lclang-21"
+          bootstrap/build.sh
+      - name: Run every test on the other system
         run: |
-          cat > fw.fch <<'EOF'
-          import "CoreFoundation/CoreFoundation.h"
-          link "CoreFoundation.framework"
-
-          fn main() {
-              print(CFAbsoluteTimeGetCurrent() > 0.0)
-          }
-          EOF
-          out=$(CC=/usr/bin/clang build/finch run fw.fch)
-          echo "$out"
-          test "$out" = "true"
-      - name: Package
-        run: |
-          mkdir -p dist/finch && cp build/finch README.md LICENSE dist/finch/ && cp -r examples dist/finch/
-          tar -czf finch-macos-arm64.tar.gz -C dist finch
-      - uses: actions/upload-artifact@v4
-        with:
-          name: finch-macos-arm64
-          path: finch-macos-arm64.tar.gz
+          if [ "${{ matrix.target }}" = windows ]; then
+            FINCH_CC=x86_64-w64-mingw32-gcc tests/cross.sh windows
+          else
+            FINCH_CC=aarch64-linux-gnu-gcc QEMU_LD_PREFIX=/usr/aarch64-linux-gnu tests/cross.sh arm64
+          fi
 
   vscode:
     runs-on: ubuntu-24.04
@@ -112,51 +93,3 @@ jobs:
         with:
           name: finch-vscode
           path: editors/vscode/finch-lang.vsix
-
-  windows:
-    runs-on: windows-2022
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ilammy/msvc-dev-cmd@v1
-      - name: Cache LLVM
-        id: cache-llvm
-        uses: actions/cache@v4
-        with:
-          path: C:/llvm
-          key: llvm-${{ env.LLVM_VERSION }}-x86_64-pc-windows-msvc
-      - name: Download LLVM ${{ env.LLVM_VERSION }}
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
-        run: |
-          curl -sSL -o llvm.tar.xz "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/clang+llvm-$LLVM_VERSION-x86_64-pc-windows-msvc.tar.xz"
-          mkdir -p /c/llvm
-          tar -xf llvm.tar.xz -C /c/llvm --strip-components=1
-          rm llvm.tar.xz
-      - name: Build finch.exe
-        run: |
-          echo "C:/llvm/bin" >> $GITHUB_PATH
-          export PATH="/c/llvm/bin:$PATH"
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR=C:/llvm/lib/cmake/llvm \
-                -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
-          ninja -C build
-          cp /c/llvm/bin/libclang.dll build/
-          build/finch.exe version
-      - name: Tests
-        run: |
-          export PATH="/c/llvm/bin:$PATH"
-          tests/run.sh
-      - name: Language server
-        run: python tests/lsp_test.py
-      - name: Package
-        run: |
-          mkdir -p dist/finch
-          cp build/finch.exe build/libclang.dll dist/finch/
-          cp README.md LICENSE dist/finch/
-          cp -r examples dist/finch/
-          cd dist && 7z a -tzip finch-windows-x64.zip finch > /dev/null
-      - uses: actions/upload-artifact@v4
-        with:
-          name: finch-windows-x64
-          path: dist/finch-windows-x64.zip

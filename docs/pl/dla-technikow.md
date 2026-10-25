@@ -63,77 +63,40 @@ i komunikaty błędów, które mówią, jak problem naprawić.
 
 ## 2. Instalacja
 
-Finch działa na **Linuksie** (x86-64 i ARM64), **macOS** (Apple Silicon i Intel) i **Windowsie** (x86-64),
-i jest budowany z **LLVM 21**. Każde [wydanie](https://github.com/Nexoniarz/Finch/releases) ma gotowy
-`finch` dla Windowsa, Linuksa x86-64, Linuksa ARM64 i macOS ARM64.
+Kompilator Fincha jest napisany w Finchu (zobacz [przewodnik dla inżynierów](dla-inzynierow.md)). Działa na **Linuksie**
+(x86-64 i ARM64) i buduje programy dla **Linuksa, Windowsa i macOS**. Potrzebuje **clanga 21** i **libclang** (LLVM 21),
+żeby czytać nagłówki C i kompilować to, co wygeneruje.
 
-### Windows
+Kompilator nie działa jeszcze na macOS ani Windowsie: potrzebuje ziarna zrobionego z nagłówkami tego systemu
+([bootstrap/README.md](../../bootstrap/README.md) tłumaczy dlaczego). Do tego czasu programy na Windows i macOS buduj z Linuksa
+przez `--target` (niżej) albo użyj starszego kompilatora w C++ z gałęzi `before-bootstrap`.
 
-1. Pobierz **`finch-windows-x64.zip`** z [wydań](https://github.com/Nexoniarz/Finch/releases) i rozpakuj,
-   np. do `C:\finch`. W środku są `finch.exe` i `libclang.dll`.
-2. Zainstaluj **LLVM 21** (`LLVM-21.x.x-win64.exe` z [wydań LLVM](https://github.com/llvm/llvm-project/releases))
-   i zaznacz *Add LLVM to the system PATH*. Finch używa jego `clang` do linkowania programów.
-3. Zainstaluj **Visual Studio Build Tools 2022** z pakietem *Desktop development with C++*: dostarcza biblioteki
-   Windowsa, z którymi linkowany jest każdy program.
-4. Dodaj `C:\finch` do PATH, otwórz nowy terminal i wpisz `finch version`.
+### Opcja A: gotowa wersja (Linux)
 
-Programy to zwykłe pliki `.exe`. Żeby zbudować Fincha ze źródeł na Windowsie, idź za `.github/workflows/ci.yml`
-(Visual Studio 2022 + pakiet `clang+llvm-21.x-x86_64-pc-windows-msvc` z wydań LLVM).
+Pobierz `finch-linux-x64.tar.gz` albo `finch-linux-arm64.tar.gz` z [wydań](https://github.com/Nexoniarz/Finch/releases)
+i rozpakuj. Zostaw `runtime/` i `std/` obok pliku `finch` (albo zainstaluj, niżej). Potrzebny jest też `clang` 21
+z biblioteką libclang:
 
-### macOS
+| Dystrybucja | Pakiety |
+|---|---|
+| Debian / Ubuntu | `clang-21 libclang-21-dev` z [apt.llvm.org](https://apt.llvm.org), `pkg-config` |
+| Fedora | `clang clang-devel pkgconf` |
+| Arch | `clang pkgconf` |
+| Nix | `nix-shell` w repozytorium daje wszystko |
 
-```sh
-brew install llvm@21                # LLVM dla Fincha; programy linkuje clang od Apple
-```
-
-Potem rozpakuj **`finch-macos-arm64.tar.gz`** z wydań (korzysta z `llvm@21` z Homebrew)
-albo zbuduj go sam (narzędzia wiersza poleceń Xcode: `xcode-select --install`):
-
-```sh
-git clone https://github.com/Nexoniarz/Finch.git && cd Finch
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR="$(brew --prefix llvm@21)/lib/cmake/llvm"
-ninja -C build
-./build/finch version
-```
-
-Frameworki Apple linkuje się przez `link "Cocoa.framework"` (`-framework Cocoa`), a ich nagłówki importuje
-się normalnie: `import "OpenGL/gl.h"`.
-
-### Linux
-
-Gotowe `finch-linux-x64.tar.gz` / `finch-linux-arm64.tar.gz` potrzebują bibliotek LLVM 21
-(Debian/Ubuntu: `libllvm21 libclang1-21` z [apt.llvm.org](https://apt.llvm.org)) i kompilatora C (`cc`).
-Samodzielne budowanie wygląda tak samo na x86-64 i ARM64 (Raspberry Pi 4/5, Graviton, …).
-Z innymi wersjami LLVM Finch prawdopodobnie się nie skompiluje, bo API C++ LLVM zmienia się między wydaniami.
-
-### Opcja A: Nix (zalecana, nic nie instalujesz ręcznie)
+### Opcja B: zbuduj sam
 
 ```sh
 git clone https://github.com/Nexoniarz/Finch.git
 cd Finch
-nix-shell                        # pobiera LLVM, libclang, clang, cmake, ninja, pkg-config
-cmake -S . -B build -G Ninja
-ninja -C build
-./build/finch version            # finch 2.4.0 (LLVM 21.x)
+nix-shell                        # clang, libclang, pkg-config (albo zainstaluj z dystrybucji)
+bootstrap/build.sh               # build/finch
+./build/finch version
 ```
 
-### Opcja B: pakiety z twojej dystrybucji
-
-Potrzebujesz: kompilatora C/C++, CMake ≥ 3.20, Ninja (albo Make), plików deweloperskich LLVM 21
-i libclang 21, a opcjonalnie `pkg-config`.
-
-| Dystrybucja | Pakiety (nazwy mogą się nieco różnić zależnie od wersji) |
-|---|---|
-| Debian / Ubuntu | `build-essential cmake ninja-build pkg-config llvm-21-dev libclang-21-dev` |
-| Fedora | `gcc-c++ cmake ninja-build pkgconf llvm-devel clang-devel` |
-| Arch | `base-devel cmake ninja pkgconf llvm clang` |
-
-Ta opcja nie była testowana. Jeśli CMake nie znajduje LLVM, wskaż mu katalog:
-
-```sh
-cmake -S . -B build -G Ninja -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm
-ninja -C build
-```
+`bootstrap/build.sh` kompiluje ziarno (`bootstrap/<system>.ll`, własny LLVM IR kompilatora) do pierwszego kompilatora,
+buduje nim `src/`, buduje `src/` jeszcze raz wynikiem i sprawdza, że oba są identyczne. Jeśli libclang nie leży tam, gdzie
+szuka linker: `FINCH_LIBCLANG="-L/usr/lib/llvm-21/lib -lclang-21" bootstrap/build.sh`.
 
 ### Budowanie na inny system
 
@@ -159,13 +122,14 @@ Na Niksie te kompilatory to `pkgsCross.mingwW64.buildPackages.gcc` i
 ### Dodanie `finch` do PATH (opcjonalnie)
 
 ```sh
-sudo cp build/finch /usr/local/bin/
+sudo bootstrap/install.sh          # /usr/local/bin/finch oraz /usr/local/share/finch/{runtime,std}
+bootstrap/install.sh ~/.local      # albo do własnego katalogu
 finch version
 ```
 
-Podczas pracy Finch potrzebuje kompilatora C (`cc`). Używa go do linkowania programów i jednorazowo
-do zbudowania swojej małej biblioteki uruchomieniowej, którą trzyma w `~/.cache/finch`.
-Inny kompilator wskażesz zmienną `CC`.
+Podczas działania Finch potrzebuje `clanga` (kompiluje IR każdego programu i go linkuje). Mała biblioteka uruchomieniowa
+budowana jest raz i trzymana w `~/.cache/finch`. `FINCH_CC` wskazuje inny kompilator do linkowania; `FINCH_PATH` dodaje
+katalogi, w których szukać modułów.
 
 ---
 
@@ -941,28 +905,27 @@ CodeView, który czyta debugger Visual Studio i WinDbg.
 
 ```
 Finch/
-├── src/            kompilator (C++)
-├── runtime/        finch_rt.c: mała biblioteka uruchomieniowa (teksty, tablice, wejście, pliki)
-├── boot/           kompilator Fincha napisany w Finchu (zobacz przewodnik dla inżynierów)
+├── src/            kompilator, w Finchu (lekser, parser, gen: LLVM IR jako tekst, cimport: libclang, lsp, main ...)
+├── std/            biblioteka standardowa, w Finchu: json, path, time, proc
+├── runtime/        finch_rt.c: mała biblioteka uruchomieniowa (teksty, tablice, mapy, wejście, pliki)
+├── bootstrap/      build.sh, install.sh i ziarna (własny IR kompilatora, po jednym na system)
 ├── examples/       hello, tour, types, structs, todo, guess, c_import, window, opengl, vulkan, raylib, llvm
 ├── tests/
-│   ├── run/        programy + dokładny wynik (.out) i wejście (.in)
-│   ├── fail/       programy, które muszą się nie udać, z oczekiwanym błędem w 1. linijce
+│   ├── run/ new/   programy + dokładny wynik (.out) i wejście (.in)
+│   ├── fail/ new/fail/   programy, które muszą się nie udać, z oczekiwanym błędem w 1. linijce
 │   ├── run.sh      uruchamia testy (MEMCHECK=1 sprawdza też pamięć valgrindem)
-│   └── boot.sh     buduje kompilator samohostujący nim samym i porównuje
+│   ├── cross.sh    każdy test zbudowany na Windows / ARM64 i uruchomiony w Wine / QEMU
+│   └── lsp_test.py serwer języka, obsługiwany jak przez edytor
 ├── editors/        rozszerzenie VS Code (vscode/), podświetlanie i konfiguracja LSP dla Kate (kate/)
 ├── docs/           ta dokumentacja (en, pl), łącznie ze ściągą
-├── shell.nix       środowisko deweloperskie Nix
-└── CMakeLists.txt
+└── shell.nix       środowisko deweloperskie Nix
 ```
 
 ```sh
-tests/run.sh                 # → 74 passed, 0 failed
+tests/run.sh                 # programy, odmowy, buildy z -g, biblioteka współdzielona, serwer języka
 MEMCHECK=1 tests/run.sh      # to samo pod valgrindem: bez wycieków i złych dostępów do pamięci
-tests/boot.sh                # sprawdzenie samohostowania (wymaga clanga)
 tests/cross.sh windows       # każdy test zbudowany na Windowsa i uruchomiony w Wine
 tests/cross.sh arm64         # każdy test zbudowany na Linuksa ARM64 i uruchomiony w QEMU
-python3 tests/lsp_test.py    # serwer języka
 ```
 
 ---

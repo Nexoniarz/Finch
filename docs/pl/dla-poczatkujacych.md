@@ -63,8 +63,7 @@ i wpisz te linijki po kolei, naciskając **Enter** po każdej:
 git clone https://github.com/Nexoniarz/Finch.git
 cd Finch
 nix-shell
-cmake -S . -B build -G Ninja
-ninja -C build
+bootstrap/build.sh
 ```
 
 Jeśli ostatnia linijka skończy się bez słowa `error`, Finch jest gotowy.

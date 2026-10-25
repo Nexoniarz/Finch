@@ -11,6 +11,8 @@
     <list name="keywords">
       <item>fn</item>
       <item>struct</item>
+      <item>enum</item>
+      <item>export</item>
     </list>
     <list name="control">
       <item>if</item>
@@ -24,6 +26,7 @@
       <item>defer</item>
       <item>or</item>
       <item>try</item>
+      <item>match</item>
     </list>
     <list name="imports">
       <item>import</item>

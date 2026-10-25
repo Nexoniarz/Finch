@@ -48,36 +48,32 @@ fn main() {
   ```
 - **Każda biblioteka C, bezpośrednio.** Piszesz `import "raylib.h"` i `link "raylib"`, i możesz z niej korzystać,
   także ze struktur przekazywanych przez wartość i z callbacków. Nagłówki czyta libclang, więc nie trzeba niczego deklarować ręcznie.
-- **Napisany także w sobie.** `boot/` to kompilator Fincha napisany w Finchu, który kompiluje sam siebie
-  do identycznego co do bajtu wyniku.
+- **Napisany w sobie.** Kompilator to kod w Finchu i nic więcej: `src/*.fch`, ok. 8,6 tys. linii. Buduje się go z ziarna
+  (własny kod LLVM IR, `bootstrap/`), potem z samego siebie, a oba wyniki są identyczne. Pierwsza wersja, w C++,
+  jest w gałęzi `before-bootstrap`.
 
 ## Szybki start
 
-Gotowe wersje są w [wydaniach](https://github.com/Nexoniarz/Finch/releases):
-
-| System | Plik | Potrzebuje też |
-|---|---|---|
-| Windows x64 | `finch-windows-x64.zip` | LLVM 21, Visual Studio Build Tools (C++); [kroki](docs/pl/dla-technikow.md#windows) |
-| macOS (Apple Silicon) | `finch-macos-arm64.tar.gz` | `brew install llvm@21`; [kroki](docs/pl/dla-technikow.md#macos) |
-| Linux x64 / ARM64 | `finch-linux-x64.tar.gz` / `finch-linux-arm64.tar.gz` | biblioteki LLVM 21, kompilator C; [kroki](docs/pl/dla-technikow.md#linux) |
-
-Edytory: **Kate** (`editors/kate/install.sh`), **VS Code** (plik `.vsix` `finch-lang` z wydania) albo każdy
-edytor obsługujący LSP (`finch lsp`).
-
-**Samodzielne budowanie** (Linux albo macOS, LLVM 21):
+**Budowanie** (Linux x86-64 lub ARM64; potrzebny `clang` i libclang, LLVM 21):
 
 ```sh
 git clone https://github.com/Nexoniarz/Finch.git
 cd Finch
-nix-shell                           # albo zainstaluj samodzielnie LLVM 21 + libclang + cmake + ninja
-cmake -S . -B build -G Ninja
-ninja -C build
+nix-shell                           # albo zainstaluj samodzielnie clang + libclang (LLVM 21) + pkg-config
+bootstrap/build.sh                  # kompilator to build/finch: z ziarna, potem z samego siebie
 
 ./build/finch run examples/hello.fch
 ./build/finch build examples/tour.fch -o tour && ./tour
-tests/run.sh                        # 74 passed, 0 failed
-tests/boot.sh                       # kompilator napisany w Finchu buduje sam siebie
+tests/run.sh                        # każdy program, każda odmowa, -g, biblioteka współdzielona, serwer języka
 ```
+
+Gotowe kompilatory są w [wydaniach](https://github.com/Nexoniarz/Finch/releases) (Linux x64 i ARM64: rozpakuj, zostaw
+`runtime/` i `std/` obok `finch`). **Programy dla Windowsa, ARM64 i macOS** buduje się z Linuksa przez
+`--target windows|arm64|macos`; sam kompilator nie działa jeszcze na macOS ani Windowsie (potrzebuje ziarna
+zrobionego z nagłówkami tego systemu: patrz [bootstrap/README.md](bootstrap/README.md)).
+
+Edytory: **Kate** (`editors/kate/install.sh`), **VS Code** (plik `.vsix` `finch-lang` z wydania) albo dowolny
+edytor z obsługą LSP (`finch lsp`).
 
 ## Dokumentacja
 
@@ -155,12 +151,14 @@ Wybierz przewodnik dla siebie:
 ## Struktura
 
 ```
-src/        kompilator: lekser, parser, AST, codegen, import C + ABI, serwer języka, sterownik (C++17, ok. 7 tys. linii)
+src/        kompilator, w Finchu: lekser, parser, AST, generowanie kodu (do LLVM IR jako tekst), import C (libclang)
+            i konwencje wywołań C, serwer języka, sterownik
+std/        biblioteka standardowa, w Finchu: json, path, time, proc
 runtime/    mały runtime w C dołączany do każdego programu
-boot/       kompilator Fincha napisany w Finchu (ok. 3 tys. linii)
+bootstrap/  build.sh i ziarna: własny LLVM IR kompilatora, po jednym na system
 examples/   przykładowe programy
 editors/    rozszerzenie VS Code, podświetlanie i konfiguracja LSP dla Kate
-tests/      run/ (wzorcowe wyjście), fail/ (oczekiwane błędy), run.sh, boot.sh, cross.sh, lsp_test.py
+tests/      run/ new/ (wzorcowe wyjście), fail/ new/fail/ (oczekiwane błędy), run.sh, cross.sh, shared.sh, lsp_test.py
 docs/       przewodniki en/ i pl/ dla trzech grup odbiorców
 ```
 

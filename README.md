@@ -48,37 +48,32 @@ fn main() {
   ```
 - **Any C library, directly.** `import "raylib.h"` + `link "raylib"`, and you can call it, structs by value
   and callbacks included. Headers are read by libclang, so there is nothing to declare by hand.
-- **Written in itself, too.** `boot/` is a Finch compiler written in Finch that compiles itself to a
-  byte-identical result. It handles the whole language except C import and `link` (sized numbers,
-  methods, `defer`, errors as values, maps and `for k, v` all work); `tests/boot.sh` shows what is left.
+- **Written in itself.** The compiler is Finch code, and nothing else: `src/*.fch`, about 8.6k lines. It is built from a
+  seed (its own LLVM IR, `bootstrap/`) and then from itself, and the two come out identical. Its first version, in C++,
+  is kept on the `before-bootstrap` branch.
 
 ## Quick start
 
-Ready builds are in the [releases](https://github.com/Nexoniarz/Finch/releases):
-
-| System | Download | Also needs |
-|---|---|---|
-| Windows x64 | `finch-windows-x64.zip` | LLVM 21, Visual Studio Build Tools (C++); [steps](docs/en/for-technicians.md#windows) |
-| macOS (Apple Silicon) | `finch-macos-arm64.tar.gz` | `brew install llvm@21`; [steps](docs/en/for-technicians.md#macos) |
-| Linux x64 / ARM64 | `finch-linux-x64.tar.gz` / `finch-linux-arm64.tar.gz` | LLVM 21 libraries, a C compiler; [steps](docs/en/for-technicians.md#linux) |
-
-Editors: **Kate** (`editors/kate/install.sh`), **VS Code** (the `finch-lang` `.vsix` from the release), or any
-editor with LSP support (`finch lsp`).
-
-**Building it yourself** (Linux or macOS, LLVM 21):
+**Building it** (Linux x86-64 or ARM64; needs `clang` and libclang, LLVM 21):
 
 ```sh
 git clone https://github.com/Nexoniarz/Finch.git
 cd Finch
-nix-shell                           # or install LLVM 21 + libclang + cmake + ninja yourself
-cmake -S . -B build -G Ninja
-ninja -C build
+nix-shell                           # or install clang + libclang (LLVM 21) + pkg-config yourself
+bootstrap/build.sh                  # the compiler is build/finch: built from the seed, then from itself
 
 ./build/finch run examples/hello.fch
 ./build/finch build examples/tour.fch -o tour && ./tour
-tests/run.sh                        # 74 passed, 0 failed
-tests/boot.sh                       # the compiler written in Finch builds itself
+tests/run.sh                        # every program, every refusal, -g, a shared library, the language server
 ```
+
+Ready builds of the compiler are in the [releases](https://github.com/Nexoniarz/Finch/releases) (Linux x64 and ARM64:
+unpack, keep `runtime/` and `std/` next to `finch`). **Programs for Windows, ARM64 and macOS** are built from Linux with
+`--target windows|arm64|macos` (see the [guide](docs/en/for-technicians.md#3-the-finch-command)); the compiler itself does not run on
+macOS or Windows yet (it needs a seed made with that system's headers: see [bootstrap/README.md](bootstrap/README.md)).
+
+Editors: **Kate** (`editors/kate/install.sh`), **VS Code** (the `finch-lang` `.vsix` from the release), or any
+editor with LSP support (`finch lsp`).
 
 ## Documentation
 
@@ -156,12 +151,14 @@ Pick the guide that fits you:
 ## Layout
 
 ```
-src/        compiler: lexer, parser, AST, codegen, C import + ABI, language server, driver (C++17, ~7k lines)
+src/        the compiler, in Finch: lexer, parser, AST, code generation (to LLVM IR as text), C import (libclang) and
+            the C calling conventions, the language server, the driver
+std/        the standard library, in Finch: json, path, time, proc
 runtime/    the small C runtime linked into every program
-boot/       the Finch compiler written in Finch (~3k lines)
+bootstrap/  build.sh and the seeds: the compiler's own LLVM IR, one per system
 examples/   example programs
 editors/    VS Code extension, Kate highlighting and LSP setup
-tests/      run/ (golden output), fail/ (expected errors), run.sh, boot.sh, cross.sh, lsp_test.py
+tests/      run/ new/ (golden output), fail/ new/fail/ (expected errors), run.sh, cross.sh, shared.sh, lsp_test.py
 docs/       en/ and pl/ guides for three audiences
 ```
 

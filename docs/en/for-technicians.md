@@ -63,78 +63,40 @@ messages that tell you how to fix the problem.
 
 ## 2. Installing
 
-Finch runs on **Linux** (x86-64 and ARM64), **macOS** (Apple Silicon and Intel) and **Windows** (x86-64),
-and is built with **LLVM 21**. Each [release](https://github.com/Nexoniarz/Finch/releases) has a ready
-`finch` for Windows, Linux x86-64, Linux ARM64 and macOS ARM64.
+The Finch compiler is written in Finch (see the [engineers' guide](for-engineers.md)). It runs on **Linux**
+(x86-64 and ARM64) and builds programs for **Linux, Windows and macOS**. It needs **clang 21** and **libclang**
+(LLVM 21) to read C headers and to compile its output.
 
-### Windows
+The compiler does not run on macOS or Windows yet; it needs a seed made with that system's headers
+([bootstrap/README.md](../../bootstrap/README.md) says why). Until then, build your Windows and macOS programs from Linux
+with `--target` (below), or use the older C++ compiler from the `before-bootstrap` branch.
 
-1. Download **`finch-windows-x64.zip`** from the [releases](https://github.com/Nexoniarz/Finch/releases)
-   and unpack it, for example to `C:\finch`. It contains `finch.exe` and `libclang.dll`.
-2. Install **LLVM 21** (`LLVM-21.x.x-win64.exe` from the
-   [LLVM releases](https://github.com/llvm/llvm-project/releases)) and tick *Add LLVM to the system PATH*.
-   Finch uses its `clang` to link programs.
-3. Install **Visual Studio Build Tools 2022** with *Desktop development with C++*: it provides the Windows
-   libraries every program is linked with.
-4. Add `C:\finch` to your PATH, open a new terminal, and run `finch version`.
+### Option A: a ready build (Linux)
 
-Programs are normal `.exe` files. To build from source on Windows instead, follow `.github/workflows/ci.yml`
-(Visual Studio 2022 + the `clang+llvm-21.x-x86_64-pc-windows-msvc` package from LLVM's releases).
+Download `finch-linux-x64.tar.gz` or `finch-linux-arm64.tar.gz` from the
+[releases](https://github.com/Nexoniarz/Finch/releases) and unpack it. Keep `runtime/` and `std/` next to the `finch` file
+(or install it, below). You also need `clang` 21 and its libclang library:
 
-### macOS
+| Distribution | Packages |
+|---|---|
+| Debian / Ubuntu | `clang-21 libclang-21-dev` from [apt.llvm.org](https://apt.llvm.org), `pkg-config` |
+| Fedora | `clang clang-devel pkgconf` |
+| Arch | `clang pkgconf` |
+| Nix | `nix-shell` in the repository gives all of it |
 
-```sh
-brew install llvm@21                # Finch's LLVM; programs are linked with Apple's clang
-```
-
-Then either unpack **`finch-macos-arm64.tar.gz`** from the releases (it uses Homebrew's `llvm@21`),
-or build it yourself (Xcode command line tools: `xcode-select --install`):
-
-```sh
-git clone https://github.com/Nexoniarz/Finch.git && cd Finch
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR="$(brew --prefix llvm@21)/lib/cmake/llvm"
-ninja -C build
-./build/finch version
-```
-
-Apple frameworks link with `link "Cocoa.framework"` (`-framework Cocoa`), and their headers import as usual:
-`import "OpenGL/gl.h"`.
-
-### Linux
-
-The ready `finch-linux-x64.tar.gz` / `finch-linux-arm64.tar.gz` need LLVM 21's libraries
-(Debian/Ubuntu: `libllvm21 libclang1-21` from [apt.llvm.org](https://apt.llvm.org)) and a C compiler (`cc`).
-Building it yourself works the same on x86-64 and ARM64 (Raspberry Pi 4/5, Graviton, …).
-Other LLVM versions will likely fail to compile, because LLVM's C++ API changes between releases.
-
-### Option A: Nix (recommended, nothing to install by hand)
+### Option B: build it yourself
 
 ```sh
 git clone https://github.com/Nexoniarz/Finch.git
 cd Finch
-nix-shell                        # downloads LLVM, libclang, clang, cmake, ninja, pkg-config
-cmake -S . -B build -G Ninja
-ninja -C build
-./build/finch version            # finch 2.4.0 (LLVM 21.x)
+nix-shell                        # clang, libclang, pkg-config (or install them with your distribution)
+bootstrap/build.sh               # build/finch
+./build/finch version
 ```
 
-### Option B: your distribution's packages
-
-You need: a C/C++ compiler, CMake ≥ 3.20, Ninja (or Make), LLVM 21 development files,
-libclang 21 development files, and optionally `pkg-config`.
-
-| Distribution | Packages (names can differ slightly by version) |
-|---|---|
-| Debian / Ubuntu | `build-essential cmake ninja-build pkg-config llvm-21-dev libclang-21-dev` |
-| Fedora | `gcc-c++ cmake ninja-build pkgconf llvm-devel clang-devel` |
-| Arch | `base-devel cmake ninja pkgconf llvm clang` |
-
-These have not been tested; if CMake cannot find LLVM, point it there:
-
-```sh
-cmake -S . -B build -G Ninja -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm
-ninja -C build
-```
+`bootstrap/build.sh` compiles the seed (`bootstrap/<system>.ll`, the compiler's own LLVM IR) into a first compiler, builds
+`src/` with it, builds `src/` again with the result and checks the two are identical. If libclang isn't where the linker
+looks, tell it: `FINCH_LIBCLANG="-L/usr/lib/llvm-21/lib -lclang-21" bootstrap/build.sh`.
 
 ### Building for another system
 
@@ -160,12 +122,13 @@ On Nix the compilers are `pkgsCross.mingwW64.buildPackages.gcc` and
 ### Putting `finch` on your PATH (optional)
 
 ```sh
-sudo cp build/finch /usr/local/bin/
+sudo bootstrap/install.sh          # /usr/local/bin/finch, and /usr/local/share/finch/{runtime,std}
+bootstrap/install.sh ~/.local      # or into your own folder
 finch version
 ```
 
-At run time Finch needs a C compiler (`cc`). It is used to link programs, and once to build
-Finch's small runtime library, which is kept in `~/.cache/finch`. Set `CC` to use a different one.
+At run time Finch needs `clang` (it compiles each program's IR and links it). The small runtime library is built once and
+kept in `~/.cache/finch`. `FINCH_CC` names a different compiler to link with; `FINCH_PATH` adds folders to look for modules in.
 
 ---
 
@@ -938,28 +901,27 @@ Visual Studio debugger and WinDbg read.
 
 ```
 Finch/
-├── src/            the compiler (C++)
-├── runtime/        finch_rt.c: the small runtime (text, arrays, input, files)
-├── boot/           the Finch compiler written in Finch (see the engineers' guide)
+├── src/            the compiler, in Finch (lexer, parser, gen: LLVM IR as text, cimport: libclang, lsp, main ...)
+├── std/            the standard library, in Finch: json, path, time, proc
+├── runtime/        finch_rt.c: the small runtime (text, arrays, maps, input, files)
+├── bootstrap/      build.sh, install.sh and the seeds (the compiler's own IR, one per system)
 ├── examples/       hello, tour, types, structs, todo, guess, c_import, window, opengl, vulkan, raylib, llvm
 ├── tests/
-│   ├── run/        programs + the exact output they must print (.out), input (.in)
-│   ├── fail/       programs that must fail, with the expected error in line 1
+│   ├── run/ new/   programs + the exact output they must print (.out), input (.in)
+│   ├── fail/ new/fail/   programs that must fail, with the expected error in line 1
 │   ├── run.sh      the test runner (MEMCHECK=1 also checks memory with valgrind)
-│   └── boot.sh     builds the self-hosted compiler with itself and compares
+│   ├── cross.sh    every test built for Windows / ARM64 and run under Wine / QEMU
+│   └── lsp_test.py the language server, talked to like an editor does
 ├── editors/        the VS Code extension (vscode/), Kate highlighting and LSP setup (kate/)
 ├── docs/           this documentation (en, pl), including the cheat sheet
-├── shell.nix       the Nix development environment
-└── CMakeLists.txt
+└── shell.nix       the Nix development environment
 ```
 
 ```sh
-tests/run.sh                 # → 74 passed, 0 failed
+tests/run.sh                 # programs, refusals, -g builds, a shared library, the language server
 MEMCHECK=1 tests/run.sh      # the same under valgrind: no leaks, no bad memory access
-tests/boot.sh                # the self-hosting check (needs clang)
 tests/cross.sh windows       # every test built for Windows and run with Wine
 tests/cross.sh arm64         # every test built for ARM64 Linux and run with QEMU
-python3 tests/lsp_test.py    # the language server
 ```
 
 ---
