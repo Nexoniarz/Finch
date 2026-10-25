@@ -6,8 +6,8 @@
 #   bootstrap/build.sh seed       also write bootstrap/<system>.ll anew (do this when the compiler got a feature
 #                                 its own source uses, or the seed is old: the next build starts from it)
 #
-# Needs clang and libclang (the C headers are read through it). The compiler is then in build/finch; it looks for the
-# runtime and the standard library next to build/, in runtime/ and std/.
+# Needs clang and libclang (the C headers are read through it). The compiler is then in build/finch. It carries the
+# runtime and the standard library inside itself (src/embedded.fch), so it runs from anywhere.
 set -eu
 cd "$(dirname "$0")/.."
 mkdir -p build
@@ -28,6 +28,8 @@ export FINCH_RT=$PWD/runtime/finch_rt.c
 
 echo "bootstrap: seed ($seed) -> build/finch0"
 $CLANG -O1 -w "bootstrap/$seed.ll" runtime/finch_rt.c -o build/finch0 -lm $LIBS
+echo "bootstrap: build/finch0 packs the runtime and std into src/embedded.fch"
+bootstrap/pack.sh build/finch0
 echo "bootstrap: build/finch0 builds the compiler -> build/finch1"
 build/finch0 build src/main.fch -o build/finch1
 echo "bootstrap: build/finch1 builds the compiler -> build/finch"

@@ -1,0 +1,97 @@
+// What differs between the systems the compiler itself runs on: how a command line is quoted and run,
+// where temporary files go, making and removing files. This one is for Windows (host.fch is for Linux and macOS).
+import "stdlib.h"
+import "stdio.h"
+import "process.h"
+import "direct.h"
+import "io.h"
+
+// a Windows argument: in double quotes, with the quotes inside doubled up the way CreateProcess reads them
+fn quote(str a) -> str {
+    return "\"" + a.replace("\"", "\\\"") + "\""
+}
+
+// Paths use / inside the compiler; cmd.exe wants \
+fn native(str path) -> str {
+    return path.replace("/", "\\")
+}
+
+// run a command line through cmd.exe; its exit code.
+// system() runs `cmd /c <line>`, and cmd drops the first and last quote of a line that starts with one: so the line
+// gets one more pair around it.
+fn run(str cmd) -> int {
+    return shell("\"" + cmd + "\"")
+}
+
+fn nullDevice() -> str {
+    return "NUL"
+}
+
+fn tempDir() -> str {
+    for name in ["TEMP", "TMP"] {
+        t := getenv(name)
+        if t.len > 0 {
+            return t.replace("\\", "/")
+        }
+    }
+    return "."
+}
+
+fn pathSeparator() -> str {
+    return ";"
+}
+
+fn pid() -> int {
+    return int(getpid())
+}
+
+fn cwd() -> str {
+    here := _getcwd(null, 0)           // C allocates the buffer
+    if here.len == 0 {
+        return "."
+    }
+    return here.replace("\\", "/")
+}
+
+fn cacheDir() -> str {
+    x := getenv("LOCALAPPDATA")
+    if x.len > 0 {
+        return x.replace("\\", "/") + "/finch"
+    }
+    return tempDir() + "/finch-cache"
+}
+
+// the editor protocol is bytes, not text lines: no \r\n translation on stdin and stdout
+fn binaryStdio() {
+    _setmode(0, 32768)              // _O_BINARY
+    _setmode(1, 32768)
+}
+
+fn makeDirs(str path) {
+    p := path.replace("\\", "/")
+    at := 0
+    for part in p.split("/") {
+        if at > 0 {
+            at += 1
+        }
+        at += part.len
+        if part.len == 0 || part.ends_with(":") {
+            continue                // "" before a leading / and the drive letter
+        }
+        _mkdir(p.sub(0, at).ptr)    // fails when it is there already, which is fine
+    }
+}
+
+fn remove(str path) {
+    delete_file(path)
+}
+
+fn removeTree(str path) {
+    shell("\"rmdir /s /q " + quote(native(path)) + " 2> NUL\"")
+}
+
+// move a file over another
+fn move(str from, str to) {
+    delete_file(to)
+    rename(from.ptr, to.ptr)
+}

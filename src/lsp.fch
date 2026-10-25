@@ -5,9 +5,9 @@
 // It asks the compiler instead of being one: for every change it runs `finch index` on the text the editor has
 // (see the index records in gen.fch), and answers from what comes back.
 import json
+import host
 import docs
 import "stdio.h"
-import "unistd.h"
 import "stdlib.h"
 
 // ---------- what one run of the compiler told ----------
@@ -325,17 +325,17 @@ fn parseOutput(str output) -> Analysis {
 
 fn Server.analyse(str path) {
     // the editor's text, as files the compiler can read: it asks for the file by its real name
-    shell("mkdir -p '" + self.tmp + "'")
+    host.makeDirs(self.tmp)
     overlays := ""
     n := 0
     for p in self.docs.keys() {
         copy := self.tmp + "/doc" + str(n) + ".fch"
         write_file(copy, self.docs[p])
-        overlays = overlays + " --overlay '" + p + "=" + copy + "'"
+        overlays = overlays + " --overlay " + host.quote(p + "=" + copy)
         n += 1
     }
     out := self.tmp + "/out.txt"
-    shell("'" + self.self + "' index '" + path + "'" + overlays + " > '" + out + "' 2>&1")
+    host.run(host.quote(self.self) + " index " + host.quote(path) + overlays + " > " + host.quote(out) + " 2>&1")
     a := parseOutput(read_file(out) or "")
     if !a.diag.has {
         self.good[path] = a
@@ -863,13 +863,14 @@ fn Server.answer(json.Json msg) {
 
 // finch lsp
 fn run(str self) -> int {
-    s := Server(self: self, tmp: "/tmp/finch_lsp_" + str(int(getpid())))
+    host.binaryStdio()
+    s := Server(self: self, tmp: host.tempDir() + "/finch_lsp_" + str(host.pid()))
     while true {
         msg := readMessage() or {
             break
         }
         s.answer(msg)
     }
-    shell("rm -rf '" + s.tmp + "'")
+    host.removeTree(s.tmp)
     return 0
 }

@@ -10,6 +10,7 @@ set -u
 cd "$(dirname "$0")"
 FINCH=${FINCH:-../build/finch}
 FINCH="$(cd "$(dirname "$FINCH")" && pwd)/$(basename "$FINCH")"       # tests/shared.sh runs from another folder
+FINCH_ROOT="$(cd .. && pwd)"
 export FINCH_RT=${FINCH_RT:-$PWD/../runtime/finch_rt.c}
 pass=0; failed=0
 tmp=$(mktemp -d)
@@ -76,6 +77,15 @@ else
     failed=$((failed + 1))
     echo "FAIL shared.sh"
     head -5 "$tmp/shared.out"
+fi
+
+# the runtime and std carried inside the compiler are the files as they are now
+"$FINCH_ROOT/bootstrap/pack.sh" "$FINCH" "$tmp/embedded.fch" 2>/dev/null
+if cmp -s "$tmp/embedded.fch" "$FINCH_ROOT/src/embedded.fch"; then
+    pass=$((pass + 1))
+else
+    failed=$((failed + 1))
+    echo "FAIL src/embedded.fch is out of date (run bootstrap/build.sh)"
 fi
 
 # the language server, talked to the way an editor does

@@ -1,6 +1,7 @@
 // The system a program is built for, and what depends on it: the C compiler that links, the file
 // name of the program, how it is run here, and (through the flags) the C calling convention.
 // The same as src/target.cpp.
+import host
 import "stdlib.h"
 
 struct Target {
@@ -22,10 +23,10 @@ fn firstLine(str text) -> str {
 
 // what clang calls the system it runs on, like x86_64-pc-linux-gnu
 fn hostTriple() -> str {
-    tmp := "/tmp/finch_triple.txt"
-    shell("clang -dumpmachine > '" + tmp + "' 2> /dev/null")
+    tmp := host.tempDir() + "/finch_triple_" + str(host.pid()) + ".txt"
+    host.run("clang -dumpmachine > " + host.quote(tmp) + " 2> " + host.nullDevice())
     out := read_file(tmp) or ""
-    shell("rm -f '" + tmp + "'")
+    host.remove(tmp)
     if out.trim().len == 0 {
         return "x86_64-unknown-linux-gnu"
     }
@@ -34,10 +35,10 @@ fn hostTriple() -> str {
 
 // "windows", "linux", "macos", "arm64" (ARM64 Linux), or a full LLVM triple; "" = this system
 fn select(str name) -> Target {
-    host := hostTriple()
+    hostName := hostTriple()
     t := name
     if name.len == 0 {
-        t = host
+        t = hostName
     } else if name == "windows" {
         t = "x86_64-w64-mingw32"
     } else if name == "linux" {
@@ -45,7 +46,7 @@ fn select(str name) -> Target {
     } else if name == "arm64" || name == "aarch64" || name == "linux-arm64" {
         t = "aarch64-unknown-linux-gnu"
     } else if name == "macos" {
-        if host.starts_with("aarch64") || host.starts_with("arm64") {
+        if hostName.starts_with("aarch64") || hostName.starts_with("arm64") {
             t = "arm64-apple-macosx14.0.0"
         } else {
             t = "x86_64-apple-macosx14.0.0"
@@ -56,8 +57,8 @@ fn select(str name) -> Target {
     tg.msvc = t.contains("msvc")
     tg.darwin = t.contains("apple") || t.contains("darwin") || t.contains("macos")
     tg.arm64 = t.starts_with("aarch64") || t.starts_with("arm64")
-    hostArm := host.starts_with("aarch64") || host.starts_with("arm64")
-    hostDarwin := host.contains("apple") || host.contains("darwin")
+    hostArm := hostName.starts_with("aarch64") || hostName.starts_with("arm64")
+    hostDarwin := hostName.contains("apple") || hostName.contains("darwin")
     tg.cross = tg.windows || tg.darwin != hostDarwin || tg.arm64 != hostArm
     tg.exe = ""
     if tg.windows {
@@ -73,6 +74,8 @@ fn select(str name) -> Target {
         tg.cc = "aarch64-linux-gnu-gcc"
     } else if tg.cross {
         tg.cc = "clang --target=" + t
+    } else if host.pathSeparator() == ";" {
+        tg.cc = "clang"             // Windows has no cc
     } else {
         tg.cc = "cc"
     }

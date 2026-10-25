@@ -2,8 +2,7 @@
 // and C files the program asks for, and turn the linker's complaints into something a person can act on.
 import platform
 import cimport
-import "stdlib.h"
-import "unistd.h"
+import host
 
 // 32-bit FNV-1a, as hex: names the cached runtime object after what it was built from
 fn fingerprint(str text) -> str {
@@ -20,20 +19,7 @@ fn fingerprint(str text) -> str {
 }
 
 fn quote(str a) -> str {
-    return "'" + a.replace("'", "'\\''") + "'"
-}
-
-// where files that are made once and kept go: ~/.cache/finch
-fn cacheDir() -> str {
-    x := getenv("XDG_CACHE_HOME")
-    if x.len > 0 {
-        return x + "/finch"
-    }
-    h := getenv("HOME")
-    if h.len > 0 {
-        return h + "/.cache/finch"
-    }
-    return "/tmp/finch-cache"
+    return host.quote(a)
 }
 
 // "-lname", or whatever pkg-config says the library needs
@@ -42,11 +28,11 @@ fn libFlags(str name, platform.Target tg) -> str {
         return "-framework " + quote(name.sub(0, name.len - 10))         // macOS: link "Cocoa.framework"
     }
     if !tg.cross {
-        tmp := "/tmp/finch_pkg_flags.txt"
-        code := shell("pkg-config --libs " + quote(name) + " > '" + tmp + "' 2> /dev/null")
+        tmp := host.tempDir() + "/finch_pkg_flags_" + str(host.pid()) + ".txt"
+        code := host.run("pkg-config --libs " + quote(name) + " > " + quote(tmp) + " 2> " + host.nullDevice())
         if code == 0 && file_exists(tmp) {
             flags := (read_file(tmp) or "").trim()
-            shell("rm -f '" + tmp + "'")
+            host.remove(tmp)
             if flags.len > 0 {
                 return flags
             }
@@ -185,25 +171,27 @@ fn linkFailed(str output, cimport.CImports ci, platform.Target tg) -> int {
 // The runtime, compiled once per system and compiler and kept in the cache folder.
 fn runtimeObject(str rt, platform.Target tg, str cc) -> str! {
     source := try read_file(rt)
-    dir := cacheDir()
+    dir := host.cacheDir()
     obj := dir + "/rt-" + fingerprint(source + cc + tg.triple + "2.5") + ".o"
     if file_exists(obj) {
         return obj
     }
-    shell("mkdir -p " + quote(dir))
-    part := obj + ".part" + str(int(getpid()))
+    host.makeDirs(dir)
+    part := obj + ".part" + str(host.pid())
     pic := " -fPIC"
     if tg.windows {
         pic = ""
     }
     log := part + ".log"
-    code := shell(cc + " -O2" + pic + " -c " + quote(rt) + " -o " + quote(part) + " > " + quote(log) + " 2>&1")
+    code := host.run(cc + " -O2" + pic + " -c " + quote(rt) + " -o " + quote(part) + " > " + quote(log) + " 2>&1")
     if code != 0 {
         text := read_file(log) or ""
-        shell("rm -f " + quote(part) + " " + quote(log))
+        host.remove(part)
+        host.remove(log)
         return error(text + "error: couldn't build the Finch runtime with '" + cc + "' (is a C compiler installed?)")
     }
-    shell("rm -f " + quote(log) + " && mv " + quote(part) + " " + quote(obj))
+    host.remove(log)
+    host.move(part, obj)
     return obj
 }
 
@@ -242,12 +230,13 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
         target = " --target=" + tg.triple
     }
     log := b.out + ".log"
-    code := shell(clang + target + " " + b.opt + b.extra + " -w -c " + quote(ll) + " -o " + quote(obj) + " > " + quote(log) + " 2>&1")
-    shell("rm -f " + quote(ll))
+    code := host.run(clang + target + " " + b.opt + b.extra + " -w -c " + quote(ll) + " -o " + quote(obj) + " > " + quote(log) + " 2>&1")
+    host.remove(ll)
     if code != 0 {
         print(read_file(log) or "")
         print("error: clang couldn't compile the program's IR")
-        shell("rm -f " + quote(obj) + " " + quote(log))
+        host.remove(obj)
+        host.remove(log)
         return 1
     }
     cmd := cc + " " + quote(obj) + " " + quote(rtobj) + " -o " + quote(b.out)
@@ -270,10 +259,12 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
             if tg.windows {
                 pic = ""
             }
-            c := shell(cc + " -O2" + pic + " -c " + quote(l) + " -o " + quote(o) + " > " + quote(log) + " 2>&1")
+            c := host.run(cc + " -O2" + pic + " -c " + quote(l) + " -o " + quote(o) + " > " + quote(log) + " 2>&1")
             if c != 0 {
                 print((read_file(log) or "") + "error: couldn't compile " + l)
-                shell("rm -f " + quote(obj) + " " + quote(log) + " " + quote(o))
+                host.remove(obj)
+                host.remove(log)
+                host.remove(o)
                 return 1
             }
             temps.push(o)
@@ -284,11 +275,12 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
             cmd = cmd + " " + libFlags(l, tg)
         }
     }
-    status := shell(cmd + " > " + quote(log) + " 2>&1")
+    status := host.run(cmd + " > " + quote(log) + " 2>&1")
     output := read_file(log) or ""
-    shell("rm -f " + quote(obj) + " " + quote(log))
+    host.remove(obj)
+    host.remove(log)
     for t in temps {
-        shell("rm -f " + quote(t))
+        host.remove(t)
     }
     if status == 127 {
         print("error: no C compiler found to link with ('" + cc + "'; install one, or set FINCH_CC)")

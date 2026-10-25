@@ -8,6 +8,7 @@
 //
 // C structs by value appear in types as the named type `module "C"`.
 import ast
+import host
 import "clang-c/Index.h"
 link "clang"
 
@@ -101,8 +102,11 @@ fn fixed(ast.Type elem, int count) -> ast.Type {
 // Ask the system C compiler where it looks for headers, so we find the same stdio.h it would.
 fn systemIncludeArgs(str cc) -> []str {
     []str dirs
-    tmp := "/tmp/finch_cc_dirs.txt"
-    shell(cc + " -E -v -x c /dev/null 2> '" + tmp + "' > /dev/null")
+    tmp := host.tempDir() + "/finch_cc_dirs_" + str(host.pid()) + ".txt"
+    empty := host.tempDir() + "/finch_empty_" + str(host.pid()) + ".c"
+    write_file(empty, "")
+    host.run(cc + " -E -v -x c " + host.quote(empty) + " 2> " + host.quote(tmp) + " > " + host.nullDevice())
+    host.remove(empty)
     if !file_exists(tmp) {
         return dirs
     }
@@ -126,7 +130,7 @@ fn systemIncludeArgs(str cc) -> []str {
             dirs.push("-isystem" + l)
         }
     }
-    shell("rm -f '" + tmp + "'")
+    host.remove(tmp)
     return dirs
 }
 

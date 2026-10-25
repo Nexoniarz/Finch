@@ -13,6 +13,8 @@ import cimport
 import platform
 import linker
 import lsp
+import host
+import embedded
 import "stdlib.h"
 
 fn dirOf(str path) -> str {
@@ -129,6 +131,23 @@ fn usage() {
     exit(1)
 }
 
+// The runtime and the standard library are carried inside the compiler (embedded.fch). When they aren't found as
+// files next to it, they are written to the cache folder, once, and used from there.
+fn unpack() -> str {
+    names := embedded.names()
+    dir := host.cacheDir() + "/files-" + linker.fingerprint(embedded.texts().join("\n"))
+    if file_exists(dir + "/done") {
+        return dir
+    }
+    texts := embedded.texts()
+    for i in 0..names.len {
+        host.makeDirs(dirOf(dir + "/" + names[i]))
+        write_file(dir + "/" + names[i], texts[i])
+    }
+    write_file(dir + "/done", "")
+    return dir
+}
+
 fn main([]str args) -> int {
     if args.len == 2 && (args[1] == "version" || args[1] == "--version") {
         print("Finch 2.4.0 (the compiler is written in Finch)")
@@ -196,7 +215,7 @@ fn main([]str args) -> int {
     }
     tg := platform.select(targetName)
     if cmd == "run" {
-        out = "/tmp/finch_run_" + stem(file) + tg.exe
+        out = host.tempDir() + "/finch_run_" + str(host.pid()) + "_" + stem(file) + tg.exe
     } else if shared && !outGiven {
         if tg.windows {
             out = out + ".dll"
@@ -221,9 +240,12 @@ fn main([]str args) -> int {
             loader.std = cand
         }
     }
+    if loader.std.len == 0 {
+        loader.std = unpack() + "/std"
+    }
     loader.overlayPaths = overlayPaths
     loader.overlayFiles = overlayFiles
-    for d in getenv("FINCH_PATH").split(":") {
+    for d in getenv("FINCH_PATH").split(host.pathSeparator()) {
         if d.len > 0 {
             loader.paths.push(d)
         }
@@ -262,7 +284,7 @@ fn main([]str args) -> int {
         print(err)
         return 1
     }
-    ir := gen.generate(loader.progs, loader.files, ci, gen.Options(shared: shared, debug: debug, index: cmd == "index", cwd: getenv("PWD"), target: tg))
+    ir := gen.generate(loader.progs, loader.files, ci, gen.Options(shared: shared, debug: debug, index: cmd == "index", cwd: host.cwd(), target: tg))
     if cmd == "ir" || cmd == "index" {
         print(ir)
         return 0
@@ -283,8 +305,7 @@ fn main([]str args) -> int {
         rt = "runtime/finch_rt.c"
     }
     if !file_exists(rt) {
-        print("error: can't find the Finch runtime (runtime/finch_rt.c)")
-        return 1
+        rt = unpack() + "/runtime/finch_rt.c"
     }
     extra := ""
     if shared {
@@ -301,8 +322,8 @@ fn main([]str args) -> int {
         for a in progArgs {
             quoted.push(linker.quote(a))
         }
-        status := shell(tg.runner + linker.quote(out) + " " + quoted.join(" "))
-        shell("rm -f " + linker.quote(out))
+        status := host.run(tg.runner + linker.quote(out) + " " + quoted.join(" "))
+        host.remove(out)
         return status
     }
     return 0

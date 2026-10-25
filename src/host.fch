@@ -1,0 +1,77 @@
+// What differs between the systems the compiler itself runs on: how a command line is quoted and run,
+// where temporary files go, making and removing files. This one is for Linux and macOS (name_windows.fch has
+// the Windows one).
+import "stdlib.h"
+import "unistd.h"
+
+fn quote(str a) -> str {
+    return "'" + a.replace("'", "'\\''") + "'"
+}
+
+// run a command line through the shell; its exit code
+fn run(str cmd) -> int {
+    return shell(cmd)
+}
+
+fn nullDevice() -> str {
+    return "/dev/null"
+}
+
+// the folder for temporary files
+fn tempDir() -> str {
+    t := getenv("TMPDIR")
+    if t.len > 0 {
+        if t.ends_with("/") {
+            return t.sub(0, t.len - 1)
+        }
+        return t
+    }
+    return "/tmp"
+}
+
+fn pathSeparator() -> str {
+    return ":"
+}
+
+fn pid() -> int {
+    return int(getpid())
+}
+
+// the folder the compiler was started in
+fn cwd() -> str {
+    return getenv("PWD")
+}
+
+// where files that are made once and kept go
+fn cacheDir() -> str {
+    x := getenv("XDG_CACHE_HOME")
+    if x.len > 0 {
+        return x + "/finch"
+    }
+    h := getenv("HOME")
+    if h.len > 0 {
+        return h + "/.cache/finch"
+    }
+    return tempDir() + "/finch-cache"
+}
+
+// the editor protocol is bytes, not text lines
+fn binaryStdio() {
+}
+
+fn makeDirs(str path) {
+    shell("mkdir -p " + quote(path))
+}
+
+fn remove(str path) {
+    delete_file(path)
+}
+
+fn removeTree(str path) {
+    shell("rm -rf " + quote(path))
+}
+
+// move a file over another
+fn move(str from, str to) {
+    shell("mv " + quote(from) + " " + quote(to))
+}
