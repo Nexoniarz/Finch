@@ -60,6 +60,20 @@ for f in tests/new/fail/*.fch; do
         echo "$got" | head -3
     fi
 done
+# the same programs with debug info (-g -O0): the metadata has to be valid for every kind of thing a program has
+for f in tests/new/enums.fch tests/new/generics.fch tests/new/std_json.fch tests/run/basics.fch tests/run/methods_basic.fch \
+         tests/run/maps.fch tests/run/errors.fch tests/run/defer.fch tests/run/c_structs.fch tests/run/memory.fch; do
+    input="${f%.fch}.in"
+    [ -f "$input" ] || input=/dev/null
+    if "$boot" build "$f" -g -O0 -o "$tmp/progg" > "$tmp/err" 2>&1 && [ "$("$tmp/progg" < "$input" 2>&1)" == "$(cat "${f%.fch}.out")" ]; then
+        pass=$((pass + 1))
+    else
+        failed=$((failed + 1))
+        echo "FAIL (-g) $f"
+        head -3 "$tmp/err"
+    fi
+done
+
 # a library a C program loads (finch build --shared), with the compiler under test
 if FINCH_RT="$PWD/runtime/finch_rt.c" FINCH="$boot" tests/shared.sh > "$tmp/shared.out" 2>&1; then
     pass=$((pass + 1))

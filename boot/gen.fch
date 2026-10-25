@@ -16,6 +16,13 @@ struct Var {
 
 // A scope's variables, and the defers that run when it ends, newest first.
 // A defer sees only the variables declared before it: `orders` says how many.
+// What the driver asks for besides the program itself.
+struct Options {
+    bool shared         // finch build --shared
+    bool debug          // -g
+    str cwd             // the folder the compiler was started in (for the debug info)
+}
+
 // A generic struct or function, kept as written until something asks for a version of it.
 struct Template {
     str module
@@ -138,6 +145,15 @@ struct Gen {
     int nvars       // variables declared so far in this function
     cimport.CImports ci
     bool shared         // building a library (finch build --shared): no main, its export fns are the way in
+    bool debug          // -g: debug info (DWARF, as LLVM metadata)
+    str cwd
+    []str md            // the metadata, numbered by position: !0 = md[0]
+    map[str]int mdcache // metadata made already: types by key, locations by line:column
+    []int mdfiles       // the DIFile of each source file
+    int dbgScope        // the DISubprogram of the function being built, or -1 (helpers have none)
+    int dbgLine
+    int dbgCol
+    int dbgArg          // the parameter number of the next variable, or 0
     []str cdone         // C functions and variables already declared
     str ftarget     // the call an enclosing or / try is waiting on (see nodeKey)
     str ffailed     // set by that call: an i1, true if it failed
@@ -155,6 +171,11 @@ fn fail(ptr[Gen] g, ast.Node n, str msg) {
 }
 
 fn emit(ptr[Gen] g, str line) {
+    // with -g every call in a function that has debug info has to say where it is
+    if g.dbgScope >= 0 && line.contains("call ") {
+        g.body.push("  " + line + ", !dbg !" + str(dbgLocation(g)))
+        return
+    }
     g.body.push("  " + line)
 }
 
@@ -577,10 +598,12 @@ struct Saved {
     []str allocas
     int tmp
     bool term
+    int dbgScope
 }
 
 fn beginHelper(ptr[Gen] g) -> Saved {
-    s := Saved(body: g.body, allocas: g.allocas, tmp: g.tmp, term: g.term)
+    s := Saved(body: g.body, allocas: g.allocas, tmp: g.tmp, term: g.term, dbgScope: g.dbgScope)
+    g.dbgScope = -1             // a helper made on the side has no source lines
     []str empty
     g.body = empty
     g.allocas = empty
@@ -595,6 +618,7 @@ fn endHelper(ptr[Gen] g, Saved s, str header) {
     g.allocas = s.allocas
     g.tmp = s.tmp
     g.term = s.term
+    g.dbgScope = s.dbgScope
 }
 
 // for i in 0..n, inside the current function
@@ -1048,6 +1072,7 @@ fn addVar(ptr[Gen] g, ast.Node at, str name, ast.Type t, str init, bool readonly
     store(g, llty(g, t), init, slot)
     g.scopes[g.scopes.len - 1].vars.push(Var(name: name, ty: t, slot: slot, readonly: readonly, order: g.nvars))
     g.nvars += 1
+    dbgVariable(g, at, name, t, slot)
     return slot
 }
 
@@ -1532,6 +1557,244 @@ fn resolveStructBody(ptr[Gen] g, int i) {
     g.head.push("%S." + modName(g.structs[i].module) + "." + mangle(g.structs[i].name) + " = type { " + fields.join(", ") + " }")
 }
 
+// ---------- debug info (-g) ----------
+//
+// DWARF, written as LLVM metadata: a compile unit, a DISubprogram per function, a DILocation on every call,
+// and a DILocalVariable for every variable, with types a debugger can open up (structs, arrays, maps, enums).
+
+fn md(ptr[Gen] g, str text) -> int {
+    g.md.push(text)
+    return g.md.len - 1
+}
+
+fn mdRef(int id) -> str {
+    if id < 0 {
+        return "null"
+    }
+    return "!" + str(id)
+}
+
+struct SizeAlign {
+    int size
+    int align
+}
+
+fn alignUp(int n, int a) -> int {
+    if a <= 1 {
+        return n
+    }
+    return (n + a - 1) / a * a
+}
+
+// the size and alignment LLVM gives a type (what a debugger needs to find the fields)
+fn sizeAlign(ptr[Gen] g, ast.Type t) -> SizeAlign {
+    k := t.kind
+    if k == "bool" || k == "char" || k == "i8" || k == "u8" {
+        return SizeAlign(size: 1, align: 1)
+    }
+    if k == "i16" || k == "u16" {
+        return SizeAlign(size: 2, align: 2)
+    }
+    if k == "i32" || k == "u32" || k == "f32" || k == "enum" {
+        return SizeAlign(size: 4, align: 4)
+    }
+    if k == "str" || k == "array" {
+        return SizeAlign(size: 24, align: 8)
+    }
+    if k == "map" {
+        return SizeAlign(size: 56, align: 8)
+    }
+    if k == "fixed" {
+        e := sizeAlign(g, t.elem[0])
+        return SizeAlign(size: e.size * t.count, align: e.align)
+    }
+    if k == "struct" {
+        sd := g.structs[findStruct(g, t.module, t.name)]
+        if sd.isC {
+            return SizeAlign(size: sd.csize, align: sd.calign)
+        }
+        cur := 0
+        most := 1
+        for ft in sd.ftypes {
+            f := sizeAlign(g, ft)
+            cur = alignUp(cur, f.align) + f.size
+            if f.align > most {
+                most = f.align
+            }
+        }
+        return SizeAlign(size: alignUp(cur, most), align: most)
+    }
+    return SizeAlign(size: 8, align: 8)
+}
+
+// where each field of a struct is, in bytes
+fn fieldOffsets(ptr[Gen] g, StructDef sd) -> []int {
+    if sd.isC {
+        return sd.offs
+    }
+    []int out
+    cur := 0
+    for ft in sd.ftypes {
+        f := sizeAlign(g, ft)
+        cur = alignUp(cur, f.align)
+        out.push(cur)
+        cur += f.size
+    }
+    return out
+}
+
+fn dbgMember(ptr[Gen] g, str name, int scope, int file, int line, int base, int bits, int offset) -> int {
+    return md(g, "!DIDerivedType(tag: DW_TAG_member, name: \"" + name + "\", scope: !" + str(scope) + ", file: !" + str(file) + ", line: " + str(line) + ", baseType: " + mdRef(base) + ", size: " + str(bits) + ", offset: " + str(offset) + ")")
+}
+
+fn basicType(ptr[Gen] g, str name, int bits, str enc) -> int {
+    return md(g, "!DIBasicType(name: \"" + name + "\", size: " + str(bits) + ", encoding: " + enc + ")")
+}
+
+// the debug type of a Finch type; -1 where there is none (nothing, null)
+fn diType(ptr[Gen] g, ast.Type t) -> int {
+    k := t.kind
+    if k == "void" || k == "null" {
+        return -1
+    }
+    key := "T:" + ast.show(t)
+    if g.mdcache.has(key) {
+        return g.mdcache[key]
+    }
+    id := -1
+    file := g.mdfiles[0]
+    if k == "bool" {
+        id = basicType(g, "bool", 8, "DW_ATE_boolean")
+    } else if k == "char" {
+        id = basicType(g, "char", 8, "DW_ATE_signed_char")
+    } else if k == "int" {
+        id = basicType(g, "int", 64, "DW_ATE_signed")
+    } else if k == "float" {
+        id = basicType(g, "float", 64, "DW_ATE_float")
+    } else if k == "f32" {
+        id = basicType(g, "f32", 32, "DW_ATE_float")
+    } else if isInt(t) {
+        enc := "DW_ATE_unsigned"
+        if isSigned(t) {
+            enc = "DW_ATE_signed"
+        }
+        id = basicType(g, k, bitsOf(t), enc)
+    } else if k == "enum" {
+        ed := g.enums[findEnum(g, t.module, t.name)]
+        []str items
+        for i in 0..ed.variants.len {
+            items.push(mdRef(md(g, "!DIEnumerator(name: \"" + ed.variants[i] + "\", value: " + str(ed.values[i]) + ")")))
+        }
+        id = md(g, "!DICompositeType(tag: DW_TAG_enumeration_type, name: \"" + ed.name + "\", file: !" + str(file) + ", size: 32, elements: !{" + items.join(", ") + "})")
+    } else {
+        // the rest can point at themselves (a list node holds a pointer to the next), so the number comes first
+        id = md(g, "")
+        g.mdcache[key] = id
+        if k == "ptr" {
+            base := -1
+            if t.elem.len > 0 {
+                base = diType(g, t.elem[0])
+            }
+            g.md[id] = "!DIDerivedType(tag: DW_TAG_pointer_type, baseType: " + mdRef(base) + ", size: 64)"
+        } else if k == "fixed" {
+            e := sizeAlign(g, t.elem[0])
+            sub := md(g, "!DISubrange(count: " + str(t.count) + ")")
+            g.md[id] = "!DICompositeType(tag: DW_TAG_array_type, baseType: " + mdRef(diType(g, t.elem[0])) + ", size: " + str(e.size * t.count * 8) + ", elements: !{!" + str(sub) + "})"
+        } else if k == "str" || k == "array" {
+            elem := ast.simple("char")
+            if k == "array" {
+                elem = t.elem[0]
+            }
+            ptrT := md(g, "!DIDerivedType(tag: DW_TAG_pointer_type, baseType: " + mdRef(diType(g, elem)) + ", size: 64)")
+            intT := diType(g, ast.simple("int"))
+            a := dbgMember(g, "ptr", id, file, 0, ptrT, 64, 0)
+            b := dbgMember(g, "len", id, file, 0, intT, 64, 64)
+            c := dbgMember(g, "cap", id, file, 0, intT, 64, 128)
+            g.md[id] = "!DICompositeType(tag: DW_TAG_structure_type, name: \"" + ast.show(t) + "\", file: !" + str(file) + ", size: 192, align: 64, elements: !{!" + str(a) + ", !" + str(b) + ", !" + str(c) + "})"
+        } else if k == "map" {
+            intT := diType(g, ast.simple("int"))
+            raw := md(g, "!DIDerivedType(tag: DW_TAG_pointer_type, baseType: null, size: 64)")
+            names := ["entries", "len", "used", "cap", "index", "icap", "adds"]
+            []str members
+            for i in 0..7 {
+                base := intT
+                if i == 0 || i == 4 {
+                    base = raw
+                }
+                members.push("!" + str(dbgMember(g, names[i], id, file, 0, base, 64, 64 * i)))
+            }
+            g.md[id] = "!DICompositeType(tag: DW_TAG_structure_type, name: \"" + ast.show(t) + "\", file: !" + str(file) + ", size: 448, align: 64, elements: !{" + members.join(", ") + "})"
+        } else if k == "struct" {
+            sd := g.structs[findStruct(g, t.module, t.name)]
+            offs := fieldOffsets(g, sd)
+            sa := sizeAlign(g, t)
+            []str members
+            for i in 0..sd.ftypes.len {
+                fs := sizeAlign(g, sd.ftypes[i])
+                members.push("!" + str(dbgMember(g, sd.fnames[i], id, file, 0, diType(g, sd.ftypes[i]), fs.size * 8, offs[i] * 8)))
+            }
+            g.md[id] = "!DICompositeType(tag: DW_TAG_structure_type, name: \"" + sd.name + "\", file: !" + str(file) + ", size: " + str(sa.size * 8) + ", align: 8, elements: !{" + members.join(", ") + "})"
+        } else {
+            g.md[id] = "!DIBasicType(name: \"" + k + "\", size: 64, encoding: DW_ATE_unsigned)"
+        }
+        return id
+    }
+    g.mdcache[key] = id
+    return id
+}
+
+fn dbgLocation(ptr[Gen] g) -> int {
+    key := "L:" + str(g.dbgLine) + ":" + str(g.dbgCol) + ":" + str(g.dbgScope)
+    if g.mdcache.has(key) {
+        return g.mdcache[key]
+    }
+    id := md(g, "!DILocation(line: " + str(g.dbgLine) + ", column: " + str(g.dbgCol) + ", scope: !" + str(g.dbgScope) + ")")
+    g.mdcache[key] = id
+    return id
+}
+
+fn dbgSubprogram(ptr[Gen] g, ast.Node f) -> int {
+    sig := g.cur
+    []str types
+    types.push(mdRef(diType(g, sig.ret)))
+    if sig.recv.len > 0 {
+        types.push("null")
+    }
+    for p in sig.params {
+        types.push(mdRef(diType(g, p)))
+    }
+    file := g.mdfiles[f.file]
+    sub := md(g, "!DISubroutineType(types: !{" + types.join(", ") + "})")
+    return md(g, "distinct !DISubprogram(name: \"" + sig.name + "\", linkageName: \"" + sig.ll.sub(1, sig.ll.len) + "\", scope: !" + str(file) + ", file: !" + str(file) + ", line: " + str(f.line) + ", type: !" + str(sub) + ", scopeLine: " + str(f.line) + ", flags: DIFlagPrototyped, spFlags: DISPFlagDefinition | DISPFlagLocalToUnit, unit: !0)")
+}
+
+fn dbgVariable(ptr[Gen] g, ast.Node at, str name, ast.Type t, str slot) {
+    if !g.debug || g.dbgScope < 0 {
+        return
+    }
+    ty := diType(g, t)
+    if ty < 0 {
+        return
+    }
+    arg := ""
+    if g.dbgArg > 0 {
+        arg = ", arg: " + str(g.dbgArg)
+    }
+    v := md(g, "!DILocalVariable(name: \"" + name + "\", scope: !" + str(g.dbgScope) + ", file: !" + str(g.mdfiles[at.file]) + ", line: " + str(at.line) + ", type: !" + str(ty) + arg + ")")
+    g.dbgLine = at.line
+    g.dbgCol = at.col
+    emit(g, "call void @llvm.dbg.declare(metadata ptr " + slot + ", metadata !" + str(v) + ", metadata !DIExpression())")
+}
+
+// the metadata, at the end of the module
+fn dbgModule(ptr[Gen] g) -> str {
+    []str lines = ["!llvm.dbg.cu = !{!0}", "!llvm.module.flags = !{!1, !2}"]
+    for i in 0..g.md.len {
+        lines.push("!" + str(i) + " = " + g.md[i])
+    }
+    return lines.join("\n") + "\n"
+}
+
 fn define(ptr[Gen] g, int si) {
     g.cur = g.sigs[si]
     g.module = g.cur.module
@@ -1548,6 +1811,14 @@ fn define(ptr[Gen] g, int si) {
     g.tmp = 0
     g.term = false
     g.nvars = 0
+    g.dbgScope = -1
+    dbgsp := -1
+    if g.debug {
+        dbgsp = dbgSubprogram(g, f)
+        g.dbgScope = dbgsp
+        g.dbgLine = f.line
+        g.dbgCol = f.col
+    }
     g.deferOn = false
     g.inDefer = 0
     []Scope none
@@ -1561,7 +1832,12 @@ fn define(ptr[Gen] g, int si) {
         if g.cur.recvEnum {
             selfKind = "enum"
         }
-        g.scopes[0].vars.push(Var(name: "self", ty: ast.Type(kind: selfKind, name: g.cur.recv, module: g.cur.recvmod), slot: "%self", readonly: false))
+        selfTy := ast.Type(kind: selfKind, name: g.cur.recv, module: g.cur.recvmod)
+        g.scopes[0].vars.push(Var(name: "self", ty: selfTy, slot: "%self", readonly: false))
+        if g.debug {
+            // the struct is at the address %self holds: shown as the struct, whose slot that address is
+            dbgVariable(g, f, "self", selfTy, "%self")
+        }
     }
     for k in 0..g.cur.params.len {
         pt := g.cur.params[k]
@@ -1570,7 +1846,12 @@ fn define(ptr[Gen] g, int si) {
         if owning(g, pt) && !g.cur.borrow[k] {
             v = copyValue(g, v, pt)
         }
+        g.dbgArg = k + 1
+        if g.cur.recv.len > 0 {
+            g.dbgArg = k + 2
+        }
         addVar(g, f.kids[k], g.cur.pnames[k], pt, v, false)
+        g.dbgArg = 0
     }
     block(g, f.kids[f.kids.len - 1], false)
     if !g.term {
@@ -1584,7 +1865,12 @@ fn define(ptr[Gen] g, int si) {
             emit(g, "ret void")
         }
     }
-    g.out.push("define internal " + retTy(g, g.cur) + " " + g.cur.ll + "(" + params.join(", ") + ") {\nentry:\n" +
+    attach := ""
+    if dbgsp >= 0 {
+        attach = " !dbg !" + str(dbgsp)
+    }
+    g.dbgScope = -1
+    g.out.push("define internal " + retTy(g, g.cur) + " " + g.cur.ll + "(" + params.join(", ") + ")" + attach + " {\nentry:\n" +
                g.allocas.join("\n") + "\n" + g.body.join("\n") + "\n}\n")
 }
 
@@ -1606,6 +1892,8 @@ fn block(ptr[Gen] g, ast.Node b, bool scope) {
 }
 
 fn stmt(ptr[Gen] g, ast.Node s) {
+    g.dbgLine = s.line
+    g.dbgCol = s.col
     k := s.kind
     if k == "block" {
         block(g, s, true)
@@ -4515,9 +4803,32 @@ fn runtimeDecls() -> str {
     return decls.join("\n") + "\n"
 }
 
-fn generate([]ast.Program progs, []str files, cimport.CImports ci, bool shared) -> str {
-    gen := Gen(progs: progs, files: files, ci: ci, shared: shared)
+fn assemble(ptr[Gen] g) -> str {
+    text := "; generated by the Finch compiler written in Finch\n\n" + g.head.join("\n") + "\n\n" + runtimeDecls() + "\n"
+    if g.debug {
+        text = text + "declare void @llvm.dbg.declare(metadata, metadata, metadata)\n\n"
+    }
+    text = text + g.out.join("\n")
+    if g.debug {
+        text = text + "\n" + dbgModule(g)
+    }
+    return text
+}
+
+fn generate([]ast.Program progs, []str files, cimport.CImports ci, Options opt) -> str {
+    shared := opt.shared
+    gen := Gen(progs: progs, files: files, ci: ci, shared: opt.shared, debug: opt.debug, cwd: opt.cwd, dbgScope: -1)
     g := addr(gen)
+    if g.debug {
+        // !0 the compile unit, !1 and !2 the module flags, then the source files
+        g.md.push("")
+        g.md.push("!{i32 7, !\"Dwarf Version\", i32 4}")
+        g.md.push("!{i32 2, !\"Debug Info Version\", i32 3}")
+        for fname in files {
+            g.mdfiles.push(md(g, "!DIFile(filename: \"" + fname + "\", directory: \"" + g.cwd + "\")"))
+        }
+        g.md[0] = "distinct !DICompileUnit(language: DW_LANG_C, file: !" + str(g.mdfiles[0]) + ", producer: \"finch\", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug)"
+    }
     declare(g)
     main := findFn(g, "", "main")
     if shared {
@@ -4542,7 +4853,7 @@ fn generate([]ast.Program progs, []str files, cimport.CImports ci, bool shared) 
     if shared {
         // finch_module_on_fatal(handler): the host's say on runtime errors (see runtime/finch_rt.c)
         g.out.push("define void @finch_module_on_fatal(ptr %handler) {\nentry:\n  call void @finch_on_fatal(ptr %handler)\n  ret void\n}\n")
-        return "; generated by the Finch compiler written in Finch\n\n" + g.head.join("\n") + "\n\n" + runtimeDecls() + "\n" + g.out.join("\n")
+        return assemble(g)
     }
     // the C entry point calls the Finch main
     m := g.sigs[main]
@@ -4571,5 +4882,5 @@ fn generate([]ast.Program progs, []str files, cimport.CImports ci, bool shared) 
         ret = "  %code = trunc i64 %r to i32\n  ret i32 %code\n"
     }
     g.out.push("define i32 @main(i32 %argc, ptr %argv) {\nentry:\n" + pre + "  " + callText + "\n" + ret + "}\n")
-    return "; generated by the self-hosted Finch compiler\n\n" + g.head.join("\n") + "\n\n" + runtimeDecls() + "\n" + g.out.join("\n")
+    return assemble(g)
 }
