@@ -1,8 +1,8 @@
 name: CI
 
 # The compiler is written in Finch. It is built from bootstrap/<system>.ll, its own LLVM IR (see bootstrap/README.md),
-# then from itself. Linux x86-64 and ARM64 have seeds; macOS and Windows machines can't build the compiler yet
-# (programs for them are built from Linux with --target, and tested here under Wine and qemu).
+# then from itself. Seeds: Linux x86-64 and ARM64 (tested here), Windows x86-64 (tested under Wine, and here),
+# macOS ARM64 and x86-64 (made with Apple's headers; only checked as IR until the macos job below passes).
 
 on:
   push:
@@ -73,6 +73,49 @@ jobs:
           else
             FINCH_CC=aarch64-linux-gnu-gcc QEMU_LD_PREFIX=/usr/aarch64-linux-gnu tests/cross.sh arm64
           fi
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LLVM 21 (libclang)
+        run: brew install llvm@21 pkg-config
+      - name: Build the compiler
+        run: |
+          export FINCH_CLANG="$(brew --prefix llvm@21)/bin/clang"
+          export FINCH_LIBCLANG="-L$(brew --prefix llvm@21)/lib -lclang"
+          export FINCH_LLVM_INCLUDE="$(brew --prefix llvm@21)/include"
+          bootstrap/build.sh
+          build/finch version
+      - name: Tests
+        run: tests/run.sh
+
+  windows:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download llvm-mingw (clang with MinGW headers) and LLVM for Windows (libclang.dll)
+        run: |
+          curl -sSL -o mingw.zip https://github.com/mstorsjo/llvm-mingw/releases/download/20251216/llvm-mingw-20251216-ucrt-x86_64.zip
+          7z x -y mingw.zip -o/c/ > /dev/null
+          curl -sSL -o llvm.exe https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/LLVM-21.1.8-win64.exe
+          7z x -y llvm.exe -o/c/llvm > /dev/null
+      - name: Build the compiler
+        run: |
+          export PATH="/c/llvm-mingw-20251216-ucrt-x86_64/bin:$PATH"
+          export FINCH_LIBCLANG="C:/llvm/bin/libclang.dll"
+          export FINCH_LLVM_INCLUDE="C:/llvm/include"
+          export FINCH_LDFLAGS="-LC:/llvm/bin"
+          bootstrap/build.sh
+          build/finch.exe version
+      - name: Tests
+        run: |
+          export PATH="/c/llvm-mingw-20251216-ucrt-x86_64/bin:$PATH"
+          export FINCH_LDFLAGS="-LC:/llvm/bin"
+          FINCH=../build/finch.exe tests/run.sh
 
   vscode:
     runs-on: ubuntu-24.04

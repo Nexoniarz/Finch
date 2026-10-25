@@ -277,8 +277,8 @@ fn main([]str args) -> int {
         }
     }
     triple := ""
-    if tg.cross {
-        triple = tg.triple
+    if tg.cross || tg.windows {
+        triple = tg.triple          // on Windows libclang.dll would otherwise assume MSVC, while clang may be MinGW
     }
     ci := cimport.importHeaders(headers, dirs, triple, tg.windows, tg.cc) or {
         print(err)

@@ -5,8 +5,14 @@ import "stdio.h"
 import "process.h"
 import "direct.h"
 import "io.h"
+import "clang-c/Index.h"
 
 // a Windows argument: in double quotes, with the quotes inside doubled up the way CreateProcess reads them
+// libclang's description of a file that isn't on disk: its Length is C's `unsigned long`, which is 32 bits on Windows
+fn unsavedFile(str name, str contents) -> CXUnsavedFile {
+    return CXUnsavedFile(Filename: name.ptr, Contents: contents.ptr, Length: u32(contents.len))
+}
+
 fn quote(str a) -> str {
     return "\"" + a.replace("\"", "\\\"") + "\""
 }
@@ -78,7 +84,8 @@ fn makeDirs(str path) {
         if part.len == 0 || part.ends_with(":") {
             continue                // "" before a leading / and the drive letter
         }
-        _mkdir(p.sub(0, at).ptr)    // fails when it is there already, which is fine
+        sofar := p.sub(0, at)
+        _mkdir(sofar)               // fails when it is there already, which is fine
     }
 }
 
@@ -93,5 +100,5 @@ fn removeTree(str path) {
 // move a file over another
 fn move(str from, str to) {
     delete_file(to)
-    rename(from.ptr, to.ptr)
+    rename(from, to)
 }

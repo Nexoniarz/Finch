@@ -534,7 +534,7 @@ fn importHeaders([]Header headers, []str dirs, str target, bool windows, str ccF
     index := clang_createIndex(0, 0)
     for h in headers {
         src := "#include \"" + h.path + "\"\n"
-        file := CXUnsavedFile(Filename: "finch_import.c".ptr, Contents: src.ptr, Length: u64(src.len))
+        file := host.unsavedFile("finch_import.c", src)
         ptr tu = null
         flags := CXTranslationUnit_DetailedPreprocessingRecord | CXTranslationUnit_SkipFunctionBodies
         err := clang_parseTranslationUnit2(index, "finch_import.c", argv.ptr, i32(argv.len), addr(file), 1, u32(flags), addr(tu))

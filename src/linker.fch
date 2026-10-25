@@ -226,7 +226,7 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
     obj := b.out + ".o"
     write_file(ll, b.ir)
     target := ""
-    if tg.cross {
+    if tg.cross || tg.windows {
         target = " --target=" + tg.triple
     }
     log := b.out + ".log"
@@ -242,6 +242,9 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
     cmd := cc + " " + quote(obj) + " " + quote(rtobj) + " -o " + quote(b.out)
     if !tg.msvc {
         cmd = cmd + " -lm"
+    }
+    if getenv("FINCH_LDFLAGS").len > 0 {
+        cmd = cmd + " " + getenv("FINCH_LDFLAGS")          // more flags for the linker, like -L/where/libclang/is
     }
     if b.shared {
         if tg.darwin {

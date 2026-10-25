@@ -3,6 +3,12 @@
 // the Windows one).
 import "stdlib.h"
 import "unistd.h"
+import "clang-c/Index.h"
+
+// libclang's description of a file that isn't on disk: its Length is C's `unsigned long`, which is 64 bits here
+fn unsavedFile(str name, str contents) -> CXUnsavedFile {
+    return CXUnsavedFile(Filename: name.ptr, Contents: contents.ptr, Length: u64(contents.len))
+}
 
 fn quote(str a) -> str {
     return "'" + a.replace("'", "'\\''") + "'"

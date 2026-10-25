@@ -20,26 +20,32 @@ case "$(uname -s)-$(uname -m)" in
     MINGW*|MSYS*|CYGWIN*)         seed=windows-x86_64 ;;
     *) echo "bootstrap: no seed for $(uname -s) $(uname -m) (see bootstrap/README.md)" >&2; exit 1 ;;
 esac
+EXE=
+case $seed in windows-*) EXE=.exe ;; esac
 [ -f "bootstrap/$seed.ll" ] || { echo "bootstrap: bootstrap/$seed.ll is missing" >&2; exit 1; }
 
 CLANG=${FINCH_CLANG:-clang}
 LIBS=${FINCH_LIBCLANG:--lclang}
+INC=
+[ -z "${FINCH_LLVM_INCLUDE:-}" ] || INC="-I $FINCH_LLVM_INCLUDE"        # where clang-c/Index.h is, if clang does not find it itself
 export FINCH_RT=$PWD/runtime/finch_rt.c
+# Windows: libclang.dll has to sit next to the programs that use it (FINCH_LIBCLANG is then the path of that dll)
+if [ -n "$EXE" ]; then cp "$LIBS" build/; fi
 
 echo "bootstrap: seed ($seed) -> build/finch0"
-$CLANG -O1 -w "bootstrap/$seed.ll" runtime/finch_rt.c -o build/finch0 -lm $LIBS
-echo "bootstrap: build/finch0 packs the runtime and std into src/embedded.fch"
-bootstrap/pack.sh build/finch0
-echo "bootstrap: build/finch0 builds the compiler -> build/finch1"
-build/finch0 build src/main.fch -o build/finch1
-echo "bootstrap: build/finch1 builds the compiler -> build/finch"
-build/finch1 build src/main.fch -o build/finch
+$CLANG -O1 -w "bootstrap/$seed.ll" runtime/finch_rt.c -o build/finch0$EXE -lm $LIBS
+echo "bootstrap: build/finch0$EXE packs the runtime and std into src/embedded.fch"
+bootstrap/pack.sh build/finch0$EXE
+echo "bootstrap: build/finch0$EXE builds the compiler -> build/finch1"
+build/finch0$EXE build src/main.fch -o build/finch1$EXE $INC
+echo "bootstrap: build/finch1$EXE builds the compiler -> build/finch"
+build/finch1$EXE build src/main.fch -o build/finch$EXE $INC
 
 # a compiler that builds itself must come out the same however many times it does
-build/finch1 ir src/main.fch > build/stage1.ll
-build/finch ir src/main.fch > build/stage2.ll
+build/finch1$EXE ir src/main.fch $INC > build/stage1.ll
+build/finch$EXE ir src/main.fch $INC > build/stage2.ll
 if cmp -s build/stage1.ll build/stage2.ll; then
-    echo "bootstrap: build/finch1 and build/finch make the same IR ($(wc -l < build/stage2.ll) lines): done"
+    echo "bootstrap: build/finch1$EXE and build/finch make the same IR ($(wc -l < build/stage2.ll) lines): done"
 else
     echo "bootstrap: the compiler does not reproduce itself (build/stage1.ll and build/stage2.ll differ)" >&2
     exit 1

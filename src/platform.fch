@@ -52,6 +52,9 @@ fn select(str name) -> Target {
             t = "x86_64-apple-macosx14.0.0"
         }
     }
+    if t == "x86_64-w64-windows-gnu" {
+        t = "x86_64-w64-mingw32"        // what clang calls the same system when it runs on Windows
+    }
     tg := Target(triple: t)
     tg.windows = t.contains("windows") || t.contains("mingw") || t.contains("msvc") || t.contains("win32")
     tg.msvc = t.contains("msvc")
@@ -59,7 +62,8 @@ fn select(str name) -> Target {
     tg.arm64 = t.starts_with("aarch64") || t.starts_with("arm64")
     hostArm := hostName.starts_with("aarch64") || hostName.starts_with("arm64")
     hostDarwin := hostName.contains("apple") || hostName.contains("darwin")
-    tg.cross = tg.windows || tg.darwin != hostDarwin || tg.arm64 != hostArm
+    hostWin := hostName.contains("windows") || hostName.contains("mingw") || hostName.contains("msvc")
+    tg.cross = tg.windows != hostWin || tg.darwin != hostDarwin || tg.arm64 != hostArm
     tg.exe = ""
     if tg.windows {
         tg.exe = ".exe"
