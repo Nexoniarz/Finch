@@ -159,8 +159,82 @@ fn T(str kind) -> ast.Type {
     return ast.simple(kind)
 }
 
+// `int` is i64 and `float` is f64, as in the C++ compiler: the everyday names
+// for the two default sizes, and the only way they are ever written back.
+fn isSigned(ast.Type t) -> bool {
+    k := t.kind
+    return k == "int" || k == "i8" || k == "i16" || k == "i32"
+}
+
+fn isUnsigned(ast.Type t) -> bool {
+    k := t.kind
+    return k == "u8" || k == "u16" || k == "u32" || k == "u64"
+}
+
+fn isInt(ast.Type t) -> bool {
+    return isSigned(t) || isUnsigned(t)
+}
+
+fn isFloat(ast.Type t) -> bool {
+    return t.kind == "float" || t.kind == "f32"
+}
+
 fn isNumber(ast.Type t) -> bool {
-    return t.kind == "int" || t.kind == "float"
+    return isInt(t) || isFloat(t)
+}
+
+fn bitsOf(ast.Type t) -> int {
+    k := t.kind
+    if k == "bool" {
+        return 1
+    }
+    if k == "char" || k == "i8" || k == "u8" {
+        return 8
+    }
+    if k == "i16" || k == "u16" {
+        return 16
+    }
+    if k == "i32" || k == "u32" || k == "f32" {
+        return 32
+    }
+    return 64
+}
+
+// Can every value of `from` be stored in `to`? (i8 -> i32 yes, i32 -> u32 no)
+fn widens(ast.Type from, ast.Type to) -> bool {
+    if !isInt(from) || !isInt(to) {
+        return false
+    }
+    if isSigned(from) && isUnsigned(to) {
+        return false
+    }
+    return bitsOf(to) > bitsOf(from)
+}
+
+// Does the number `text` (written in the code, of type `from`) fit into `to`?
+fn fits(str text, ast.Type from, ast.Type to) -> bool {
+    if !isInt(to) {
+        return false
+    }
+    n := int(text)
+    b := bitsOf(to)
+    if n < 0 {
+        if isUnsigned(to) {
+            return false
+        }
+        if b == 64 {
+            return true
+        }
+        return n >= 0 - (1 << (b - 1))
+    }
+    if b == 64 {
+        return true
+    }
+    max := (1 << b) - 1
+    if isSigned(to) {
+        max = (1 << (b - 1)) - 1
+    }
+    return n <= max
 }
 
 fn findStruct(ptr[Gen] g, str module, str name) -> int {
@@ -220,17 +294,17 @@ fn modName(str m) -> str {
 
 fn llty(ptr[Gen] g, ast.Type t) -> str {
     k := t.kind
-    if k == "int" {
-        return "i64"
-    }
     if k == "bool" {
         return "i1"
     }
-    if k == "char" {
-        return "i8"
+    if isInt(t) || k == "char" {
+        return "i" + str(bitsOf(t))
     }
     if k == "float" {
         return "double"
+    }
+    if k == "f32" {
+        return "float"
     }
     if k == "str" || k == "array" {
         return "{ ptr, i64, i64 }"
@@ -246,13 +320,13 @@ fn llty(ptr[Gen] g, ast.Type t) -> str {
 
 fn zeroOf(ast.Type t) -> str {
     k := t.kind
-    if k == "int" || k == "char" {
+    if isInt(t) || k == "char" {
         return "0"
     }
     if k == "bool" {
         return "false"
     }
-    if k == "float" {
+    if isFloat(t) {
         return "0.0"
     }
     if k == "ptr" || k == "null" {
@@ -480,10 +554,12 @@ fn cstr(ptr[Gen] g, str v) -> str {
 
 fn emitPrint(ptr[Gen] g, str v, ast.Type t, bool quoted) {
     k := t.kind
-    if k == "int" {
-        printf(g, "%lld", "i64 " + v)
-    } else if k == "float" {
-        printf(g, "%g", "double " + v)
+    if isSigned(t) {
+        printf(g, "%lld", "i64 " + intCast(g, v, t, T("int")))
+    } else if isUnsigned(t) {
+        printf(g, "%llu", "i64 " + intCast(g, v, t, T("u64")))
+    } else if isFloat(t) {
+        printf(g, "%g", "double " + floatCast(g, v, t, T("float")))
     } else if k == "char" {
         z := op(g, "sext i8 " + v + " to i32")
         if quoted {
@@ -572,6 +648,40 @@ fn printFn(ptr[Gen] g, ast.Type t) -> str {
 
 // ---------- conversions ----------
 
+// An integer of one size as an integer of another: grow by the sign of the
+// source (sext for signed, zext for unsigned), shrink by cutting.
+fn intCast(ptr[Gen] g, str v, ast.Type from, ast.Type to) -> str {
+    fb := bitsOf(from)
+    tb := bitsOf(to)
+    if fb == tb {
+        return v
+    }
+    if tb < fb {
+        return op(g, "trunc " + llty(g, from) + " " + v + " to " + llty(g, to))
+    }
+    if isSigned(from) {
+        return op(g, "sext " + llty(g, from) + " " + v + " to " + llty(g, to))
+    }
+    return op(g, "zext " + llty(g, from) + " " + v + " to " + llty(g, to))
+}
+
+fn floatCast(ptr[Gen] g, str v, ast.Type from, ast.Type to) -> str {
+    if from.kind == to.kind {
+        return v
+    }
+    if bitsOf(to) > bitsOf(from) {
+        return op(g, "fpext " + llty(g, from) + " " + v + " to " + llty(g, to))
+    }
+    return op(g, "fptrunc " + llty(g, from) + " " + v + " to " + llty(g, to))
+}
+
+fn intToFloat(ptr[Gen] g, str v, ast.Type from, ast.Type to) -> str {
+    if isSigned(from) {
+        return op(g, "sitofp " + llty(g, from) + " " + v + " to " + llty(g, to))
+    }
+    return op(g, "uitofp " + llty(g, from) + " " + v + " to " + llty(g, to))
+}
+
 fn coerce(ptr[Gen] g, Val v, ast.Type want, ast.Node at, str what) -> Val {
     if ast.same(v.ty, want) {
         return v
@@ -582,15 +692,36 @@ fn coerce(ptr[Gen] g, Val v, ast.Type want, ast.Node at, str what) -> Val {
     if v.ty.kind == "ptr" && want.kind == "ptr" && (v.ty.elem.len == 0 || want.elem.len == 0) {
         return Val(v: v.v, ty: want)
     }
-    if v.ty.kind == "int" && want.kind == "float" {
+    if isInt(v.ty) && isInt(want) {
+        if v.lit && fits(v.v, v.ty, want) {
+            return Val(v: v.v, ty: want, lit: true)
+        }
+        if widens(v.ty, want) {
+            return Val(v: intCast(g, v.v, v.ty, want), ty: want)
+        }
         if v.lit {
+            fail(g, at, "the number " + v.v + " doesn't fit in " + ast.show(want))
+        }
+    }
+    if isInt(v.ty) && isFloat(want) {
+        if v.lit && want.kind == "float" {
             return Val(v: v.v + ".0", ty: want, lit: true)
         }
-        return Val(v: op(g, "sitofp i64 " + v.v + " to double"), ty: want)
+        return Val(v: intToFloat(g, v.v, v.ty, want), ty: want)
+    }
+    if v.ty.kind == "f32" && want.kind == "float" {
+        return Val(v: floatCast(g, v.v, v.ty, want), ty: want)
+    }
+    if v.ty.kind == "float" && want.kind == "f32" && v.lit {
+        return Val(v: floatCast(g, v.v, v.ty, want), ty: want)
     }
     msg := what + " must be " + ast.show(want) + ", but this is " + ast.show(v.ty)
-    if v.ty.kind == "float" && want.kind == "int" {
-        msg = msg + " (use int(...) to convert, it cuts off the fraction)"
+    if isNumber(v.ty) && isNumber(want) {
+        msg = msg + " (use " + ast.show(want) + "(...) to convert"
+        if isFloat(v.ty) && isInt(want) {
+            msg = msg + ", it cuts off the fraction"
+        }
+        msg = msg + ")"
     }
     if want.kind == "str" && (isNumber(v.ty) || v.ty.kind == "bool" || v.ty.kind == "char") {
         msg = msg + " (turn it into text with str(...))"
@@ -629,7 +760,8 @@ fn findFn(ptr[Gen] g, str module, str name) -> int {
 
 fn isBuiltin(str n) -> bool {
     names := ["print", "addr", "str", "int", "char", "float", "bool", "read_file", "write_file", "file_exists",
-              "shell", "exit", "input", "new", "free", "ptr", "delete_file"]
+              "shell", "exit", "input", "new", "free", "ptr", "delete_file",
+              "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"]
     return names.contains(n)
 }
 
@@ -1170,22 +1302,25 @@ fn unary(ptr[Gen] g, ast.Node e) -> Val {
         return Val(v: op(g, "xor i1 " + c.v + ", true"), ty: T("bool"))
     }
     if e.name == "~" {
-        if v.ty.kind != "int" {
+        if !isInt(v.ty) {
             fail(g, e, "'~' flips the bits of a whole number, not of " + ast.show(v.ty))
         }
-        return Val(v: op(g, "xor i64 " + v.v + ", -1"), ty: v.ty)
+        return Val(v: op(g, "xor " + llty(g, v.ty) + " " + v.v + ", -1"), ty: v.ty)
     }
-    if v.ty.kind == "int" {
+    if isUnsigned(v.ty) {
+        fail(g, e, ast.show(v.ty) + " can't be negative (it's unsigned)")
+    }
+    if isSigned(v.ty) {
         if v.lit {
             if v.v.starts_with("-") {
                 return Val(v: v.v.sub(1, v.v.len), ty: v.ty, lit: true)
             }
             return Val(v: "-" + v.v, ty: v.ty, lit: true)
         }
-        return Val(v: op(g, "sub i64 0, " + v.v), ty: v.ty)
+        return Val(v: op(g, "sub " + llty(g, v.ty) + " 0, " + v.v), ty: v.ty)
     }
-    if v.ty.kind == "float" {
-        return Val(v: op(g, "fneg double " + v.v), ty: v.ty)
+    if isFloat(v.ty) {
+        return Val(v: op(g, "fneg " + llty(g, v.ty) + " " + v.v), ty: v.ty)
     }
     fail(g, e, "can't put '-' in front of " + ast.show(v.ty))
     return v
@@ -1206,12 +1341,42 @@ fn unify(ptr[Gen] g, ptr[Val] l, ptr[Val] r) -> bool {
     if ast.same(l.ty, r.ty) {
         return true
     }
-    if l.ty.kind == "int" && r.ty.kind == "float" {
-        l.value = coerce(g, l.value, T("float"), Node0(), "")
+    if isInt(l.ty) && isInt(r.ty) {
+        // a number written in the code adapts to the other side; otherwise
+        // the smaller type grows into the bigger one
+        if l.lit && !r.lit && fits(l.v, l.ty, r.ty) {
+            l.value = Val(v: l.v, ty: r.ty, lit: true)
+            return true
+        }
+        if r.lit && !l.lit && fits(r.v, r.ty, l.ty) {
+            r.value = Val(v: r.v, ty: l.ty, lit: true)
+            return true
+        }
+        if widens(l.ty, r.ty) {
+            l.value = Val(v: intCast(g, l.v, l.ty, r.ty), ty: r.ty)
+            return true
+        }
+        if widens(r.ty, l.ty) {
+            r.value = Val(v: intCast(g, r.v, r.ty, l.ty), ty: l.ty)
+            return true
+        }
+        return false
+    }
+    if isInt(l.ty) && isFloat(r.ty) {
+        l.value = coerce(g, l.value, r.ty, Node0(), "")
         return true
     }
-    if l.ty.kind == "float" && r.ty.kind == "int" {
-        r.value = coerce(g, r.value, T("float"), Node0(), "")
+    if isFloat(l.ty) && isInt(r.ty) {
+        r.value = coerce(g, r.value, l.ty, Node0(), "")
+        return true
+    }
+    if isFloat(l.ty) && isFloat(r.ty) {
+        if l.ty.kind == "f32" {
+            l.value = Val(v: floatCast(g, l.v, l.ty, T("float")), ty: T("float"))
+        }
+        if r.ty.kind == "f32" {
+            r.value = Val(v: floatCast(g, r.v, r.ty, T("float")), ty: T("float"))
+        }
         return true
     }
     return false
@@ -1230,32 +1395,35 @@ fn arith(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
     if !unify(g, addr(l), addr(r)) {
         badOperands(g, o, l, r, at)
     }
-    if l.ty.kind == "int" {
+    if isInt(l.ty) {
         names := ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"]
         insts := ["add", "sub", "mul", "sdiv", "srem", "and", "or", "xor", "shl", "ashr"]
+        if isUnsigned(l.ty) {
+            insts = ["add", "sub", "mul", "udiv", "urem", "and", "or", "xor", "shl", "lshr"]
+        }
         k := names.find(o)
         if k < 0 {
             badOperands(g, o, l, r, at)
         }
+        lt := llty(g, l.ty)
         if o == "/" || o == "%" {
             if r.lit && r.v == "0" {
                 fail(g, at, "division by zero")
             }
             if !r.lit {
-                panicIf(g, op(g, "icmp eq i64 " + r.v + ", 0"), "division by zero", at)
+                panicIf(g, op(g, "icmp eq " + lt + " " + r.v + ", 0"), "division by zero", at)
             }
         }
-        lit := l.lit && r.lit
-        return Val(v: op(g, insts[k] + " i64 " + l.v + ", " + r.v), ty: l.ty)
+        return Val(v: op(g, insts[k] + " " + lt + " " + l.v + ", " + r.v), ty: l.ty)
     }
-    if l.ty.kind == "float" {
+    if isFloat(l.ty) {
         names := ["+", "-", "*", "/", "%"]
         insts := ["fadd", "fsub", "fmul", "fdiv", "frem"]
         k := names.find(o)
         if k < 0 {
             badOperands(g, o, l, r, at)
         }
-        return Val(v: op(g, insts[k] + " double " + l.v + ", " + r.v), ty: l.ty)
+        return Val(v: op(g, insts[k] + " " + llty(g, l.ty) + " " + l.v + ", " + r.v), ty: l.ty)
     }
     badOperands(g, o, l, r, at)
     return l
@@ -1283,29 +1451,32 @@ fn compare(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
             return Val(v: op(g, "icmp " + pred + " i32 " + c + ", 0"), ty: T("bool"))
         }
         c := op(g, "call i64 @finch_str_cmp(ptr " + spill(g, l) + ", ptr " + spill(g, r) + ")")
-        return Val(v: op(g, "icmp " + intPred(o) + " i64 " + c + ", 0"), ty: T("bool"))
+        return Val(v: op(g, "icmp " + intPred(o, true) + " i64 " + c + ", 0"), ty: T("bool"))
     }
     if !unify(g, addr(l), addr(r)) {
         badOperands(g, o, l, r, at)
     }
     k := l.ty.kind
-    if k == "float" {
+    if isFloat(l.ty) {
         ops := ["==", "!=", "<", "<=", ">", ">="]
         preds := ["oeq", "une", "olt", "ole", "ogt", "oge"]
-        return Val(v: op(g, "fcmp " + preds[ops.find(o)] + " double " + l.v + ", " + r.v), ty: T("bool"))
+        return Val(v: op(g, "fcmp " + preds[ops.find(o)] + " " + llty(g, l.ty) + " " + l.v + ", " + r.v), ty: T("bool"))
     }
     if k == "bool" && !eq {
         badOperands(g, o, l, r, at)
     }
-    if k != "int" && k != "char" && k != "bool" {
+    if !isInt(l.ty) && k != "char" && k != "bool" {
         badOperands(g, o, l, r, at)
     }
-    return Val(v: op(g, "icmp " + intPred(o) + " " + llty(g, l.ty) + " " + l.v + ", " + r.v), ty: T("bool"))
+    return Val(v: op(g, "icmp " + intPred(o, isSigned(l.ty)) + " " + llty(g, l.ty) + " " + l.v + ", " + r.v), ty: T("bool"))
 }
 
-fn intPred(str o) -> str {
+fn intPred(str o, bool signed) -> str {
     ops := ["==", "!=", "<", "<=", ">", ">="]
-    preds := ["eq", "ne", "slt", "sle", "sgt", "sge"]
+    preds := ["eq", "ne", "ult", "ule", "ugt", "uge"]
+    if signed {
+        preds = ["eq", "ne", "slt", "sle", "sgt", "sge"]
+    }
     return preds[ops.find(o)]
 }
 
@@ -1549,6 +1720,70 @@ fn strOut(ptr[Gen] g) -> str {
     return alloca(g, "{ ptr, i64, i64 }")
 }
 
+// The type a conversion call names: int(x), u8(x), f32(x), bool(x). i64 and
+// f64 are the same types as int and float.
+fn numType(str n) -> str {
+    if n == "i64" {
+        return "int"
+    }
+    if n == "f64" {
+        return "float"
+    }
+    names := ["int", "float", "char", "bool", "i8", "i16", "i32", "u8", "u16", "u32", "u64", "f32"]
+    if names.contains(n) {
+        return n
+    }
+    return ""
+}
+
+// Explicit conversions between the number-like types. Cutting a bigger
+// integer down wraps, as on hardware; text is parsed, with a runtime error.
+fn convert(ptr[Gen] g, ast.Node c, ast.Type to) -> Val {
+    checkArgs(g, c, 0, 1, c.name)
+    v := expr(g, c.kids[0])
+    from := v.ty
+    if ast.same(from, to) {
+        return v
+    }
+    if from.kind == "str" && isNumber(to) {
+        file := strGlobal(g, g.files[c.file])
+        if isInt(to) {
+            r := op(g, "call i64 @finch_str_to_int(ptr " + spill(g, v) + ", ptr " + file + ", i64 " + str(c.line) + ")")
+            return Val(v: intCast(g, r, T("int"), to), ty: to)
+        }
+        r := op(g, "call double @finch_str_to_float(ptr " + spill(g, v) + ", ptr " + file + ", i64 " + str(c.line) + ")")
+        return Val(v: floatCast(g, r, T("float"), to), ty: to)
+    }
+    if isInt(to) || to.kind == "char" {
+        if isInt(from) || from.kind == "char" {
+            return Val(v: intCast(g, v.v, from, to), ty: to)
+        }
+        if from.kind == "bool" {
+            return Val(v: op(g, "zext i1 " + v.v + " to " + llty(g, to)), ty: to)
+        }
+        if isFloat(from) && isInt(to) {
+            conv := "fptoui"
+            if isSigned(to) {
+                conv = "fptosi"
+            }
+            return Val(v: op(g, conv + " " + llty(g, from) + " " + v.v + " to " + llty(g, to)), ty: to)
+        }
+    }
+    if isFloat(to) {
+        if isInt(from) {
+            return Val(v: intToFloat(g, v.v, from, to), ty: to)
+        }
+        if isFloat(from) {
+            return Val(v: floatCast(g, v.v, from, to), ty: to)
+        }
+    }
+    if to.kind == "bool" && isInt(from) {
+        return Val(v: op(g, "icmp ne " + llty(g, from) + " " + v.v + ", 0"), ty: to)
+    }
+    fail(g, c.kids[0], "can't turn " + ast.show(from) + " into " + c.name)
+    return v
+}
+
 fn call(ptr[Gen] g, ast.Node c) -> Val {
     n := c.name
     if n == "print" {
@@ -1581,10 +1816,12 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
         k := v.ty.kind
         if k == "str" {
             return Val(v: copyValue(g, v.v, v.ty), ty: v.ty, fresh: true)
-        } else if k == "int" {
-            emit(g, "call void @finch_str_from_int(ptr " + out + ", i64 " + v.v + ")")
-        } else if k == "float" {
-            emit(g, "call void @finch_str_from_float(ptr " + out + ", double " + v.v + ")")
+        } else if isSigned(v.ty) {
+            emit(g, "call void @finch_str_from_int(ptr " + out + ", i64 " + intCast(g, v.v, v.ty, T("int")) + ")")
+        } else if isUnsigned(v.ty) {
+            emit(g, "call void @finch_str_from_uint(ptr " + out + ", i64 " + intCast(g, v.v, v.ty, T("u64")) + ")")
+        } else if isFloat(v.ty) {
+            emit(g, "call void @finch_str_from_float(ptr " + out + ", double " + floatCast(g, v.v, v.ty, T("float")) + ")")
         } else if k == "char" {
             emit(g, "call void @finch_str_from_char(ptr " + out + ", i8 signext " + v.v + ")")
         } else if k == "bool" {
@@ -1595,48 +1832,9 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
         }
         return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
     }
-    if n == "int" || n == "float" || n == "char" {
-        checkArgs(g, c, 0, 1, n)
-        v := expr(g, c.kids[0])
-        k := v.ty.kind
-        file := strGlobal(g, g.files[c.file])
-        if n == "int" {
-            if k == "int" {
-                return v
-            }
-            if k == "char" {
-                return Val(v: op(g, "zext i8 " + v.v + " to i64"), ty: T("int"))
-            }
-            if k == "float" {
-                return Val(v: op(g, "fptosi double " + v.v + " to i64"), ty: T("int"))
-            }
-            if k == "bool" {
-                return Val(v: op(g, "zext i1 " + v.v + " to i64"), ty: T("int"))
-            }
-            if k == "str" {
-                return Val(v: op(g, "call i64 @finch_str_to_int(ptr " + spill(g, v) + ", ptr " + file + ", i64 " + str(c.line) + ")"), ty: T("int"))
-            }
-        }
-        if n == "float" {
-            if k == "float" {
-                return v
-            }
-            if k == "int" {
-                return Val(v: op(g, "sitofp i64 " + v.v + " to double"), ty: T("float"))
-            }
-            if k == "str" {
-                return Val(v: op(g, "call double @finch_str_to_float(ptr " + spill(g, v) + ", ptr " + file + ", i64 " + str(c.line) + ")"), ty: T("float"))
-            }
-        }
-        if n == "char" {
-            if k == "char" {
-                return v
-            }
-            if k == "int" {
-                return Val(v: op(g, "trunc i64 " + v.v + " to i8"), ty: T("char"))
-            }
-        }
-        fail(g, c.kids[0], "can't turn " + ast.show(v.ty) + " into " + n)
+    to := numType(n)
+    if to.len > 0 {
+        return convert(g, c, T(to))
     }
     if n == "read_file" || n == "file_exists" {
         checkArgs(g, c, 0, 1, n)
@@ -1997,7 +2195,7 @@ fn arrayMethod(ptr[Gen] g, ast.Node m, str a, ast.Type at) -> Val {
     if n == "sort" {
         need(g, m, 0)
         k := et.kind
-        if k != "int" && k != "float" && k != "char" && k != "str" {
+        if !isNumber(et) && k != "char" && k != "str" {
             fail(g, m, "sort() works on arrays of numbers, chars or str")
         }
         cmp := cmpFn(g, et)
@@ -2028,12 +2226,12 @@ fn cmpFn(ptr[Gen] g, ast.Type t) -> str {
         y := load(g, ty, "%y")
         lt := ""
         gt := ""
-        if t.kind == "float" {
-            lt = op(g, "fcmp olt double " + x + ", " + y)
-            gt = op(g, "fcmp ogt double " + x + ", " + y)
+        if isFloat(t) {
+            lt = op(g, "fcmp olt " + ty + " " + x + ", " + y)
+            gt = op(g, "fcmp ogt " + ty + " " + x + ", " + y)
         } else {
-            lt = op(g, "icmp slt " + ty + " " + x + ", " + y)
-            gt = op(g, "icmp sgt " + ty + " " + x + ", " + y)
+            lt = op(g, "icmp " + intPred("<", isSigned(t)) + " " + ty + " " + x + ", " + y)
+            gt = op(g, "icmp " + intPred(">", isSigned(t)) + " " + ty + " " + x + ", " + y)
         }
         r = op(g, "sub i32 " + op(g, "zext i1 " + gt + " to i32") + ", " + op(g, "zext i1 " + lt + " to i32"))
     }
@@ -2112,6 +2310,7 @@ fn runtimeDecls() -> str {
         "declare i32 @finch_str_eq(ptr, ptr)",
         "declare i64 @finch_str_cmp(ptr, ptr)",
         "declare void @finch_str_from_int(ptr, i64)",
+        "declare void @finch_str_from_uint(ptr, i64)",
         "declare void @finch_str_from_float(ptr, double)",
         "declare void @finch_str_from_char(ptr, i8 signext)",
         "declare void @finch_str_from_bool(ptr, i32)",

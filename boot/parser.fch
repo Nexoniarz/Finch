@@ -85,7 +85,8 @@ fn node(ptr[Parser] p, str kind) -> ast.Node {
 }
 
 fn isTypeName(str n) -> bool {
-    return n == "int" || n == "float" || n == "bool" || n == "char" || n == "str" || n == "ptr"
+    names := ["int", "float", "bool", "char", "str", "ptr", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"]
+    return names.contains(n)
 }
 
 // int, str, ptr[T], []T, Name, module.Name
@@ -103,6 +104,12 @@ fn parseType(ptr[Parser] p) -> ast.Type {
             t := ast.ptrTo(parseType(p))
             expect(p, "]", "']'")
             return t
+        }
+        if name == "i64" {
+            return ast.simple("int")
+        }
+        if name == "f64" {
+            return ast.simple("float")
         }
         return ast.simple(name)
     }
