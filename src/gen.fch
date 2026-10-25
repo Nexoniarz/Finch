@@ -14,6 +14,8 @@ struct Var {
     str slot
     bool readonly
     int order       // how many variables were declared before this one (for defer)
+    bool owned      // it holds memory that is dropped when its scope ends
+    bool moved      // `return x` moved it out: its cleanup is skipped
     str dpath       // where it was declared, for the language server
     int dline
     int dcol
@@ -54,16 +56,33 @@ struct EnumDef {
     []int values
 }
 
+// What happens when a scope ends, in the order things happened (run newest first): a variable is dropped,
+// a defer is run. `idx` is the variable's number in the scope, or the defer's.
+struct Cleanup {
+    bool isDefer
+    int idx
+}
+
 struct Scope {
     []Var vars
     []ast.Node defers
     []int orders
+    []Cleanup cleanups
+}
+
+// A value some expression is holding while it computes the rest: if `try` or `or` leaves the function now,
+// it has to be dropped. isAddr: v is the address of the value, not the value.
+struct Pending {
+    str v
+    ast.Type ty
+    bool isAddr
 }
 
 struct Loop {
     str cont
     str brk
     int depth       // the scope depth at the loop: break and continue unwind down to it
+    int pend        // and so are the temporaries held by the expressions around it
 }
 
 struct FnSig {
@@ -137,6 +156,7 @@ struct Gen {
     int nstr
     bool term
     []Scope scopes
+    []Pending pending
     []Loop loops
     FnSig cur
     str module
@@ -849,6 +869,121 @@ fn copyValue(ptr[Gen] g, str v, ast.Type t) -> str {
     return load(g, llty(g, t), dst)
 }
 
+// ---------- dropping ----------
+
+fn dropAt(ptr[Gen] g, str slot, ast.Type t) {
+    if !owning(g, t) {
+        return
+    }
+    if t.kind == "str" {
+        emit(g, "call void @finch_str_drop(ptr " + slot + ")")
+    } else {
+        emit(g, "call void " + dropFn(g, t) + "(ptr " + slot + ")")
+    }
+}
+
+fn dropValue(ptr[Gen] g, str v, ast.Type t) {
+    if owning(g, t) {
+        dropAt(g, spill(g, Val(v: v, ty: t)), t)
+    }
+}
+
+// a temporary nobody keeps: dropped right after use. Constants (text literals, empty arrays) own no memory.
+fn release(ptr[Gen] g, Val v) {
+    if v.fresh && v.v.len > 0 && !isConstant(v.v) && owning(g, v.ty) {
+        dropValue(g, v.v, v.ty)
+    }
+}
+
+fn isConstant(str v) -> bool {
+    return !v.starts_with("%")
+}
+
+fn dropFn(ptr[Gen] g, ast.Type t) -> str {
+    name := "@finch.drop." + typeKey(t)
+    if has(g.done, name) {
+        return name
+    }
+    g.done.push(name)
+    s := beginHelper(g)
+    if t.kind == "array" {
+        et := t.elem[0]
+        if owning(g, et) {
+            d := load(g, "ptr", "%a")
+            len := load(g, "i64", op(g, "getelementptr inbounds { ptr, i64, i64 }, ptr %a, i32 0, i32 1"))
+            l := loopStart(g, len)
+            ep := op(g, "getelementptr inbounds " + llty(g, et) + ", ptr " + d + ", i64 " + l[3])
+            dropAt(g, ep, et)
+            loopEnd(g, l)
+        }
+        emit(g, "call void @finch_arr_free(ptr %a)")
+    } else if t.kind == "map" {
+        kt := t.elem[0]
+        vt := t.elem[1]
+        if owning(g, kt) || owning(g, vt) {
+            used := load(g, "i64", op(g, "getelementptr inbounds " + llty(g, t) + ", ptr %a, i32 0, i32 2"))
+            l := loopStart(g, used)
+            e := entryAt(g, "%a", t, l[3])
+            live := newLabel(g, "entry.live")
+            next := newLabel(g, "entry.next")
+            condBr(g, op(g, "icmp ne i64 " + load(g, "i64", entryField(g, e, t, 0)) + ", 0"), live, next)
+            label(g, live)
+            dropAt(g, entryField(g, e, t, 1), kt)
+            dropAt(g, entryField(g, e, t, 2), vt)
+            br(g, next)
+            label(g, next)
+            loopEnd(g, l)
+        }
+        emit(g, "call void @finch_map_free(ptr %a)")
+    } else {
+        sd := g.structs[findStruct(g, t.module, t.name)]
+        st := llty(g, t)
+        for k in 0..sd.ftypes.len {
+            if owning(g, sd.ftypes[k]) {
+                dropAt(g, op(g, "getelementptr inbounds " + st + ", ptr %a, i32 0, i32 " + str(sd.lidx[k])), sd.ftypes[k])
+            }
+        }
+    }
+    emit(g, "ret void")
+    endHelper(g, s, "define internal void " + name + "(ptr %a)")
+    return name
+}
+
+// ---------- values held while an expression goes on ----------
+
+fn hold(ptr[Gen] g, Val v) {
+    if v.fresh && v.v.len > 0 && !isConstant(v.v) && owning(g, v.ty) {
+        g.pending.push(Pending(v: v.v, ty: v.ty, isAddr: false))
+    }
+}
+
+fn holdAddr(ptr[Gen] g, str slot, ast.Type t) {
+    if owning(g, t) {
+        g.pending.push(Pending(v: slot, ty: t, isAddr: true))
+    }
+}
+
+// emit the drops of pending[downTo..], newest first (for a path that leaves the function or a loop)
+fn dropPending(ptr[Gen] g, int downTo) {
+    i := g.pending.len
+    while i > downTo {
+        i -= 1
+        p := g.pending[i]
+        if p.isAddr {
+            dropAt(g, p.v, p.ty)
+        } else {
+            dropValue(g, p.v, p.ty)
+        }
+    }
+}
+
+// the expression is done: what it held is not pending any more
+fn heldEnd(ptr[Gen] g, int mark) {
+    while g.pending.len > mark {
+        g.pending.pop()
+    }
+}
+
 // something that can be stored: a fresh value moves, anything else is copied
 fn own(ptr[Gen] g, Val v) -> str {
     if !owning(g, v.ty) || v.fresh {
@@ -1188,7 +1323,7 @@ fn isBuiltin(str n) -> bool {
     return names.contains(n)
 }
 
-fn addVar(ptr[Gen] g, ast.Node at, str name, ast.Type t, str init, bool readonly) -> str {
+fn addVar(ptr[Gen] g, ast.Node at, str name, ast.Type t, str init, bool readonly, bool owned) -> str {
     if lookup(g, name) >= 0 && name != "err" {
         fail(g, at, "a variable named '" + name + "' already exists here")
     }
@@ -1200,7 +1335,12 @@ fn addVar(ptr[Gen] g, ast.Node at, str name, ast.Type t, str init, bool readonly
     }
     slot := alloca(g, llty(g, t))
     store(g, llty(g, t), init, slot)
-    g.scopes[g.scopes.len - 1].vars.push(Var(name: name, ty: t, slot: slot, readonly: readonly, order: g.nvars, dpath: g.files[at.file], dline: at.line, dcol: at.col))
+    sc := g.scopes.len - 1
+    mine := owned && owning(g, t)
+    if mine {
+        g.scopes[sc].cleanups.push(Cleanup(isDefer: false, idx: g.scopes[sc].vars.len))
+    }
+    g.scopes[sc].vars.push(Var(name: name, ty: t, slot: slot, readonly: readonly, owned: mine, order: g.nvars, dpath: g.files[at.file], dline: at.line, dcol: at.col))
     g.nvars += 1
     dbgVariable(g, at, name, t, slot)
     if g.index && name != "err" && !name.starts_with("$") {
@@ -1215,23 +1355,35 @@ fn pushScope(ptr[Gen] g) {
     g.scopes.push(Scope())
 }
 
+// The end of a scope: its variables are dropped and its defers run, unless it has already been left by return,
+// break or continue.
 fn popScope(ptr[Gen] g) {
+    if !g.term {
+        runCleanups(g, g.scopes.len - 1)
+    }
     g.scopes.pop()
 }
 
-// Run the defers of scope `idx`, newest first, as if written where the scope ends.
-fn runDefers(ptr[Gen] g, int idx) {
-    sc := g.scopes[idx]
-    k := sc.defers.len
+// Drop the variables of scope `idx` and run its defers, newest first, as if written where the scope ends.
+fn runCleanups(ptr[Gen] g, int idx) {
+    k := g.scopes[idx].cleanups.len
     while k > 0 {
         k -= 1
+        c := g.scopes[idx].cleanups[k]
+        if !c.isDefer {
+            v := g.scopes[idx].vars[c.idx]
+            if !v.moved {
+                dropAt(g, v.slot, v.ty)
+            }
+            continue
+        }
         savedOn := g.deferOn
         savedLimit := g.deferLimit
         g.deferOn = true
-        g.deferLimit = sc.orders[k]
+        g.deferLimit = g.scopes[idx].orders[c.idx]
         g.inDefer += 1
         pushScope(g)
-        stmt(g, sc.defers[k])
+        stmt(g, g.scopes[idx].defers[c.idx])
         popScope(g)
         g.inDefer -= 1
         g.deferOn = savedOn
@@ -1244,16 +1396,12 @@ fn unwind(ptr[Gen] g, int depth) {
     i := g.scopes.len
     while i > depth {
         i -= 1
-        runDefers(g, i)
+        runCleanups(g, i)
     }
 }
 
-// The end of a block: its defers run, unless the block has already left by return, break or continue.
 fn endScope(ptr[Gen] g) {
-    if !g.term {
-        runDefers(g, g.scopes.len - 1)
-    }
-    g.scopes.pop()
+    popScope(g)
 }
 
 // ---------- mutation analysis: does a function change a parameter? ----------
@@ -1577,12 +1725,14 @@ fn genericCall(ptr[Gen] g, ast.Node c, int ti, int first, str shown) -> Val {
         b.bound.push(false)
     }
     []Val vals
+    mark := g.pending.len
     for k in 0..nparams {
         v := expr(g, c.kids[first + k])
         if v.ty.kind == "void" || v.ty.kind == "null" {
             fail(g, c.kids[first + k], "this has no type to work out " + tpl.tparams.join(", ") + " from")
         }
         vals.push(v)
+        hold(g, v)
         bindType(g, f.kids[k].ty, v.ty, tpl.tparams, addr(b))
     }
     for i in 0..tpl.tparams.len {
@@ -1598,7 +1748,12 @@ fn genericCall(ptr[Gen] g, ast.Node c, int ti, int first, str shown) -> Val {
         v := coerce(g, vals[k], sig.params[k], c.kids[first + k], "argument '" + sig.pnames[k] + "'")
         out.push(llty(g, sig.params[k]) + " " + v.v)
     }
-    return emitCall(g, sig, c, out, shown)
+    r := emitCall(g, sig, c, out, shown)
+    for v in vals {
+        release(g, v)
+    }
+    heldEnd(g, mark)
+    return r
 }
 
 // A struct from a C header: the fields clang says it has, at the offsets clang says,
@@ -1986,7 +2141,7 @@ fn define(ptr[Gen] g, int si) {
         if g.cur.recv.len > 0 {
             g.dbgArg = k + 2
         }
-        addVar(g, f.kids[k], g.cur.pnames[k], pt, v, false)
+        addVar(g, f.kids[k], g.cur.pnames[k], pt, v, false, owning(g, pt) && !g.cur.borrow[k])
         g.dbgArg = 0
     }
     block(g, f.kids[f.kids.len - 1], false)
@@ -1994,7 +2149,7 @@ fn define(ptr[Gen] g, int si) {
         if g.cur.ret.kind != "void" {
             fail(g, f, "function '" + f.name + "' can reach its end without returning " + ast.show(g.cur.ret))
         }
-        runDefers(g, 0)
+        unwind(g, 0)
         if g.cur.fallible {
             emit(g, "ret " + retTy(g, g.cur) + " { i1 true, i8 0, { ptr, i64, i64 } zeroinitializer }")
         } else {
@@ -2039,9 +2194,9 @@ fn stmt(ptr[Gen] g, ast.Node s) {
         assignStmt(g, s)
     } else if k == "expr" {
         if s.kids[0].kind == "or" {
-            orElse(g, s.kids[0], true)
+            release(g, orElse(g, s.kids[0], true))
         } else {
-            expr(g, s.kids[0])
+            release(g, expr(g, s.kids[0]))
         }
     } else if k == "match" {
         matchGen(g, s, false)
@@ -2060,6 +2215,7 @@ fn stmt(ptr[Gen] g, ast.Node s) {
             fail(g, s, "defer inside defer is not allowed")
         }
         sc := g.scopes.len - 1
+        g.scopes[sc].cleanups.push(Cleanup(isDefer: true, idx: g.scopes[sc].defers.len))
         g.scopes[sc].defers.push(s.kids[0])
         g.scopes[sc].orders.push(g.nvars)
     } else if k == "break" || k == "continue" {
@@ -2070,6 +2226,7 @@ fn stmt(ptr[Gen] g, ast.Node s) {
             fail(g, s, k + " can only be used inside a loop")
         }
         l := g.loops[g.loops.len - 1]
+        dropPending(g, l.pend)
         unwind(g, l.depth)
         if k == "break" {
             br(g, l.brk)
@@ -2090,7 +2247,7 @@ fn declStmt(ptr[Gen] g, ast.Node s) {
         if v.ty.kind == "null" {
             fail(g, s.kids[0], "null needs a type, like: ptr[int] " + s.name + " = null")
         }
-        addVar(g, s, s.name, v.ty, own(g, v), false)
+        addVar(g, s, s.name, v.ty, own(g, v), false, true)
         return
     }
     t := resolve(g, s.ty, s)
@@ -2099,14 +2256,14 @@ fn declStmt(ptr[Gen] g, ast.Node s) {
             []ast.Node noArgs
             []str noNames
             v := construct(g, findStruct(g, t.module, t.name), noArgs, noNames, s)
-            addVar(g, s, s.name, t, v.v, false)
+            addVar(g, s, s.name, t, v.v, false, true)
             return
         }
-        addVar(g, s, s.name, t, zeroOf(t), false)
+        addVar(g, s, s.name, t, zeroOf(t), false, true)
         return
     }
     v := coerce(g, exprWant(g, s.kids[0], t), t, s.kids[0], "'" + s.name + "'")
-    addVar(g, s, s.name, t, own(g, v), false)
+    addVar(g, s, s.name, t, own(g, v), false, true)
 }
 
 fn hasDefaults(ptr[Gen] g, ast.Type t) -> bool {
@@ -2139,18 +2296,50 @@ fn assignStmt(ptr[Gen] g, ast.Node s) {
         what = "'" + root + "'"
     }
     if s.name == "=" {
-        v := expr(g, s.kids[1])
+        // the right side first: it may move memory the target lives in (a.push(...) inside it)
+        want := T("void")
+        known := false
+        if target.kind == "var" {
+            id := lookup(g, root)
+            if id >= 0 {
+                want = varAt(g, id).ty
+                known = true
+            }
+        }
+        v := Val()
+        if known {
+            v = exprWant(g, s.kids[1], want)
+        } else {
+            v = expr(g, s.kids[1])
+        }
+        mark := g.pending.len
+        hold(g, v)                      // while the target is computed (a[try f()] = ...)
         dst := place(g, target, true)
         v = coerce(g, v, dst.ty, s.kids[1], what)
-        store(g, llty(g, dst.ty), own(g, v), dst.addr)
+        nv := own(g, v)
+        if owning(g, dst.ty) {
+            old := load(g, llty(g, dst.ty), dst.addr)
+            store(g, llty(g, dst.ty), nv, dst.addr)
+            dropValue(g, old, dst.ty)
+        } else {
+            store(g, llty(g, dst.ty), nv, dst.addr)
+        }
+        heldEnd(g, mark)
         return
     }
     rhs := expr(g, s.kids[1])
+    mark := g.pending.len
+    hold(g, rhs)
     dst := place(g, target, true)
     cur := Val(v: load(g, llty(g, dst.ty), dst.addr), ty: dst.ty)
     opName := s.name.sub(0, 1)
     v := coerce(g, arith(g, opName, cur, rhs, s), dst.ty, s, what)
-    store(g, llty(g, dst.ty), own(g, v), dst.addr)
+    nv := own(g, v)
+    store(g, llty(g, dst.ty), nv, dst.addr)
+    if owning(g, dst.ty) {
+        dropValue(g, cur.v, dst.ty)
+    }
+    heldEnd(g, mark)
 }
 
 fn condition(ptr[Gen] g, ast.Node e) -> str {
@@ -2198,7 +2387,7 @@ fn whileStmt(ptr[Gen] g, ast.Node s) {
         condBr(g, c, body, end)
     }
     label(g, body)
-    g.loops.push(Loop(cont: cond, brk: end, depth: g.scopes.len))
+    g.loops.push(Loop(cont: cond, brk: end, depth: g.scopes.len, pend: g.pending.len))
     breaks := countBreaks(s.kids[1])
     block(g, s.kids[1], true)
     g.loops.pop()
@@ -2228,7 +2417,7 @@ fn forStmt(ptr[Gen] g, ast.Node s) {
     from := coerce(g, expr(g, s.kids[0]), T("int"), s.kids[0], "the start of a range").v
     to := coerce(g, expr(g, s.kids[1]), T("int"), s.kids[1], "the end of a range").v
     pushScope(g)
-    i := addVar(g, s, s.name, T("int"), from, true)
+    i := addVar(g, s, s.name, T("int"), from, true, false)
     cond := newLabel(g, "for.cond")
     body := newLabel(g, "for.body")
     step := newLabel(g, "for.step")
@@ -2239,7 +2428,7 @@ fn forStmt(ptr[Gen] g, ast.Node s) {
     c := op(g, "icmp slt i64 " + iv + ", " + to)
     condBr(g, c, body, end)
     label(g, body)
-    g.loops.push(Loop(cont: step, brk: end, depth: g.scopes.len))
+    g.loops.push(Loop(cont: step, brk: end, depth: g.scopes.len, pend: g.pending.len))
     block(g, s.kids[2], true)
     g.loops.pop()
     br(g, step)
@@ -2289,19 +2478,19 @@ fn eachMap(ptr[Gen] g, ast.Node s, str mp, ast.Type t, bool live) {
     hash := load(g, "i64", entryField(g, entry, t, 0))
     condBr(g, op(g, "icmp eq i64 " + hash + ", 0"), step, body)      // a removed entry
     label(g, body)
-    g.loops.push(Loop(cont: step, brk: end, depth: g.scopes.len))
+    g.loops.push(Loop(cont: step, brk: end, depth: g.scopes.len, pend: g.pending.len))
     pushScope(g)
     kv := load(g, llty(g, kt), entryField(g, entry, t, 1))
     if changes {
         kv = copyValue(g, kv, kt)
     }
-    addVar(g, s, s.name, kt, kv, true)
+    addVar(g, s, s.name, kt, kv, true, changes)
     if s.text.len > 0 {
         vv := load(g, llty(g, vt), entryField(g, entry, t, 2))
         if changes {
             vv = copyValue(g, vv, vt)
         }
-        addVar(g, s, s.text, vt, vv, true)
+        addVar(g, s, s.text, vt, vv, true, changes)
     }
     block(g, s.kids[1], true)
     popScope(g)
@@ -2324,7 +2513,7 @@ fn eachStmt(ptr[Gen] g, ast.Node s) {
         lt = r.pl.ty
     } else {
         lt = r.val.ty
-        listAddr = spill(g, r.val)
+        listAddr = addVar(g, s, "$list" + str(g.nvars), lt, own(g, r.val), false, true)
     }
     if lt.kind == "map" {
         eachMap(g, s, listAddr, lt, r.isPlace)
@@ -2358,14 +2547,14 @@ fn eachStmt(ptr[Gen] g, ast.Node s) {
     if copyElems {
         elem = copyValue(g, elem, et)
     }
-    g.loops.push(Loop(cont: step, brk: end, depth: g.scopes.len))
+    g.loops.push(Loop(cont: step, brk: end, depth: g.scopes.len, pend: g.pending.len))
     pushScope(g)
     elemVar := s.name
     if s.text.len > 0 {                  // for i, x in list
-        addVar(g, s, s.name, T("int"), i, true)
+        addVar(g, s, s.name, T("int"), i, true, false)
         elemVar = s.text
     }
-    addVar(g, s, elemVar, et, elem, true)
+    addVar(g, s, elemVar, et, elem, true, copyElems)
     block(g, s.kids[1], true)
     popScope(g)
     g.loops.pop()
@@ -2395,6 +2584,7 @@ fn returnStmt(ptr[Gen] g, ast.Node s) {
         checkArgs(g, c, 0, 1, "error")
         msg := coerce(g, expr(g, c.kids[0]), T("str"), c.kids[0], "the error message")
         out := own(g, msg)
+        dropPending(g, 0)
         unwind(g, 0)
         emit(g, "ret " + retTy(g, g.cur) + " " + op(g, "insertvalue " + retTy(g, g.cur) + " zeroinitializer, { ptr, i64, i64 } " + out + ", 2"))
         g.term = true
@@ -2404,6 +2594,7 @@ fn returnStmt(ptr[Gen] g, ast.Node s) {
         if s.kids.len > 0 {
             fail(g, s.kids[0], "'" + g.cur.name + "' doesn't return a value (it has no '-> type')")
         }
+        dropPending(g, 0)
         unwind(g, 0)
         if g.cur.fallible {
             emit(g, "ret " + retTy(g, g.cur) + " { i1 true, i8 0, { ptr, i64, i64 } zeroinitializer }")
@@ -2416,18 +2607,42 @@ fn returnStmt(ptr[Gen] g, ast.Node s) {
     if s.kids.len == 0 {
         fail(g, s, "'" + g.cur.name + "' must return " + ast.show(g.cur.ret))
     }
-    v := coerce(g, exprWant(g, s.kids[0], g.cur.ret), g.cur.ret, s.kids[0], "the returned value")
-    out := v.v
-    // returning a local variable moves it out; anything else borrowed is copied
-    isLocal := false
+    // `return local` moves the variable out instead of copying it
     if s.kids[0].kind == "var" {
-        id := lookup(g, s.kids[0].name)
-        isLocal = id >= 0 && id / 100000 > 0
+        name := s.kids[0].name
+        idx := g.scopes.len
+        while idx > 0 {
+            idx -= 1
+            found := -1
+            for vi in 0..g.scopes[idx].vars.len {
+                if g.scopes[idx].vars[vi].name == name && !(g.deferOn && g.scopes[idx].vars[vi].order >= g.deferLimit) {
+                    found = vi
+                }
+            }
+            if found < 0 {
+                continue
+            }
+            lv := g.scopes[idx].vars[found]
+            if lv.owned && ast.same(lv.ty, g.cur.ret) {
+                out := load(g, llty(g, lv.ty), lv.slot)
+                g.scopes[idx].vars[found].moved = true
+                dropPending(g, 0)
+                unwind(g, 0)
+                g.scopes[idx].vars[found].moved = false
+                finishReturn(g, out)
+                return
+            }
+            break
+        }
     }
-    if !isLocal {
-        out = own(g, v)
-    }
+    v := coerce(g, exprWant(g, s.kids[0], g.cur.ret), g.cur.ret, s.kids[0], "the returned value")
+    out := own(g, v)
+    dropPending(g, 0)
     unwind(g, 0)
+    finishReturn(g, out)
+}
+
+fn finishReturn(ptr[Gen] g, str out) {
     if g.cur.fallible {
         a := op(g, "insertvalue " + retTy(g, g.cur) + " zeroinitializer, i1 true, 0")
         b := op(g, "insertvalue " + retTy(g, g.cur) + " " + a + ", " + llty(g, g.cur.ret) + " " + out + ", 1")
@@ -2517,6 +2732,7 @@ fn mapIndex(ptr[Gen] g, ast.Node e, Ref obj, ast.Type t, bool write) -> Ref {
             fail(g, e, "this is a temporary map, it can't be changed")
         }
         entry := mapSlot(g, obj.pl.addr, t, key, true, e)
+        release(g, key)
         return Ref(isPlace: true, pl: Place(addr: entryField(g, entry, t, 2), ty: vt))
     }
     mp := ""
@@ -2538,6 +2754,7 @@ fn mapIndex(ptr[Gen] g, ast.Node e, Ref obj, ast.Type t, bool write) -> Ref {
     emit(g, "unreachable")
     g.term = true
     label(g, found)
+    release(g, key)
     va := entryField(g, entryAt(g, mp, t, i), t, 2)
     if obj.isPlace {
         return Ref(isPlace: true, pl: Place(addr: va, ty: vt))
@@ -2547,6 +2764,7 @@ fn mapIndex(ptr[Gen] g, ast.Node e, Ref obj, ast.Type t, bool write) -> Ref {
     if owning(g, vt) && obj.val.fresh {
         out = Val(v: copyValue(g, v, vt), ty: vt, fresh: true)
     }
+    release(g, obj.val)                 // from a temporary map: take the value, drop the rest
     return Ref(isPlace: false, val: out)
 }
 
@@ -2591,19 +2809,30 @@ fn mapLit(ptr[Gen] g, ast.Node e, ast.Type want) -> Val {
     }
     mp := alloca(g, llty(g, t))
     store(g, llty(g, t), "zeroinitializer", mp)
+    outer := g.pending.len
+    holdAddr(g, mp, t)                  // the entries so far, if a later one leaves early
     for i in 0..e.kids.len / 2 {
+        mark := g.pending.len
         k := k0
-        v := v0
         if !(i == 0 && first) {
             k = exprWant(g, e.kids[2 * i], t.elem[0])
-            v = exprWant(g, e.kids[2 * i + 1], t.elem[1])
         }
         k = coerce(g, k, t.elem[0], e.kids[2 * i], "every key of this map")
+        hold(g, k)
+        v := v0
+        if !(i == 0 && first) {
+            v = exprWant(g, e.kids[2 * i + 1], t.elem[1])
+        }
         v = coerce(g, v, t.elem[1], e.kids[2 * i + 1], "every value of this map")
         vv := own(g, v)
         entry := mapSlot(g, mp, t, k, false, e)
-        store(g, llty(g, t.elem[1]), vv, entryField(g, entry, t, 2))
+        va := entryField(g, entry, t, 2)
+        dropAt(g, va, t.elem[1])        // a key given twice: the last value wins
+        store(g, llty(g, t.elem[1]), vv, va)
+        release(g, k)
+        heldEnd(g, mark)
     }
+    heldEnd(g, outer)
     return Val(v: load(g, llty(g, t), mp), ty: t, fresh: true)
 }
 
@@ -2619,6 +2848,7 @@ fn mapMethod(ptr[Gen] g, ast.Node m, str mp, ast.Type t) -> Val {
         }
         key := coerce(g, exprWant(g, m.kids[1], kt), kt, m.kids[1], "the key")
         i := mapFind(g, mp, spill(g, key), t)
+        release(g, key)
         was := op(g, "icmp sge i64 " + i + ", 0")
         if n == "has" {
             return Val(v: was, ty: T("bool"))
@@ -2628,6 +2858,9 @@ fn mapMethod(ptr[Gen] g, ast.Node m, str mp, ast.Type t) -> Val {
             end := newLabel(g, "remove.end")
             condBr(g, was, hit, end)
             label(g, hit)
+            ent := entryAt(g, mp, t, i)
+            dropAt(g, entryField(g, ent, t, 1), kt)
+            dropAt(g, entryField(g, ent, t, 2), vt)
             emit(g, "call void @finch_map_remove_at(ptr " + mp + ", i64 " + i + ", i64 " + entrySize(g, t) + ")")
             br(g, end)
             label(g, end)
@@ -2655,6 +2888,20 @@ fn mapMethod(ptr[Gen] g, ast.Node m, str mp, ast.Type t) -> Val {
     }
     if n == "clear" {
         checkArgs(g, m, 1, 0, n)
+        if owning(g, kt) || owning(g, vt) {
+            used := load(g, "i64", op(g, "getelementptr inbounds " + llty(g, t) + ", ptr " + mp + ", i32 0, i32 2"))
+            l := loopStart(g, used)
+            e := entryAt(g, mp, t, l[3])
+            live := newLabel(g, "entry.live")
+            next := newLabel(g, "entry.next")
+            condBr(g, op(g, "icmp ne i64 " + load(g, "i64", entryField(g, e, t, 0)) + ", 0"), live, next)
+            label(g, live)
+            dropAt(g, entryField(g, e, t, 1), kt)
+            dropAt(g, entryField(g, e, t, 2), vt)
+            br(g, next)
+            label(g, next)
+            loopEnd(g, l)
+        }
         emit(g, "call void @finch_map_clear(ptr " + mp + ")")
         return Val(ty: T("void"))
     }
@@ -2716,6 +2963,8 @@ fn matchGen(ptr[Gen] g, ast.Node e, bool asValue) -> Val {
     if st.kind == "void" || st.kind == "null" {
         fail(g, e.kids[0], "there is nothing to match here")
     }
+    mark := g.pending.len
+    hold(g, subj)                       // a temporary subject lives through the arms
     end := newLabel(g, "match.end")
     hasElse := false
     reached := false            // does any arm go on to the end?
@@ -2806,6 +3055,7 @@ fn matchGen(ptr[Gen] g, ast.Node e, bool asValue) -> Val {
         emit(g, "unreachable")
         g.term = true
     }
+    heldEnd(g, mark)
     label(g, end)
     if !reached {
         emit(g, "unreachable")
@@ -2813,8 +3063,11 @@ fn matchGen(ptr[Gen] g, ast.Node e, bool asValue) -> Val {
         return Val(ty: T("void"))
     }
     if asValue {
-        return Val(v: op(g, "phi " + llty(g, resultTy) + " " + phiList(inVals, inLabels)), ty: resultTy, fresh: owning(g, resultTy))
+        out := Val(v: op(g, "phi " + llty(g, resultTy) + " " + phiList(inVals, inLabels)), ty: resultTy, fresh: owning(g, resultTy))
+        release(g, subj)
+        return out
     }
+    release(g, subj)
     return Val(ty: T("void"))
 }
 
@@ -2873,6 +3126,7 @@ fn tryExpr(ptr[Gen] g, ast.Node e) -> Val {
     ok := newLabel(g, "try.ok")
     condBr(g, f.failed, bad, ok)
     label(g, bad)
+    dropPending(g, 0)                   // what the expressions around this `try` were holding
     unwind(g, 0)
     emit(g, "ret " + retTy(g, g.cur) + " " + op(g, "insertvalue " + retTy(g, g.cur) + " zeroinitializer, { ptr, i64, i64 } " + f.msg + ", 2"))
     g.term = true
@@ -2890,7 +3144,7 @@ fn orElse(ptr[Gen] g, ast.Node e, bool discard) -> Val {
     label(g, bad)
     if e.flag {
         pushScope(g)
-        addVar(g, e, "err", T("str"), f.msg, true)
+        addVar(g, e, "err", T("str"), f.msg, true, true)
         block(g, e.kids[1], true)
         left := g.term
         popScope(g)
@@ -2901,6 +3155,7 @@ fn orElse(ptr[Gen] g, ast.Node e, bool discard) -> Val {
             join := newLabel(g, "or.end")
             br(g, join)
             label(g, ok)
+            release(g, v)                   // read_file(p) or { ... } as a statement: the unused value goes
             br(g, join)
             label(g, join)
             return Val(ty: T("void"))
@@ -2913,7 +3168,7 @@ fn orElse(ptr[Gen] g, ast.Node e, bool discard) -> Val {
         fail(g, e.kids[1], "this call gives back no value, so there is nothing to replace; handle the failure with  or { ... }")
     }
     pushScope(g)
-    addVar(g, e, "err", T("str"), f.msg, true)
+    addVar(g, e, "err", T("str"), f.msg, true, true)
     fb := coerce(g, exprWant(g, e.kids[1], v.ty), v.ty, e.kids[1], "the value after 'or'")
     fv := own(g, fb)
     popScope(g)
@@ -3118,6 +3373,8 @@ fn arith(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
     if o == "+" && l.ty.kind == "str" && r.ty.kind == "str" {
         out := alloca(g, "{ ptr, i64, i64 }")
         emit(g, "call void @finch_str_concat(ptr " + out + ", ptr " + spill(g, l) + ", ptr " + spill(g, r) + ")")
+        release(g, l)
+        release(g, r)
         return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
     }
     if !unify(g, addr(l), addr(r)) {
@@ -3179,10 +3436,16 @@ fn compare(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
             if o == "!=" {
                 pred = "eq"
             }
-            return Val(v: op(g, "icmp " + pred + " i32 " + c + ", 0"), ty: T("bool"))
+            res := op(g, "icmp " + pred + " i32 " + c + ", 0")
+            release(g, l)
+            release(g, r)
+            return Val(v: res, ty: T("bool"))
         }
         c := op(g, "call i64 @finch_str_cmp(ptr " + spill(g, l) + ", ptr " + spill(g, r) + ")")
-        return Val(v: op(g, "icmp " + intPred(o, true) + " i64 " + c + ", 0"), ty: T("bool"))
+        res := op(g, "icmp " + intPred(o, true) + " i64 " + c + ", 0")
+        release(g, l)
+        release(g, r)
+        return Val(v: res, ty: T("bool"))
     }
     if !unify(g, addr(l), addr(r)) {
         badOperands(g, o, l, r, at)
@@ -3249,7 +3512,10 @@ fn binary(ptr[Gen] g, ast.Node e) -> Val {
         return Val(v: op(g, "phi i1 [ " + short + ", %" + from + " ], [ " + r + ", %" + rhsEnd + " ]"), ty: T("bool"))
     }
     l := expr(g, e.kids[0])
+    mark := g.pending.len
+    hold(g, l)                      // while the right side is computed (it may `try`)
     r := expr(g, e.kids[1])
+    heldEnd(g, mark)
     if o == "==" || o == "!=" || o == "<" || o == "<=" || o == ">" || o == ">=" {
         return compare(g, o, l, r, e)
     }
@@ -3264,6 +3530,7 @@ fn arrayLit(ptr[Gen] g, ast.Node a, ast.Type want) -> Val {
         fail(g, a, "an empty [] needs a type, like: []int nums = []")
     }
     []str vals
+    mark := g.pending.len
     for k in a.kids {
         v := Val()
         if et.kind == "void" {
@@ -3274,7 +3541,9 @@ fn arrayLit(ptr[Gen] g, ast.Node a, ast.Type want) -> Val {
         }
         v = coerce(g, v, et, k, "every element of this array")
         vals.push(own(g, v))
+        hold(g, Val(v: vals[vals.len - 1], ty: et, fresh: true))        // while the next elements are computed
     }
+    heldEnd(g, mark)
     at := ast.arrayOf(et)
     n := str(vals.len)
     data := "null"
@@ -3473,7 +3742,9 @@ fn member(ptr[Gen] g, ast.Node m, bool write) -> Ref {
             lp := op(g, "getelementptr inbounds " + llty(g, t) + ", ptr " + obj.pl.addr + ", i32 0, i32 1")
             return Ref(isPlace: false, val: Val(v: load(g, "i64", lp), ty: T("int")))
         }
-        return Ref(isPlace: false, val: Val(v: op(g, "extractvalue " + llty(g, t) + " " + obj.val.v + ", 1"), ty: T("int")))
+        n := op(g, "extractvalue " + llty(g, t) + " " + obj.val.v + ", 1")
+        release(g, obj.val)
+        return Ref(isPlace: false, val: Val(v: n, ty: T("int")))
     }
     if t.kind != "struct" {
         fail(g, m, ast.show(t) + " has no fields (no '." + m.name + "')")
@@ -3494,11 +3765,22 @@ fn member(ptr[Gen] g, ast.Node m, bool write) -> Ref {
     if owning(g, ft) && obj.val.fresh {
         out = Val(v: copyValue(g, fv, ft), ty: ft, fresh: true)
     }
+    release(g, obj.val)                 // a field of a temporary struct: take it, then drop the rest
     return Ref(isPlace: false, val: out)
 }
 
 fn index(ptr[Gen] g, ast.Node e, bool write) -> Ref {
     obj := ref(g, e.kids[0], write)
+    mark := g.pending.len
+    if !obj.isPlace {
+        hold(g, obj.val)                // while the index is computed
+    }
+    r := indexOf(g, e, obj, write)
+    heldEnd(g, mark)
+    return r
+}
+
+fn indexOf(ptr[Gen] g, ast.Node e, Ref obj, bool write) -> Ref {
     t := obj.val.ty
     if obj.isPlace {
         t = obj.pl.ty
@@ -3558,6 +3840,7 @@ fn index(ptr[Gen] g, ast.Node e, bool write) -> Ref {
     if owning(g, et) && obj.val.fresh {
         out = Val(v: copyValue(g, ev, et), ty: et, fresh: true)
     }
+    release(g, obj.val)
     return Ref(isPlace: false, val: out)
 }
 
@@ -3618,6 +3901,7 @@ fn convert(ptr[Gen] g, ast.Node c, ast.Type to) -> Val {
             ok := op(g, "call i32 @finch_str_try_int(ptr " + spill(g, v) + ", ptr " + out + ", ptr " + err + ")")
             g.ffailed = op(g, "icmp eq i32 " + ok + ", 0")
             g.fmsg = load(g, "{ ptr, i64, i64 }", err)
+            release(g, v)
             return Val(v: intCast(g, load(g, "i64", out), T("int"), to), ty: to)
         }
         out := alloca(g, "double")
@@ -3625,15 +3909,18 @@ fn convert(ptr[Gen] g, ast.Node c, ast.Type to) -> Val {
         ok := op(g, "call i32 @finch_str_try_float(ptr " + spill(g, v) + ", ptr " + out + ", ptr " + err + ")")
         g.ffailed = op(g, "icmp eq i32 " + ok + ", 0")
         g.fmsg = load(g, "{ ptr, i64, i64 }", err)
+        release(g, v)
         return Val(v: floatCast(g, load(g, "double", out), T("float"), to), ty: to)
     }
     if from.kind == "str" && isNumber(to) {
         file := strGlobal(g, g.files[c.file])
         if isInt(to) {
             r := op(g, "call i64 @finch_str_to_int(ptr " + spill(g, v) + ", ptr " + file + ", i64 " + str(c.line) + ")")
+            release(g, v)
             return Val(v: intCast(g, r, T("int"), to), ty: to)
         }
         r := op(g, "call double @finch_str_to_float(ptr " + spill(g, v) + ", ptr " + file + ", i64 " + str(c.line) + ")")
+        release(g, v)
         return Val(v: floatCast(g, r, T("float"), to), ty: to)
     }
     if isInt(to) && from.kind == "enum" {
@@ -4175,11 +4462,15 @@ fn callC(ptr[Gen] g, ast.Node c, cimport.CFunc f) -> Val {
         ptys.push("ptr sret(" + llty(g, ret) + ") align 16")
         args.push("ptr sret(" + llty(g, ret) + ") align 16 " + sretSlot)
     }
+    []Val temps
+    mark := g.pending.len
     for i in 0..c.kids.len {
         if i < f.params.len {
             pt := ptypes[i]
             a := pl.params[i]
             v := coerce(g, exprWant(g, c.kids[i], pt), pt, c.kids[i], "argument " + str(i + 1) + " of " + f.name)
+            temps.push(v)
+            hold(g, v)
             if a.kind == "memory" {
                 slot := alloca(g, llty(g, pt))
                 store(g, llty(g, pt), v.v, slot)
@@ -4215,6 +4506,8 @@ fn callC(ptr[Gen] g, ast.Node c, cimport.CFunc f) -> Val {
         if t.kind == "void" {
             fail(g, c.kids[i], "this gives back nothing")
         }
+        temps.push(v)
+        hold(g, v)
         if t.kind == "struct" || t.kind == "array" {
             fail(g, c.kids[i], "structs and arrays can't be passed to the '...' part of a C function")
         }
@@ -4260,13 +4553,16 @@ fn callC(ptr[Gen] g, ast.Node c, cimport.CFunc f) -> Val {
     text := "call" + retExt + " " + retLL + sig + " @" + f.name + "(" + args.join(", ") + ")"
     if ret.kind == "void" {
         emit(g, text)
+        releaseAll(g, temps, mark)
         return Val(ty: ret)
     }
     if pl.sret {
         emit(g, text)
+        releaseAll(g, temps, mark)
         return Val(v: load(g, llty(g, ret), sretSlot), ty: ret)
     }
     r := op(g, text)
+    releaseAll(g, temps, mark)
     if pl.ret.kind == "expand" {
         slot := alloca(g, "[32 x i8]")
         store(g, pl.ret.coerced, r, slot)
@@ -4279,6 +4575,14 @@ fn callC(ptr[Gen] g, ast.Node c, cimport.CFunc f) -> Val {
         return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: ret)     // borrowed: copied if it is kept
     }
     return Val(v: r, ty: ret)
+}
+
+// the call is made: what its arguments held is dropped
+fn releaseAll(ptr[Gen] g, []Val vals, int mark) {
+    for v in vals {
+        release(g, v)
+    }
+    heldEnd(g, mark)
 }
 
 // libc functions the runtime declares itself, with the signatures C has
@@ -4320,6 +4624,7 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
                 printf(g, " ", "")
             }
             emitPrint(g, v.v, v.ty, false)
+            release(g, v)
         }
         printf(g, "\n", "")
         return Val(ty: T("void"))
@@ -4344,8 +4649,9 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
         v := expr(g, c.kids[0])
         out := strOut(g)
         k := v.ty.kind
+        borrowed := false           // a C string is not copied: whoever keeps it copies it
         if k == "str" {
-            return Val(v: copyValue(g, v.v, v.ty), ty: v.ty, fresh: true)
+            return Val(v: own(g, v), ty: v.ty, fresh: true)
         } else if isSigned(v.ty) {
             emit(g, "call void @finch_str_from_int(ptr " + out + ", i64 " + intCast(g, v.v, v.ty, T("int")) + ")")
         } else if isUnsigned(v.ty) {
@@ -4361,17 +4667,20 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
             // a C string, copied
             store(g, "{ ptr, i64, i64 }", "zeroinitializer", out)
             emit(g, "call void @finch_str_from_c(ptr " + out + ", ptr " + v.v + ")")
+            borrowed = true
         } else if k == "array" && (v.ty.elem[0].kind == "u8" || v.ty.elem[0].kind == "char") {
             // bytes become text
             store(g, "{ ptr, i64, i64 }", "zeroinitializer", out)
             emit(g, "call void @finch_str_from_bytes(ptr " + out + ", ptr " + spill(g, v) + ")")
+            release(g, v)
         } else if k == "bool" || k == "char" || k == "array" || k == "map" || k == "struct" || k == "enum" {
             store(g, "{ ptr, i64, i64 }", "zeroinitializer", out)
             emitFormat(g, out, v.v, v.ty, false)
+            release(g, v)
         } else {
             fail(g, c.kids[0], "can't turn " + ast.show(v.ty) + " into str")
         }
-        return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
+        return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: !borrowed)
     }
     to := numType(n)
     if to.len > 0 {
@@ -4379,9 +4688,11 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     }
     if n == "read_file" || n == "file_exists" {
         checkArgs(g, c, 0, 1, n)
-        path := spill(g, strArg(g, c.kids[0], "the file name"))
+        pv := strArg(g, c.kids[0], "the file name")
+        path := spill(g, pv)
         if n == "file_exists" {
             r := op(g, "call i32 @finch_file_exists(ptr " + path + ")")
+            release(g, pv)
             return Val(v: op(g, "icmp ne i32 " + r + ", 0"), ty: T("bool"))
         }
         out := strOut(g)
@@ -4392,25 +4703,36 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
             ok := op(g, "call i32 @finch_try_read_file(ptr " + out + ", ptr " + path + ", ptr " + err + ")")
             g.ffailed = op(g, "icmp eq i32 " + ok + ", 0")
             g.fmsg = load(g, "{ ptr, i64, i64 }", err)
+            release(g, pv)
             return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
         }
         file := strGlobal(g, g.files[c.file])
         emit(g, "call void @finch_read_file(ptr " + out + ", ptr " + path + ", ptr " + file + ", i64 " + str(c.line) + ")")
+        release(g, pv)
         return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
     }
     if n == "write_file" {
         checkArgs(g, c, 0, 2, n)
-        path := spill(g, strArg(g, c.kids[0], "the file name"))
-        text := spill(g, strArg(g, c.kids[1], "the text"))
+        pv := strArg(g, c.kids[0], "the file name")
+        mark := g.pending.len
+        hold(g, pv)
+        tv := strArg(g, c.kids[1], "the text")
+        heldEnd(g, mark)
+        path := spill(g, pv)
+        text := spill(g, tv)
         if g.ftarget == nodeKey(c) {
             err := alloca(g, "{ ptr, i64, i64 }")
             store(g, "{ ptr, i64, i64 }", "zeroinitializer", err)
             ok := op(g, "call i32 @finch_try_write_file(ptr " + path + ", ptr " + text + ", ptr " + err + ")")
             g.ffailed = op(g, "icmp eq i32 " + ok + ", 0")
             g.fmsg = load(g, "{ ptr, i64, i64 }", err)
+            release(g, pv)
+            release(g, tv)
             return Val(ty: T("void"))
         }
         r := op(g, "call i32 @finch_write_file(ptr " + path + ", ptr " + text + ")")
+        release(g, pv)
+        release(g, tv)
         return Val(v: op(g, "icmp ne i32 " + r + ", 0"), ty: T("bool"))
     }
     if n == "delete_file" {
@@ -4424,9 +4746,13 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
             ok := op(g, "call i32 @finch_try_delete_file(ptr " + heap + ", ptr " + err + ")")
             g.ffailed = op(g, "icmp eq i32 " + ok + ", 0")
             g.fmsg = load(g, "{ ptr, i64, i64 }", err)
+            dropAt(g, heap, T("str"))
+            release(g, p)
             return Val(ty: T("void"))
         }
         r := op(g, "call i32 @finch_delete_file(ptr " + heap + ")")
+        dropAt(g, heap, T("str"))
+        release(g, p)
         return Val(v: op(g, "icmp ne i32 " + r + ", 0"), ty: T("bool"))
     }
     if n == "shell" {
@@ -4434,7 +4760,10 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
         cmd := strArg(g, c.kids[0], "the command")
         heap := strOut(g)
         emit(g, "call void @finch_str_copy(ptr " + heap + ", ptr " + spill(g, cmd) + ")")
-        return Val(v: op(g, "call i64 @finch_shell(ptr " + heap + ")"), ty: T("int"))
+        r := op(g, "call i64 @finch_shell(ptr " + heap + ")")
+        dropAt(g, heap, T("str"))
+        release(g, cmd)
+        return Val(v: r, ty: T("int"))
     }
     if n == "exit" {
         checkArgs(g, c, 0, 1, n)
@@ -4452,6 +4781,7 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
         }
         out := strOut(g)
         emit(g, "call void @finch_input(ptr " + out + ", ptr " + spill(g, prompt) + ")")
+        release(g, prompt)
         return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
     }
     if n == "new" {
@@ -4466,6 +4796,15 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
         v := expr(g, c.kids[0])
         if v.ty.kind != "ptr" {
             fail(g, c.kids[0], "free(...) is only for pointers from new(...) or C; arrays, str and structs are freed by Finch at the end of their block")
+        }
+        if v.ty.elem.len > 0 && owning(g, v.ty.elem[0]) {
+            drop := newLabel(g, "free.drop")
+            done := newLabel(g, "free.done")
+            condBr(g, op(g, "icmp eq ptr " + v.v + ", null"), done, drop)
+            label(g, drop)
+            dropAt(g, v.v, v.ty.elem[0])
+            br(g, done)
+            label(g, done)
         }
         emit(g, "call void @free(ptr " + v.v + ")")
         return Val(ty: T("void"))
@@ -4531,6 +4870,8 @@ fn callFn(ptr[Gen] g, int fi, ast.Node c, int first, str shown, str selfAddr, st
     if sig.recv.len > 0 {
         args.push("ptr " + selfAddr)
     }
+    []Val fresh
+    mark := g.pending.len
     for k in 0..sig.params.len {
         a := c.kids[first + k]
         v := coerce(g, exprWant(g, a, sig.params[k]), sig.params[k], a, "argument '" + sig.pnames[k] + "'")
@@ -4538,9 +4879,18 @@ fn callFn(ptr[Gen] g, int fi, ast.Node c, int first, str shown, str selfAddr, st
         if owning(g, sig.params[k]) && !v.fresh && selfRoot.len > 0 && rootVar(a) == selfRoot {
             v = Val(v: copyValue(g, v.v, v.ty), ty: v.ty, fresh: true)
         }
-        args.push(llty(g, sig.params[k]) + " " + v.v)
+        args.push(llty(g, sig.params[k]) + " " + v.v)      // owning values are lent: the function never drops them
+        if v.fresh {
+            fresh.push(v)
+        }
+        hold(g, v)
     }
-    return emitCall(g, sig, c, args, shown)
+    r := emitCall(g, sig, c, args, shown)
+    for v in fresh {
+        release(g, v)
+    }
+    heldEnd(g, mark)
+    return r
 }
 
 // The call itself, once the arguments are values ("i64 5"); the receiver's address, if any, is already first.
@@ -4600,6 +4950,7 @@ fn construct(ptr[Gen] g, int si, []ast.Node args, []str names, ast.Node at) -> V
         given[k] = i
     }
     v := "zeroinitializer"
+    mark := g.pending.len
     for k in 0..sd.fnames.len {
         ft := sd.ftypes[k]
         fv := Val()
@@ -4625,8 +4976,11 @@ fn construct(ptr[Gen] g, int si, []ast.Node args, []str names, ast.Node at) -> V
         } else {
             continue
         }
-        v = op(g, "insertvalue " + st + " " + v + ", " + llty(g, ft) + " " + own(g, fv) + ", " + str(sd.lidx[k]))
+        fo := own(g, fv)
+        hold(g, Val(v: fo, ty: ft, fresh: true))
+        v = op(g, "insertvalue " + st + " " + v + ", " + llty(g, ft) + " " + fo + ", " + str(sd.lidx[k]))
     }
+    heldEnd(g, mark)
     return Val(v: v, ty: t, fresh: owning(g, t))
 }
 
@@ -4674,6 +5028,7 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
     }
     changing := ["push", "pop", "insert", "remove", "clear", "resize", "sort", "reverse"]
     r := ref(g, objNode, changing.contains(m.name))
+    mark := g.pending.len
     t := r.val.ty
     if r.isPlace {
         t = r.pl.ty
@@ -4687,9 +5042,17 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
                 fail(g, m, m.name + "() would change a temporary array; store it in a variable first")
             }
             a = spill(g, r.val)
+            if r.val.fresh {
+                holdAddr(g, a, t)
+            }
         }
         noteMethod(g, m, docs.arrayMethods())
-        return arrayMethod(g, m, a, t)
+        out := arrayMethod(g, m, a, t)
+        if !r.isPlace && r.val.fresh {
+            dropAt(g, a, t)
+        }
+        heldEnd(g, mark)
+        return out
     }
     if t.kind == "str" {
         sv := r.val
@@ -4697,7 +5060,15 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
             sv = Val(v: load(g, "{ ptr, i64, i64 }", r.pl.addr), ty: t)
         }
         noteMethod(g, m, docs.strMethods())
-        return strMethod(g, m, spill(g, sv))
+        if !r.isPlace {
+            hold(g, sv)
+        }
+        out := strMethod(g, m, spill(g, sv))
+        if !r.isPlace {
+            release(g, sv)
+        }
+        heldEnd(g, mark)
+        return out
     }
     if t.kind == "map" {
         mp := ""
@@ -4708,12 +5079,22 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
                 fail(g, m, m.name + "() would change a temporary map; store it in a variable first")
             }
             mp = spill(g, r.val)
+            if r.val.fresh {
+                holdAddr(g, mp, t)
+            }
         }
         noteMethod(g, m, docs.mapMethods())
-        return mapMethod(g, m, mp, t)
+        out := mapMethod(g, m, mp, t)
+        if !r.isPlace && r.val.fresh {
+            dropAt(g, mp, t)
+        }
+        heldEnd(g, mark)
+        return out
     }
+    heldEnd(g, mark)
     st := t
     selfAddr := ""
+    temp := false
     if t.kind == "ptr" && t.elem.len > 0 && t.elem[0].kind == "struct" {
         pv := r.val.v
         if r.isPlace {
@@ -4726,7 +5107,8 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
         if r.isPlace {
             selfAddr = r.pl.addr
         } else {
-            selfAddr = spill(g, r.val)
+            selfAddr = spill(g, r.val)          // a temporary struct: Point(1, 2).length()
+            temp = true
         }
     }
     if st.kind == "struct" || st.kind == "enum" {
@@ -4765,7 +5147,15 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
                 }
             }
         }
-        return callFn(g, fi, m, 1, ast.show(st) + "." + m.name, selfAddr, rootVar(objNode))
+        if temp && r.val.fresh {
+            holdAddr(g, selfAddr, st)
+        }
+        out := callFn(g, fi, m, 1, ast.show(st) + "." + m.name, selfAddr, rootVar(objNode))
+        if temp && r.val.fresh && owning(g, st) {
+            dropAt(g, selfAddr, st)
+        }
+        heldEnd(g, mark)
+        return out
     }
     fail(g, m, ast.show(t) + " has no methods")
     return Val()
@@ -4803,6 +5193,7 @@ fn arrayMethod(ptr[Gen] g, ast.Node m, str a, ast.Type at) -> Val {
     }
     if n == "clear" {
         need(g, m, 0)
+        dropFrom(g, a, at, "0")
         store(g, "i64", "0", lenAddr)
         return Val(ty: T("void"))
     }
@@ -4827,7 +5218,7 @@ fn arrayMethod(ptr[Gen] g, ast.Node m, str a, ast.Type at) -> Val {
         condBr(g, c, body, end)
         label(g, body)
         ev := Val(v: load(g, ET, op(g, "getelementptr inbounds " + ET + ", ptr " + data + ", i64 " + i)), ty: et)
-        eq := compare(g, "==", ev, x, m).v
+        eq := compare(g, "==", ev, Val(v: x.v, ty: x.ty), m).v
         condBr(g, eq, hit, nxt)
         label(g, hit)
         store(g, "i64", i, res)
@@ -4836,6 +5227,7 @@ fn arrayMethod(ptr[Gen] g, ast.Node m, str a, ast.Type at) -> Val {
         store(g, "i64", op(g, "add i64 " + i + ", 1"), iv)
         br(g, cond)
         label(g, end)
+        release(g, x)
         r := load(g, "i64", res)
         if n == "find" {
             return Val(v: r, ty: T("int"))
@@ -4847,9 +5239,11 @@ fn arrayMethod(ptr[Gen] g, ast.Node m, str a, ast.Type at) -> Val {
         if et.kind != "str" {
             fail(g, m, "join() works on an array of str")
         }
-        sep := spill(g, strArg(g, m.kids[1], "the separator"))
+        sepv := strArg(g, m.kids[1], "the separator")
+        sep := spill(g, sepv)
         out := strOut(g)
         emit(g, "call void @finch_str_join(ptr " + out + ", ptr " + a + ", ptr " + sep + ")")
+        release(g, sepv)
         return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
     }
     if n == "insert" {
@@ -4874,6 +5268,7 @@ fn arrayMethod(ptr[Gen] g, ast.Node m, str a, ast.Type at) -> Val {
     if n == "resize" {
         need(g, m, 1)
         k := coerce(g, expr(g, m.kids[1]), T("int"), m.kids[1], "the new length").v
+        dropFrom(g, a, at, k)
         emit(g, "call void @finch_arr_resize(ptr " + a + ", i64 " + k + ", i64 " + sizeOf(g, et) + ")")
         return Val(ty: T("void"))
     }
@@ -4930,6 +5325,24 @@ fn arrayMethod(ptr[Gen] g, ast.Node m, str a, ast.Type at) -> Val {
     return Val()
 }
 
+// resize/clear: the elements from `from` on go away, so they are dropped
+fn dropFrom(ptr[Gen] g, str a, ast.Type at, str from) {
+    et := at.elem[0]
+    if !owning(g, et) {
+        return
+    }
+    ET := llty(g, et)
+    l := load(g, "i64", op(g, "getelementptr inbounds { ptr, i64, i64 }, ptr " + a + ", i32 0, i32 1"))
+    d := load(g, "ptr", a)
+    under := op(g, "icmp slt i64 " + from + ", " + l)
+    neg := op(g, "icmp slt i64 " + from + ", 0")
+    start := op(g, "select i1 " + under + ", i64 " + op(g, "select i1 " + neg + ", i64 0, i64 " + from) + ", i64 " + l)
+    lp := loopStart(g, op(g, "sub i64 " + l + ", " + start))
+    ep := op(g, "getelementptr inbounds " + ET + ", ptr " + d + ", i64 " + op(g, "add i64 " + start + ", " + lp[3]))
+    dropAt(g, ep, et)
+    loopEnd(g, lp)
+}
+
 // -1, 0 or 1, for qsort
 fn cmpFn(ptr[Gen] g, ast.Type t) -> str {
     name := "@finch.cmp." + typeKey(t)
@@ -4975,20 +5388,27 @@ fn strMethod(ptr[Gen] g, ast.Node m, str s) -> Val {
     }
     if n == "find" || n == "contains" || n == "starts_with" || n == "ends_with" {
         need(g, m, 1)
-        t := spill(g, strArg(g, m.kids[1], "the text to look for"))
+        tv := strArg(g, m.kids[1], "the text to look for")
+        t := spill(g, tv)
         if n == "find" {
-            return Val(v: op(g, "call i64 @finch_str_find(ptr " + s + ", ptr " + t + ")"), ty: T("int"))
+            res := op(g, "call i64 @finch_str_find(ptr " + s + ", ptr " + t + ")")
+            release(g, tv)
+            return Val(v: res, ty: T("int"))
         }
         if n == "contains" {
             r := op(g, "call i64 @finch_str_find(ptr " + s + ", ptr " + t + ")")
-            return Val(v: op(g, "icmp sge i64 " + r + ", 0"), ty: T("bool"))
+            res := op(g, "icmp sge i64 " + r + ", 0")
+            release(g, tv)
+            return Val(v: res, ty: T("bool"))
         }
         fname := "@finch_str_starts"
         if n == "ends_with" {
             fname = "@finch_str_ends"
         }
         r := op(g, "call i32 " + fname + "(ptr " + s + ", ptr " + t + ")")
-        return Val(v: op(g, "icmp ne i32 " + r + ", 0"), ty: T("bool"))
+        res := op(g, "icmp ne i32 " + r + ", 0")
+        release(g, tv)
+        return Val(v: res, ty: T("bool"))
     }
     if n == "trim" || n == "upper" || n == "lower" {
         need(g, m, 0)
@@ -4997,16 +5417,25 @@ fn strMethod(ptr[Gen] g, ast.Node m, str s) -> Val {
     }
     if n == "replace" {
         need(g, m, 2)
-        a := spill(g, strArg(g, m.kids[1], "the text to replace"))
-        b := spill(g, strArg(g, m.kids[2], "the new text"))
+        av := strArg(g, m.kids[1], "the text to replace")
+        mark := g.pending.len
+        hold(g, av)
+        bv := strArg(g, m.kids[2], "the new text")
+        heldEnd(g, mark)
+        a := spill(g, av)
+        b := spill(g, bv)
         emit(g, "call void @finch_str_replace(ptr " + out + ", ptr " + s + ", ptr " + a + ", ptr " + b + ")")
+        release(g, av)
+        release(g, bv)
         return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
     }
     if n == "split" {
         need(g, m, 1)
-        sep := spill(g, strArg(g, m.kids[1], "the separator"))
+        sepv := strArg(g, m.kids[1], "the separator")
+        sep := spill(g, sepv)
         ao := strOut(g)
         emit(g, "call void @finch_str_split(ptr " + ao + ", ptr " + s + ", ptr " + sep + ")")
+        release(g, sepv)
         return Val(v: load(g, "{ ptr, i64, i64 }", ao), ty: ast.arrayOf(T("str")), fresh: true)
     }
     if n == "repeat" {
@@ -5033,6 +5462,9 @@ fn runtimeDecls() -> str {
         "declare void @finch_panic_index(ptr, i64, i64, i64) noreturn cold",
         "declare ptr @finch_alloc(i64)",
         "declare void @finch_str_copy(ptr, ptr)",
+        "declare void @finch_str_drop(ptr)",
+        "declare void @finch_arr_free(ptr)",
+        "declare void @finch_map_free(ptr)",
         "declare void @finch_str_own(ptr)",
         "declare void @finch_str_concat(ptr, ptr, ptr)",
         "declare i32 @finch_str_eq(ptr, ptr)",
