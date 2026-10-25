@@ -80,26 +80,72 @@ fn libFlags(str name) -> str {
 }
 
 fn usage() {
-    print("finch-boot - the Finch compiler written in Finch")
-    print("usage: finch-boot build <file.fch> [-o name]")
-    print("       finch-boot ir <file.fch>")
+    print("Finch -- the compiler is written in Finch")
+    print("usage:")
+    print("  finch run <file.fch> [args...]     build and run a program")
+    print("  finch build <file.fch> [-o name]   build a program")
+    print("  finch ir <file.fch>                print the LLVM IR")
+    print("  finch version                      show the version")
+    print("options:")
+    print("  -O0               no optimization (faster to build)")
+    print("  -l <lib>          link a library (the same as  link \"lib\"  in the program)")
+    print("  -I <dir>          look for imported C headers there too")
+    print("not in this compiler yet: -g, --target, lsp. They are in the C++ one (branch before-bootstrap).")
     exit(1)
 }
 
+fn quote(str a) -> str {
+    return "'" + a.replace("'", "'\\''") + "'"
+}
+
 fn main([]str args) -> int {
+    if args.len == 2 && (args[1] == "version" || args[1] == "--version") {
+        print("Finch 2.4.0 (the compiler is written in Finch)")
+        return 0
+    }
     if args.len < 3 {
         usage()
     }
     cmd := args[1]
     file := args[2]
-    out := stem(file)
-    if args.len == 5 && args[3] == "-o" {
-        out = args[4]
-    } else if args.len != 3 {
+    if cmd != "build" && cmd != "run" && cmd != "ir" {
         usage()
     }
-    if cmd != "build" && cmd != "ir" {
-        usage()
+    out := stem(file)
+    opt := "-O2"
+    []str extraLibs
+    []str extraDirs
+    []str progArgs
+    ai := 3
+    while ai < args.len {
+        a := args[ai]
+        if cmd == "run" && progArgs.len > 0 {          // after the first argument of the program, all of them are its
+            progArgs.push(a)
+        } else if a == "-o" && ai + 1 < args.len && cmd == "build" {
+            out = args[ai + 1]
+            ai += 1
+        } else if a == "-O0" {
+            opt = "-O0"
+        } else if a == "-l" && ai + 1 < args.len {
+            extraLibs.push(libFlags(args[ai + 1]))
+            ai += 1
+        } else if a.starts_with("-l") && a.len > 2 {
+            extraLibs.push(libFlags(a.sub(2, a.len)))
+        } else if a == "-I" && ai + 1 < args.len {
+            extraDirs.push(args[ai + 1])
+            ai += 1
+        } else if a == "-g" || a == "--target" {
+            print("error: '" + a + "' is not in the compiler written in Finch yet; the C++ one has it (branch before-bootstrap)")
+            return 1
+        } else if cmd == "run" {
+            progArgs.push(a)
+        } else {
+            usage()
+        }
+        ai += 1
+    }
+    if cmd == "run" {
+        out = "/tmp/finch_run_" + stem(file)
     }
 
     loader := Loader()
@@ -108,8 +154,8 @@ fn main([]str args) -> int {
     // C headers, from every file; their folders are searched first for "local.h"
     []cimport.Header headers
     []str seen
-    []str dirs
-    []str libs
+    []str dirs = extraDirs
+    []str libs = extraLibs
     for prog in loader.progs {
         d := dirOf(prog.path)
         if !dirs.contains(d) {
@@ -141,7 +187,10 @@ fn main([]str args) -> int {
 
     // the runtime is Finch's C file; FINCH_RT can point somewhere else
     rt := dirOf(args[0]) + "/../runtime/finch_rt.c"
-    if file_exists("runtime/finch_rt.c") {
+    if !file_exists(rt) {
+        rt = dirOf(args[0]) + "/runtime/finch_rt.c"
+    }
+    if !file_exists(rt) && file_exists("runtime/finch_rt.c") {
         rt = "runtime/finch_rt.c"
     }
     if !file_exists(rt) {
@@ -150,11 +199,20 @@ fn main([]str args) -> int {
     }
     llPath := out + ".ll"
     write_file(llPath, ir)
-    code := shell("clang -O2 -w '" + llPath + "' '" + rt + "' -o '" + out + "' -lm " + libs.join(" "))
+    code := shell("clang " + opt + " -w '" + llPath + "' '" + rt + "' -o '" + out + "' -lm " + libs.join(" "))
     shell("rm -f '" + llPath + "'")
     if code != 0 {
         print("error: clang failed")
         return 1
+    }
+    if cmd == "run" {
+        []str quoted
+        for a in progArgs {
+            quoted.push(quote(a))
+        }
+        status := shell(quote(out) + " " + quoted.join(" "))
+        shell("rm -f " + quote(out))
+        return status
     }
     return 0
 }
