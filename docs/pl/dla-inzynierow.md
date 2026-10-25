@@ -421,4 +421,4 @@ serwer podpowiada dalej z ostatniej wersji, która się skompilowała. Test akce
 - Sterownik używa narzędzi `sh` (`rm`, `mkdir`), więc wymaga powłoki POSIX.
 - Generyki są monomorfizowane (kod rośnie z liczbą instancji); nie ma ograniczeń na typy, błędne użycie to błąd wewnątrz
   wygenerowanego ciała.
-- Jeszcze nie ma enumów z danymi (warianty nie niosą wartości).
+

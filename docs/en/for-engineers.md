@@ -428,4 +428,4 @@ test (22 checks).
 - The driver uses `sh` utilities (`rm`, `mkdir`), so it needs a POSIX shell.
 - Generics are monomorphised (code size grows with instantiations); there are no trait bounds, a wrong use is an error
   inside the instantiated body.
-- No payload enums yet (variants carry no data).
+

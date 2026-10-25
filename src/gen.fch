@@ -63,6 +63,22 @@ struct Cleanup {
     int idx
 }
 
+// An enum whose variants hold values (see sumStruct in parser.fch): it is a struct `tag, V_0, ...`.
+// firsts[k] is the number of the struct field holding variant k's first value.
+struct SumDef {
+    str module
+    str name
+    []str variants
+    []int counts
+    []int firsts
+    []ast.Node nodes
+}
+
+struct SumPat {
+    int k
+    []ast.Node binds
+}
+
 struct Scope {
     []Var vars
     []ast.Node defers
@@ -167,6 +183,7 @@ struct Gen {
     []ast.Type targs
     str instNote        // " (while building max[Pixel])", added to errors found inside a generic
     []EnumDef enums
+    []SumDef sums
     []str done
     []str mm        // names of methods that change self, for the mutation analysis
     int nvars       // variables declared so far in this function
@@ -477,6 +494,15 @@ fn findStruct(ptr[Gen] g, str module, str name) -> int {
 fn findEnum(ptr[Gen] g, str module, str name) -> int {
     for i in 0..g.enums.len {
         if g.enums[i].module == module && g.enums[i].name == name {
+            return i
+        }
+    }
+    return -1
+}
+
+fn findSum(ptr[Gen] g, str module, str name) -> int {
+    for i in 0..g.sums.len {
+        if g.sums[i].module == module && g.sums[i].name == name {
             return i
         }
     }
@@ -1172,6 +1198,43 @@ fn formatFn(ptr[Gen] g, ast.Type t) -> str {
         label(g, next)
         loopEnd(g, l)
         bufText(g, "%buf", "}")
+    } else if t.kind == "struct" && findSum(g, t.module, t.name) >= 0 {
+        // Circle(2.5), Point
+        sm := g.sums[findSum(g, t.module, t.name)]
+        sd := g.structs[findStruct(g, t.module, t.name)]
+        st := llty(g, t)
+        tag := load(g, "i64", op(g, "getelementptr inbounds " + st + ", ptr %a, i32 0, i32 " + str(sd.lidx[0])))
+        def := newLabel(g, "sum.other")
+        done := newLabel(g, "sum.done")
+        []str cases
+        []str labels
+        for k in 0..sm.variants.len {
+            labels.push(newLabel(g, "sum.v"))
+            cases.push("i64 " + str(k) + ", label %" + labels[k])
+        }
+        emit(g, "switch i64 " + tag + ", label %" + def + " [ " + cases.join(" ") + " ]")
+        g.term = true
+        for k in 0..sm.variants.len {
+            label(g, labels[k])
+            bufText(g, "%buf", sm.variants[k])
+            if sm.counts[k] > 0 {
+                bufText(g, "%buf", "(")
+                for j in 0..sm.counts[k] {
+                    if j > 0 {
+                        bufText(g, "%buf", ", ")
+                    }
+                    fi := sm.firsts[k] + j
+                    fp := op(g, "getelementptr inbounds " + st + ", ptr %a, i32 0, i32 " + str(sd.lidx[fi]))
+                    emitFormat(g, "%buf", load(g, llty(g, sd.ftypes[fi]), fp), sd.ftypes[fi], true)
+                }
+                bufText(g, "%buf", ")")
+            }
+            br(g, done)
+        }
+        label(g, def)
+        bufText(g, "%buf", sm.name + "(?)")
+        br(g, done)
+        label(g, done)
     } else {
         sd := g.structs[findStruct(g, t.module, t.name)]
         st := llty(g, t)
@@ -1460,6 +1523,24 @@ fn declare(ptr[Gen] g) {
         g.module = g.progs[pi].module
         for ei in 0..g.progs[pi].enums.len {
             e := g.progs[pi].enums[ei]
+            if e.flag {
+                if findEnum(g, g.module, e.name) >= 0 || findSum(g, g.module, e.name) >= 0 {
+                    fail(g, e, "'" + e.name + "' is defined twice")
+                }
+                sd := SumDef(module: g.module, name: e.name)
+                first := 1
+                for v in e.kids {
+                    if sd.variants.contains(v.name) {
+                        fail(g, v, "the enum " + e.name + " has the variant " + v.name + " twice")
+                    }
+                    sd.variants.push(v.name)
+                    sd.counts.push(v.kids.len)
+                    sd.firsts.push(first)
+                    first += v.kids.len
+                }
+                g.sums.push(sd)
+                continue
+            }
             if findEnum(g, g.module, e.name) >= 0 || findStruct(g, g.module, e.name) >= 0 {
                 fail(g, e, "'" + e.name + "' is defined twice")
             }
@@ -2965,6 +3046,14 @@ fn matchGen(ptr[Gen] g, ast.Node e, bool asValue) -> Val {
     }
     mark := g.pending.len
     hold(g, subj)                       // a temporary subject lives through the arms
+    si := -1
+    tagv := ""
+    if st.kind == "struct" {
+        si = findSum(g, st.module, st.name)
+        if si >= 0 {
+            tagv = op(g, "extractvalue " + llty(g, st) + " " + subj.v + ", " + str(g.structs[findStruct(g, st.module, st.name)].lidx[0]))
+        }
+    }
     end := newLabel(g, "match.end")
     hasElse := false
     reached := false            // does any arm go on to the end?
@@ -2980,28 +3069,61 @@ fn matchGen(ptr[Gen] g, ast.Node e, bool asValue) -> Val {
         }
         body := newLabel(g, "match.arm")
         next := newLabel(g, "match.next")
+        []ast.Node binds
+        bindK := -1
         if arm.flag {
             hasElse = true
             br(g, body)
         } else {
             pats := arm.kids[0].kids
             for pi in 0..pats.len {
-                pv := patternValue(g, pats[pi], st)
-                if covered.contains(pv.v) && st.kind == "enum" {
-                    fail(g, pats[pi], "this variant is already handled by an earlier arm")
+                hitv := ""
+                if si >= 0 {
+                    sp := sumPattern(g, pats[pi], si)
+                    if covered.contains(str(sp.k)) {
+                        fail(g, pats[pi], "this variant is already handled by an earlier arm")
+                    }
+                    covered.push(str(sp.k))
+                    if sp.binds.len > 0 {
+                        if pats.len > 1 {
+                            fail(g, pats[pi], "an arm with several variants can't name their values")
+                        }
+                        binds = sp.binds
+                        bindK = sp.k
+                    }
+                    hitv = op(g, "icmp eq i64 " + tagv + ", " + str(sp.k))
+                } else {
+                    pv := patternValue(g, pats[pi], st)
+                    if covered.contains(pv.v) && st.kind == "enum" {
+                        fail(g, pats[pi], "this variant is already handled by an earlier arm")
+                    }
+                    covered.push(pv.v)
+                    hitv = compare(g, "==", subj, pv, pats[pi]).v
                 }
-                covered.push(pv.v)
-                hit := compare(g, "==", subj, pv, pats[pi])
                 if pi == pats.len - 1 {
-                    condBr(g, hit.v, body, next)
+                    condBr(g, hitv, body, next)
                 } else {
                     more := newLabel(g, "match.or")
-                    condBr(g, hit.v, body, more)
+                    condBr(g, hitv, body, more)
                     label(g, more)
                 }
             }
         }
         label(g, body)
+        scoped := binds.len > 0
+        if scoped {
+            pushScope(g)
+            sx := g.structs[findStruct(g, st.module, st.name)]
+            for j in 0..binds.len {
+                if binds[j].name == "_" {
+                    continue
+                }
+                fi := g.sums[si].firsts[bindK] + j
+                ft := sx.ftypes[fi]
+                fv := op(g, "extractvalue " + llty(g, st) + " " + subj.v + ", " + str(sx.lidx[fi]))
+                addVar(g, binds[j], binds[j].name, ft, copyValue(g, fv, ft), true, true)
+            }
+        }
         node := arm.kids[1]
         if asValue {
             v := expr(g, node)
@@ -3013,6 +3135,9 @@ fn matchGen(ptr[Gen] g, ast.Node e, bool asValue) -> Val {
             }
             v = coerce(g, v, resultTy, node, "this arm (the arms of a match have to give the same type)")
             out := own(g, v)
+            if scoped {
+                popScope(g)
+            }
             from := newLabel(g, "match.from")
             br(g, from)
             label(g, from)
@@ -3029,6 +3154,9 @@ fn matchGen(ptr[Gen] g, ast.Node e, bool asValue) -> Val {
             if !g.term {
                 reached = true
             }
+            if scoped {
+                popScope(g)
+            }
             br(g, end)
         }
         if !arm.flag {
@@ -3036,7 +3164,17 @@ fn matchGen(ptr[Gen] g, ast.Node e, bool asValue) -> Val {
         }
     }
     if !hasElse {
-        if st.kind == "enum" {
+        if si >= 0 {
+            []str missing
+            for k in 0..g.sums[si].variants.len {
+                if !covered.contains(str(k)) {
+                    missing.push(g.sums[si].variants[k])
+                }
+            }
+            if missing.len > 0 {
+                fail(g, e, "this match doesn't handle " + missing.join(", ") + " (add them, or an 'else' arm)")
+            }
+        } else if st.kind == "enum" {
             ed := g.enums[findEnum(g, st.module, st.name)]
             []str missing
             for k in 0..ed.variants.len {
@@ -3651,6 +3789,83 @@ fn enumNamed(ptr[Gen] g, ast.Node n) -> int {
     return -1
 }
 
+// Which payload enum does `n` name? Shape, or shapes.Shape. -1 if neither.
+fn sumNamed(ptr[Gen] g, ast.Node n) -> int {
+    if n.kind == "var" && lookup(g, n.name) < 0 {
+        return findSum(g, g.module, n.name)
+    }
+    if n.kind == "member" && n.kids[0].kind == "var" && lookup(g, n.kids[0].name) < 0 && imports(g, n.kids[0].name) {
+        return findSum(g, n.kids[0].name, n.name)
+    }
+    return -1
+}
+
+fn sumVariant(ptr[Gen] g, int si, str name, ast.Node at) -> int {
+    sd := g.sums[si]
+    k := sd.variants.find(name)
+    if k < 0 {
+        fail(g, at, "the enum " + sd.name + " has no variant '" + name + "' (it has: " + sd.variants.join(", ") + ")")
+    }
+    return k
+}
+
+// Shape.Circle(2.0), or Shape.Point
+fn sumMake(ptr[Gen] g, int si, str vname, []ast.Node args, ast.Node at) -> Val {
+    sd := g.sums[si]
+    k := sumVariant(g, si, vname, at)
+    if args.len != sd.counts[k] {
+        if sd.counts[k] == 0 {
+            fail(g, at, vname + " holds nothing: write " + sd.name + "." + vname)
+        }
+        fail(g, at, vname + " holds " + str(sd.counts[k]) + " value(s), but got " + str(args.len) + ": " + sd.name + "." + vname + "(...)")
+    }
+    []ast.Node all
+    []str names
+    all.push(ast.Node(kind: "int", text: str(k), line: at.line, col: at.col, file: at.file))
+    names.push("tag")
+    for j in 0..args.len {
+        all.push(args[j])
+        names.push(vname + "_" + str(j))
+    }
+    noteRef(g, at, at.col, vname.len, "```finch\n" + sd.name + "." + vname + "\n```", "", 0, 0)
+    return construct(g, findStruct(g, sd.module, sd.name), all, names, at)
+}
+
+// the variant a match pattern names, and the names it binds: Circle(r)   Shape.Rect(w, h)   Point
+fn sumPattern(ptr[Gen] g, ast.Node pat, int si) -> SumPat {
+    sd := g.sums[si]
+    name := ""
+    []ast.Node binds
+    if pat.kind == "var" && lookup(g, pat.name) < 0 {
+        name = pat.name
+    } else if pat.kind == "call" {
+        name = pat.name
+        binds = pat.kids
+    } else if pat.kind == "member" && sumNamed(g, pat.kids[0]) == si {
+        name = pat.name
+    } else if pat.kind == "method" && sumNamed(g, pat.kids[0]) == si {
+        name = pat.name
+        for q in 1..pat.kids.len {
+            binds.push(pat.kids[q])
+        }
+    } else {
+        fail(g, pat, "this pattern is not a variant of " + sd.name + " (it has: " + sd.variants.join(", ") + ")")
+    }
+    k := sumVariant(g, si, name, pat)
+    if binds.len != sd.counts[k] {
+        if sd.counts[k] == 0 {
+            fail(g, pat, name + " holds nothing: write just " + name)
+        }
+        fail(g, pat, name + " holds " + str(sd.counts[k]) + " value(s): name them, like " + name + "(x), or use _ to ignore one")
+    }
+    for b in binds {
+        if b.kind != "var" {
+            fail(g, b, "write a name to hold the value (or _ to ignore it)")
+        }
+    }
+    return SumPat(k: k, binds: binds)
+}
+
 // Color.Red
 fn enumValue(ptr[Gen] g, ast.Node m, int ei) -> Val {
     ed := g.enums[ei]
@@ -3663,6 +3878,18 @@ fn enumValue(ptr[Gen] g, ast.Node m, int ei) -> Val {
 }
 
 fn member(ptr[Gen] g, ast.Node m, bool write) -> Ref {
+    sm := sumNamed(g, m.kids[0])
+    if sm >= 0 {
+        if write {
+            fail(g, m, "a variant of an enum can't be changed")
+        }
+        k := sumVariant(g, sm, m.name, m)
+        if g.sums[sm].counts[k] > 0 {
+            fail(g, m, m.name + " holds " + str(g.sums[sm].counts[k]) + " value(s): " + g.sums[sm].name + "." + m.name + "(...)")
+        }
+        []ast.Node none
+        return Ref(isPlace: false, val: sumMake(g, sm, m.name, none, m))
+    }
     ei := enumNamed(g, m.kids[0])
     if ei >= 0 {
         if write {
@@ -4999,6 +5226,14 @@ fn noteMethod(ptr[Gen] g, ast.Node m, []docs.Doc list) {
 
 fn method(ptr[Gen] g, ast.Node m) -> Val {
     objNode := m.kids[0]
+    sm := sumNamed(g, objNode)
+    if sm >= 0 {
+        []ast.Node vals
+        for q in 1..m.kids.len {
+            vals.push(m.kids[q])
+        }
+        return sumMake(g, sm, m.name, vals, m)
+    }
     if objNode.kind == "var" && lookup(g, objNode.name) < 0 {
         mn := objNode.name
         if !imports(g, mn) {

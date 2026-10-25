@@ -924,6 +924,29 @@ tests/cross.sh windows       # every test built for Windows and run with Wine
 tests/cross.sh arm64         # every test built for ARM64 Linux and run with QEMU
 ```
 
+### Variants that hold values
+
+A variant can carry values. Make one with `Shape.Circle(2.0)`, take them out with `match`, which names them:
+
+```c
+enum Shape {
+    Circle(float)
+    Rect(float, float)
+    Point
+}
+
+fn Shape.area() -> float {
+    return match self {
+        Circle(r) -> 3.14 * r * r
+        Rect(w, h) -> w * h
+        Point -> 0.0
+    }
+}
+```
+
+`_` ignores a value. `match` must handle every variant (or end with `else`). Printing shows `Rect(2, 3.5)`. Such an enum is
+copied and freed like a struct; it can't be compared with `==` (match on it). Variants of these enums can't have numbers.
+
 ---
 
 ## 23. Enums and match
@@ -1027,7 +1050,7 @@ write_file(path.join("out", "config.json"), json.pretty(doc))
 
 Not there yet:
 
-- Interfaces, and enums whose variants carry values (`Circle(radius)`).
+- Interfaces.
 - Unicode-aware text: `.len`, `s[i]` and `upper()` work on bytes / ASCII.
 - Threads.
 - Windows on ARM64, 32-bit systems, WebAssembly.

@@ -1,0 +1,38 @@
+enum Shape {
+    Circle(float)
+    Rect(float, float)
+    Named(str, []int)
+    Point
+}
+
+fn Shape.area() -> float {
+    return match self {
+        Circle(r) -> 3.0 * r * r
+        Rect(w, h) -> w * h
+        Named(_, sizes) -> float(sizes.len)
+        Point -> 0.0
+    }
+}
+
+fn describe(Shape s) -> str {
+    match s {
+        Shape.Circle(r) -> return "circle " + str(r)
+        Shape.Named(name, _) -> return "named " + name
+        else -> return "other"
+    }
+}
+
+fn main() {
+    shapes := [Shape.Circle(2.0), Shape.Rect(2.0, 3.5), Shape.Named("tri", [1, 2, 3]), Shape.Point]
+    for s in shapes {
+        print(s, s.area(), describe(s))
+    }
+    copy := shapes[2]
+    shapes.clear()
+    print(copy)
+    p := Shape.Point
+    match p {
+        Point -> print("a point")
+        else -> print("no")
+    }
+}

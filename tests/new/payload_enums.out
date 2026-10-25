@@ -1,0 +1,6 @@
+Circle(2) 12 circle 2
+Rect(2, 3.5) 7 other
+Named("tri", [1, 2, 3]) 3 named tri
+Point 0 other
+Named("tri", [1, 2, 3])
+a point

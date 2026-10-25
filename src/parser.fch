@@ -249,7 +249,11 @@ fn parseProgram(ptr[Parser] p) -> ast.Program {
         } else if at(p, "struct") {
             prog.structs.push(parseStruct(p))
         } else if at(p, "enum") {
-            prog.enums.push(parseEnum(p))
+            e := parseEnum(p)
+            prog.enums.push(e)
+            if e.flag {
+                prog.structs.push(sumStruct(e))       // an enum with values inside is stored as a struct (see sumStruct)
+            }
         } else {
             prog.fns.push(parseFn(p))
         }
@@ -259,6 +263,7 @@ fn parseProgram(ptr[Parser] p) -> ast.Program {
 
 // enum Color { Red, Green, Blue }      enum Status { Ok = 200, NotFound = 404 }
 // The variants are numbered from 0 (or from the last number given) and are written Color.Red.
+// A variant can hold values:  enum Shape { Circle(float), Rect(float, float), Point }  (e.flag is then true).
 fn parseEnum(ptr[Parser] p) -> ast.Node {
     e := node(p, "enum")
     expect(p, "enum", "'enum'")
@@ -270,7 +275,25 @@ fn parseEnum(ptr[Parser] p) -> ast.Node {
         }
         v := node(p, "variant")
         v.name = expect(p, "ident", "a variant name, like Red").text
+        if accept(p, "(") {
+            e.flag = true
+            while !at(p, ")") {
+                f := node(p, "field")
+                f.ty = parseType(p)
+                v.kids.push(f)
+                if !accept(p, ",") {
+                    break
+                }
+            }
+            expect(p, ")", "')' after the values of the variant")
+            if v.kids.len == 0 {
+                fail(p, cur(p), "the variant " + v.name + " has empty () : write just " + v.name + " if it holds nothing")
+            }
+        }
         if accept(p, "=") {
+            if e.flag {
+                fail(p, cur(p), "a variant can't have both values inside and a number")
+            }
             sign := ""
             if accept(p, "-") {
                 sign = "-"
@@ -286,7 +309,32 @@ fn parseEnum(ptr[Parser] p) -> ast.Node {
     if e.kids.len == 0 {
         fail(p, cur(p), "the enum " + e.name + " has no variants")
     }
+    if e.flag {
+        for v in e.kids {
+            if v.text.len > 0 {
+                fail(p, cur(p), "an enum whose variants hold values can't number them (" + v.name + " = " + v.text + ")")
+            }
+        }
+    }
     return e
+}
+
+// An enum whose variants hold values is a struct underneath: a `tag` (which variant it is) and, one after the other,
+// the values of every variant (Rect's are Rect_0, Rect_1). Only the tag's variant has values; the rest stay
+// empty. It's simple and it makes copying, dropping and methods the struct's own.
+fn sumStruct(ast.Node e) -> ast.Node {
+    s := ast.Node(kind: "struct", name: e.name, line: e.line, col: e.col, file: e.file)
+    tag := ast.Node(kind: "field", name: "tag", line: e.line, col: e.col, file: e.file)
+    tag.ty = ast.simple("int")
+    s.kids.push(tag)
+    for v in e.kids {
+        for j in 0..v.kids.len {
+            f := ast.Node(kind: "field", name: v.name + "_" + str(j), line: v.line, col: v.col, file: v.file)
+            f.ty = v.kids[j].ty
+            s.kids.push(f)
+        }
+    }
+    return s
 }
 
 // match value {  A, B -> ...   C -> ...   else -> ... }

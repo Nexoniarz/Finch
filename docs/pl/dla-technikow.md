@@ -928,6 +928,29 @@ tests/cross.sh windows       # każdy test zbudowany na Windowsa i uruchomiony w
 tests/cross.sh arm64         # każdy test zbudowany na Linuksa ARM64 i uruchomiony w QEMU
 ```
 
+### Warianty z wartościami
+
+Wariant może nieść wartości. Tworzysz go przez `Shape.Circle(2.0)`, a wyciągasz `match`-em, który je nazywa:
+
+```c
+enum Shape {
+    Circle(float)
+    Rect(float, float)
+    Point
+}
+
+fn Shape.area() -> float {
+    return match self {
+        Circle(r) -> 3.14 * r * r
+        Rect(w, h) -> w * h
+        Point -> 0.0
+    }
+}
+```
+
+`_` pomija wartość. `match` musi obsłużyć każdy wariant (albo kończyć się `else`). Wypisanie pokazuje `Rect(2, 3.5)`. Taki enum
+jest kopiowany i zwalniany jak struktura; nie da się go porównać przez `==` (użyj `match`). Warianty takich enumów nie mają numerów.
+
 ---
 
 ## 23. Enumy i match
@@ -1031,7 +1054,7 @@ write_file(path.join("out", "config.json"), json.pretty(dok))
 
 Jeszcze nie ma:
 
-- Interfejsów i enumów, których warianty niosą wartości (`Kolo(promien)`).
+- Interfejsów.
 - Tekstu świadomego Unicode: `.len`, `s[i]` i `upper()` działają na bajtach / ASCII.
 - Wątków.
 - Windowsa na ARM64, systemów 32-bitowych, WebAssembly.

@@ -1,0 +1,12 @@
+// expect: this match doesn't handle Point
+enum Shape {
+    Circle(float)
+    Point
+}
+
+fn main() {
+    s := Shape.Circle(1.0)
+    match s {
+        Circle(r) -> print(r)
+    }
+}
