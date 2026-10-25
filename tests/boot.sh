@@ -21,11 +21,11 @@ fi
 pass=0; failed=0; skipped=0
 for f in tests/run/*.fch; do
     grep -q "^fn main" "$f" || continue
-    # the bootstrap compiler doesn't do C imports, maps or errors as values
+    # the bootstrap compiler doesn't do C imports and maps
     # (checked in the test and in the modules it imports)
     files="$f"
     for m in $(sed -n 's/^import \([a-z_]*\)$/\1/p' "$f"); do files="$files tests/run/$m.fch"; done
-    if grep -qE '^import "|^link | or |try |map\[|!\s*\{|for [a-z_]+, ' $files; then
+    if grep -qE '^import "|^link |map\[|for [a-z_]+, ' $files; then
         skipped=$((skipped + 1))
         continue
     fi

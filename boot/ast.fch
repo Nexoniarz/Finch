@@ -78,7 +78,8 @@ struct Node {
     str recv      // fn Point.move(...): "Point"; empty for a plain function
     str text      // literal text
     Type ty       // declared type (decl, param, field, fn result)
-    bool flag     // decl: has a type; fn: has a body
+    bool flag     // decl: has a type; or: the right side is a { block }
+    bool fallible // fn: -> T!  or  -> !
     []Node kids
     []str names   // named arguments: Point(x: 1)
     int line

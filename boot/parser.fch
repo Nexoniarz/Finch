@@ -216,7 +216,13 @@ fn parseFn(ptr[Parser] p) -> ast.Node {
     expect(p, ")", "')'")
     f.ty = ast.simple("void")
     if accept(p, "->") {
-        f.ty = parseType(p)
+        if !at(p, "!") {
+            f.ty = parseType(p)
+        }
+        f.fallible = accept(p, "!")
+        if !f.fallible && f.ty.kind == "void" {
+            fail(p, cur(p), "unexpected " + describe(cur(p)) + " (after '->' comes a type, or ! for a function that can fail)")
+        }
     }
     f.kids.push(parseBlock(p))
     return f
@@ -327,7 +333,7 @@ fn parseStatement(ptr[Parser] p) -> ast.Node {
         s.kids.push(parseExpr(p))
         return s
     }
-    if e.kind != "call" && e.kind != "method" {
+    if e.kind != "call" && e.kind != "method" && e.kind != "try" && e.kind != "or" {
         fail(p, start, "this value is computed but never used")
     }
     s := ast.Node(kind: "expr", line: start.line, col: start.col, file: p.file)
@@ -371,8 +377,22 @@ fn binaryLevel(str op) -> int {
     return 0
 }
 
+// f(x) or fallback  /  f(x) or { ... }: the lowest precedence, right to left
 fn parseExpr(ptr[Parser] p) -> ast.Node {
-    return parseBinary(p, 1)
+    l := parseBinary(p, 1)
+    if !sameLine(p) || !at(p, "or") {
+        return l
+    }
+    e := node(p, "or")
+    next(p)
+    e.kids.push(l)
+    if at(p, "{") {
+        e.flag = true
+        e.kids.push(parseBlock(p))
+    } else {
+        e.kids.push(parseExpr(p))
+    }
+    return e
 }
 
 // precedence climbing; all binary operators are left-associative
@@ -392,6 +412,12 @@ fn parseBinary(ptr[Parser] p, int level) -> ast.Node {
 }
 
 fn parseUnary(ptr[Parser] p) -> ast.Node {
+    if at(p, "try") {
+        e := node(p, "try")
+        next(p)
+        e.kids.push(parsePostfix(p))
+        return e
+    }
     if at(p, "-") || at(p, "!") || at(p, "~") {
         e := node(p, "unary")
         e.name = next(p).kind

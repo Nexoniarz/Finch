@@ -31,6 +31,7 @@ struct FnSig {
     str module
     str name
     str recv        // a method of this struct ("" for a function)
+    bool fallible   // -> T!: returns { i1 ok, T value, str error }
     bool mutself    // the method changes self
     str ll
     ast.Type ret
@@ -90,6 +91,9 @@ struct Gen {
     []str done
     []str mm        // names of methods that change self, for the mutation analysis
     int nvars       // variables declared so far in this function
+    str ftarget     // the call an enclosing or / try is waiting on (see nodeKey)
+    str ffailed     // set by that call: an i1, true if it failed
+    str fmsg        // and the error text
     bool deferOn    // running a defer: variables declared after it are out of sight
     int deferLimit
     int inDefer
@@ -329,6 +333,24 @@ fn llty(ptr[Gen] g, ast.Type t) -> str {
         return "void"
     }
     return "%S." + modName(t.module) + "." + t.name
+}
+
+// What a function returns as far as LLVM is concerned: a function that can fail
+// returns { i1 ok, T value, str error } (an i8 stands in for no value).
+fn retTy(ptr[Gen] g, FnSig sig) -> str {
+    if !sig.fallible {
+        return llty(g, sig.ret)
+    }
+    v := "i8"
+    if sig.ret.kind != "void" {
+        v = llty(g, sig.ret)
+    }
+    return "{ i1, " + v + ", { ptr, i64, i64 } }"
+}
+
+// Identifies a call node, so that the call an `or` / `try` is waiting for can be told from the ones inside it.
+fn nodeKey(ast.Node n) -> str {
+    return n.kind + ":" + str(n.line) + ":" + str(n.col) + ":" + str(n.file)
 }
 
 fn zeroOf(ast.Type t) -> str {
@@ -821,12 +843,12 @@ fn findMethod(ptr[Gen] g, str module, str recv, str name) -> int {
 fn isBuiltin(str n) -> bool {
     names := ["print", "addr", "str", "int", "char", "float", "bool", "read_file", "write_file", "file_exists",
               "shell", "exit", "input", "new", "free", "ptr", "delete_file",
-              "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"]
+              "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "error"]
     return names.contains(n)
 }
 
 fn addVar(ptr[Gen] g, ast.Node at, str name, ast.Type t, str init, bool readonly) -> str {
-    if lookup(g, name) >= 0 {
+    if lookup(g, name) >= 0 && name != "err" {
         fail(g, at, "a variable named '" + name + "' already exists here")
     }
     if findFn(g, g.module, name) >= 0 {
@@ -960,7 +982,7 @@ fn declare(ptr[Gen] g) {
                     fail(g, f, "'" + f.name + "' is a built-in function, pick another name")
                 }
             }
-            sig := FnSig(module: g.module, name: f.name, recv: f.recv, prog: pi, index: fi)
+            sig := FnSig(module: g.module, name: f.name, recv: f.recv, fallible: f.fallible, prog: pi, index: fi)
             sig.ll = "@finch." + modName(g.module) + "." + f.name
             if f.recv.len > 0 {
                 sig.ll = "@finch." + modName(g.module) + "." + f.recv + "." + f.name
@@ -1070,9 +1092,13 @@ fn define(ptr[Gen] g, int si) {
             fail(g, f, "function '" + f.name + "' can reach its end without returning " + ast.show(g.cur.ret))
         }
         runDefers(g, 0)
-        emit(g, "ret void")
+        if g.cur.fallible {
+            emit(g, "ret " + retTy(g, g.cur) + " { i1 true, i8 0, { ptr, i64, i64 } zeroinitializer }")
+        } else {
+            emit(g, "ret void")
+        }
     }
-    g.out.push("define internal " + llty(g, g.cur.ret) + " " + g.cur.ll + "(" + params.join(", ") + ") {\nentry:\n" +
+    g.out.push("define internal " + retTy(g, g.cur) + " " + g.cur.ll + "(" + params.join(", ") + ") {\nentry:\n" +
                g.allocas.join("\n") + "\n" + g.body.join("\n") + "\n}\n")
 }
 
@@ -1102,7 +1128,11 @@ fn stmt(ptr[Gen] g, ast.Node s) {
     } else if k == "assign" {
         assignStmt(g, s)
     } else if k == "expr" {
-        expr(g, s.kids[0])
+        if s.kids[0].kind == "or" {
+            orElse(g, s.kids[0], true)
+        } else {
+            expr(g, s.kids[0])
+        }
     } else if k == "if" {
         ifStmt(g, s)
     } else if k == "while" {
@@ -1364,12 +1394,34 @@ fn returnStmt(ptr[Gen] g, ast.Node s) {
     if g.inDefer > 0 {
         fail(g, s, "return can't be used inside defer")
     }
+    // return error("...")
+    if s.kids.len > 0 && s.kids[0].kind == "call" && s.kids[0].name == "error" {
+        c := s.kids[0]
+        if !g.cur.fallible {
+            want := "!"
+            if g.cur.ret.kind != "void" {
+                want = ast.show(g.cur.ret) + "!"
+            }
+            fail(g, c, "'" + g.cur.name + "' can't fail, so it can't return an error (make it fallible: -> " + want + ")")
+        }
+        checkArgs(g, c, 0, 1, "error")
+        msg := coerce(g, expr(g, c.kids[0]), T("str"), c.kids[0], "the error message")
+        out := own(g, msg)
+        unwind(g, 0)
+        emit(g, "ret " + retTy(g, g.cur) + " " + op(g, "insertvalue " + retTy(g, g.cur) + " zeroinitializer, { ptr, i64, i64 } " + out + ", 2"))
+        g.term = true
+        return
+    }
     if g.cur.ret.kind == "void" {
         if s.kids.len > 0 {
             fail(g, s.kids[0], "'" + g.cur.name + "' doesn't return a value (it has no '-> type')")
         }
         unwind(g, 0)
-        emit(g, "ret void")
+        if g.cur.fallible {
+            emit(g, "ret " + retTy(g, g.cur) + " { i1 true, i8 0, { ptr, i64, i64 } zeroinitializer }")
+        } else {
+            emit(g, "ret void")
+        }
         g.term = true
         return
     }
@@ -1388,11 +1440,119 @@ fn returnStmt(ptr[Gen] g, ast.Node s) {
         out = own(g, v)
     }
     unwind(g, 0)
-    emit(g, "ret " + llty(g, g.cur.ret) + " " + out)
+    if g.cur.fallible {
+        a := op(g, "insertvalue " + retTy(g, g.cur) + " zeroinitializer, i1 true, 0")
+        b := op(g, "insertvalue " + retTy(g, g.cur) + " " + a + ", " + llty(g, g.cur.ret) + " " + out + ", 1")
+        emit(g, "ret " + retTy(g, g.cur) + " " + b)
+    } else {
+        emit(g, "ret " + llty(g, g.cur.ret) + " " + out)
+    }
     g.term = true
 }
 
 // ---------- expressions ----------
+
+// ---------- errors as values ----------
+
+struct Fallible {
+    Val v
+    str failed      // an i1
+    str msg         // a str
+}
+
+// Emit a call that may fail; `failed` and `msg` tell how it went.
+fn fallibleCall(ptr[Gen] g, ast.Node site) -> Fallible {
+    if site.kind != "call" && site.kind != "method" {
+        fail(g, site, "only a function call can fail; 'or' and 'try' go after one, like  int(text) or 0")
+    }
+    savedT := g.ftarget
+    savedF := g.ffailed
+    savedM := g.fmsg
+    g.ftarget = nodeKey(site)
+    g.ffailed = ""
+    g.fmsg = ""
+    v := expr(g, site)
+    out := Fallible(v: v, failed: g.ffailed, msg: g.fmsg)
+    g.ftarget = savedT
+    g.ffailed = savedF
+    g.fmsg = savedM
+    if out.failed.len == 0 {
+        fail(g, site, "this call can't fail, so it needs no 'or' or 'try'")
+    }
+    return out
+}
+
+// try f(x): on failure, the current function fails with the same error
+fn tryExpr(ptr[Gen] g, ast.Node e) -> Val {
+    if g.inDefer > 0 {
+        fail(g, e, "try can't be used inside defer")
+    }
+    if !g.cur.fallible {
+        want := "!"
+        if g.cur.ret.kind != "void" {
+            want = ast.show(g.cur.ret) + "!"
+        }
+        fail(g, e, "try passes the error on, so '" + g.cur.name + "' must be able to fail too (-> " + want + "); or handle it here: ... or <value>  /  ... or { ... }")
+    }
+    f := fallibleCall(g, e.kids[0])
+    bad := newLabel(g, "try.failed")
+    ok := newLabel(g, "try.ok")
+    condBr(g, f.failed, bad, ok)
+    label(g, bad)
+    unwind(g, 0)
+    emit(g, "ret " + retTy(g, g.cur) + " " + op(g, "insertvalue " + retTy(g, g.cur) + " zeroinitializer, { ptr, i64, i64 } " + f.msg + ", 2"))
+    g.term = true
+    label(g, ok)
+    return f.v
+}
+
+// f(x) or fallback  /  f(x) or { ... err ... }
+fn orElse(ptr[Gen] g, ast.Node e, bool discard) -> Val {
+    f := fallibleCall(g, e.kids[0])
+    v := f.v
+    bad := newLabel(g, "or.failed")
+    ok := newLabel(g, "or.ok")
+    condBr(g, f.failed, bad, ok)
+    label(g, bad)
+    if e.flag {
+        pushScope(g)
+        addVar(g, e, "err", T("str"), f.msg, true)
+        block(g, e.kids[1], true)
+        left := g.term
+        popScope(g)
+        if !left && v.ty.kind != "void" && !discard {
+            fail(g, e.kids[1], "this block must leave with return, break, continue or exit(...): after a failure there is no value to go on with (or give one: ... or <value>)")
+        }
+        if discard && v.ty.kind != "void" {
+            join := newLabel(g, "or.end")
+            br(g, join)
+            label(g, ok)
+            br(g, join)
+            label(g, join)
+            return Val(ty: T("void"))
+        }
+        br(g, ok)
+        label(g, ok)
+        return v
+    }
+    if v.ty.kind == "void" {
+        fail(g, e.kids[1], "this call gives back no value, so there is nothing to replace; handle the failure with  or { ... }")
+    }
+    pushScope(g)
+    addVar(g, e, "err", T("str"), f.msg, true)
+    fb := coerce(g, exprWant(g, e.kids[1], v.ty), v.ty, e.kids[1], "the value after 'or'")
+    fv := own(g, fb)
+    popScope(g)
+    badEnd := newLabel(g, "or.bend")
+    join := newLabel(g, "or.end")
+    br(g, badEnd)
+    label(g, badEnd)
+    br(g, join)
+    label(g, ok)
+    br(g, join)
+    label(g, join)
+    return Val(v: op(g, "phi " + llty(g, v.ty) + " [ " + fv + ", %" + badEnd + " ], [ " + v.v + ", %" + ok + " ]"), ty: v.ty, fresh: owning(g, v.ty))
+}
 
 fn exprWant(ptr[Gen] g, ast.Node e, ast.Type want) -> Val {
     if e.kind == "array" {
@@ -1442,6 +1602,12 @@ fn expr(ptr[Gen] g, ast.Node e) -> Val {
             return r.val
         }
         return Val(v: load(g, llty(g, r.pl.ty), r.pl.addr), ty: r.pl.ty)
+    }
+    if k == "try" {
+        return tryExpr(g, e)
+    }
+    if k == "or" {
+        return orElse(g, e, false)
     }
     if k == "unary" {
         return unary(g, e)
@@ -1912,6 +2078,25 @@ fn convert(ptr[Gen] g, ast.Node c, ast.Type to) -> Val {
     if ast.same(from, to) {
         return v
     }
+    if from.kind == "str" && isNumber(to) && g.ftarget == nodeKey(c) {
+        // int(text) or 0: a bad number is reported to the `or`, not a runtime error
+        err := alloca(g, "{ ptr, i64, i64 }")
+        store(g, "{ ptr, i64, i64 }", "zeroinitializer", err)
+        if isInt(to) {
+            out := alloca(g, "i64")
+            store(g, "i64", "0", out)
+            ok := op(g, "call i32 @finch_str_try_int(ptr " + spill(g, v) + ", ptr " + out + ", ptr " + err + ")")
+            g.ffailed = op(g, "icmp eq i32 " + ok + ", 0")
+            g.fmsg = load(g, "{ ptr, i64, i64 }", err)
+            return Val(v: intCast(g, load(g, "i64", out), T("int"), to), ty: to)
+        }
+        out := alloca(g, "double")
+        store(g, "double", "0.0", out)
+        ok := op(g, "call i32 @finch_str_try_float(ptr " + spill(g, v) + ", ptr " + out + ", ptr " + err + ")")
+        g.ffailed = op(g, "icmp eq i32 " + ok + ", 0")
+        g.fmsg = load(g, "{ ptr, i64, i64 }", err)
+        return Val(v: floatCast(g, load(g, "double", out), T("float"), to), ty: to)
+    }
     if from.kind == "str" && isNumber(to) {
         file := strGlobal(g, g.files[c.file])
         if isInt(to) {
@@ -1953,6 +2138,9 @@ fn convert(ptr[Gen] g, ast.Node c, ast.Type to) -> Val {
 
 fn call(ptr[Gen] g, ast.Node c) -> Val {
     n := c.name
+    if n == "error" {
+        fail(g, c, "error(...) makes an error to return from a function that can fail: return error(\"...\")")
+    }
     if n == "print" {
         for i in 0..c.kids.len {
             v := expr(g, c.kids[i])
@@ -2014,6 +2202,15 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
             return Val(v: op(g, "icmp ne i32 " + r + ", 0"), ty: T("bool"))
         }
         out := strOut(g)
+        if g.ftarget == nodeKey(c) {
+            err := alloca(g, "{ ptr, i64, i64 }")
+            store(g, "{ ptr, i64, i64 }", "zeroinitializer", out)
+            store(g, "{ ptr, i64, i64 }", "zeroinitializer", err)
+            ok := op(g, "call i32 @finch_try_read_file(ptr " + out + ", ptr " + path + ", ptr " + err + ")")
+            g.ffailed = op(g, "icmp eq i32 " + ok + ", 0")
+            g.fmsg = load(g, "{ ptr, i64, i64 }", err)
+            return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
+        }
         file := strGlobal(g, g.files[c.file])
         emit(g, "call void @finch_read_file(ptr " + out + ", ptr " + path + ", ptr " + file + ", i64 " + str(c.line) + ")")
         return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
@@ -2022,6 +2219,14 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
         checkArgs(g, c, 0, 2, n)
         path := spill(g, strArg(g, c.kids[0], "the file name"))
         text := spill(g, strArg(g, c.kids[1], "the text"))
+        if g.ftarget == nodeKey(c) {
+            err := alloca(g, "{ ptr, i64, i64 }")
+            store(g, "{ ptr, i64, i64 }", "zeroinitializer", err)
+            ok := op(g, "call i32 @finch_try_write_file(ptr " + path + ", ptr " + text + ", ptr " + err + ")")
+            g.ffailed = op(g, "icmp eq i32 " + ok + ", 0")
+            g.fmsg = load(g, "{ ptr, i64, i64 }", err)
+            return Val(ty: T("void"))
+        }
         r := op(g, "call i32 @finch_write_file(ptr " + path + ", ptr " + text + ")")
         return Val(v: op(g, "icmp ne i32 " + r + ", 0"), ty: T("bool"))
     }
@@ -2030,6 +2235,14 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
         p := strArg(g, c.kids[0], "the file name")
         heap := strOut(g)
         emit(g, "call void @finch_str_copy(ptr " + heap + ", ptr " + spill(g, p) + ")")
+        if g.ftarget == nodeKey(c) {
+            err := alloca(g, "{ ptr, i64, i64 }")
+            store(g, "{ ptr, i64, i64 }", "zeroinitializer", err)
+            ok := op(g, "call i32 @finch_try_delete_file(ptr " + heap + ", ptr " + err + ")")
+            g.ffailed = op(g, "icmp eq i32 " + ok + ", 0")
+            g.fmsg = load(g, "{ ptr, i64, i64 }", err)
+            return Val(ty: T("void"))
+        }
         r := op(g, "call i32 @finch_delete_file(ptr " + heap + ")")
         return Val(v: op(g, "icmp ne i32 " + r + ", 0"), ty: T("bool"))
     }
@@ -2108,7 +2321,20 @@ fn callFn(ptr[Gen] g, int fi, ast.Node c, int first, str shown, str selfAddr, st
         }
         args.push(llty(g, sig.params[k]) + " " + v.v)
     }
-    text := "call " + llty(g, sig.ret) + " " + sig.ll + "(" + args.join(", ") + ")"
+    if sig.fallible && g.ftarget != nodeKey(c) {
+        fail(g, c, "'" + shown + "' can fail, so say what happens then:  " + shown + "(...) or <value>,  " + shown + "(...) or { ... },  or  try " + shown + "(...)")
+    }
+    text := "call " + retTy(g, sig) + " " + sig.ll + "(" + args.join(", ") + ")"
+    if sig.fallible {
+        r := op(g, text)
+        ok := op(g, "extractvalue " + retTy(g, sig) + " " + r + ", 0")
+        g.ffailed = op(g, "xor i1 " + ok + ", true")
+        g.fmsg = op(g, "extractvalue " + retTy(g, sig) + " " + r + ", 2")
+        if sig.ret.kind == "void" {
+            return Val(ty: sig.ret)
+        }
+        return Val(v: op(g, "extractvalue " + retTy(g, sig) + " " + r + ", 1"), ty: sig.ret, fresh: owning(g, sig.ret))
+    }
     if sig.ret.kind == "void" {
         emit(g, text)
         return Val(ty: sig.ret)
@@ -2564,6 +2790,12 @@ fn runtimeDecls() -> str {
         "declare void @finch_args(ptr, i32, ptr)",
         "declare void @finch_input(ptr, ptr)",
         "declare i32 @finch_file_exists(ptr)",
+        "declare i32 @finch_str_try_int(ptr, ptr, ptr)",
+        "declare i32 @finch_str_try_float(ptr, ptr, ptr)",
+        "declare i32 @finch_try_read_file(ptr, ptr, ptr)",
+        "declare i32 @finch_try_write_file(ptr, ptr, ptr)",
+        "declare i32 @finch_try_delete_file(ptr, ptr)",
+        "declare void @finch_report_error(ptr)",
         "declare void @finch_read_file(ptr, ptr, ptr, i64)",
         "declare i32 @finch_write_file(ptr, ptr)",
         "declare i64 @finch_shell(ptr)",
@@ -2590,7 +2822,7 @@ fn generate([]ast.Program progs, []str files) -> str {
     }
     // the C entry point calls the Finch main
     m := g.sigs[main]
-    callText := "call " + llty(g, m.ret) + " " + m.ll + "("
+    callText := "call " + retTy(g, m) + " " + m.ll + "("
     pre := ""
     if m.params.len == 1 {
         pre = "  %args = alloca { ptr, i64, i64 }\n  call void @finch_args(ptr %args, i32 %argc, ptr %argv)\n  %a = load { ptr, i64, i64 }, ptr %args\n"
@@ -2598,7 +2830,19 @@ fn generate([]ast.Program progs, []str files) -> str {
     }
     callText = callText + ")"
     ret := "  ret i32 0\n"
-    if m.ret.kind == "int" {
+    if m.fallible {
+        // fn main() -> !: a failure is printed, and the exit code is 1
+        callText = "%r = " + callText
+        pre = pre + "  " + callText + "\n"
+        callText = ""
+        rt := retTy(g, m)
+        pre = pre + "  %ok = extractvalue " + rt + " %r, 0\n  br i1 %ok, label %main.ok, label %main.bad\nmain.bad:\n"
+        pre = pre + "  %m = extractvalue " + rt + " %r, 2\n  %mp = alloca { ptr, i64, i64 }\n  store { ptr, i64, i64 } %m, ptr %mp\n"
+        pre = pre + "  call void @finch_report_error(ptr %mp)\n  ret i32 1\nmain.ok:\n"
+        if m.ret.kind == "int" {
+            ret = "  %v = extractvalue " + rt + " %r, 1\n  %code = trunc i64 %v to i32\n  ret i32 %code\n"
+        }
+    } else if m.ret.kind == "int" {
         callText = "%r = " + callText
         ret = "  %code = trunc i64 %r to i32\n  ret i32 %code\n"
     }
