@@ -283,7 +283,16 @@ fn parseStatement(ptr[Parser] p) -> ast.Node {
     if k == "{" {
         return parseBlock(p)
     }
-    if k == "fn" || k == "struct" || k == "import" || k == "defer" || k == "link" {
+    if k == "defer" {
+        s := node(p, "defer")
+        next(p)
+        if at(p, "defer") {
+            fail(p, cur(p), "defer inside defer is not allowed")
+        }
+        s.kids.push(parseStatement(p))
+        return s
+    }
+    if k == "fn" || k == "struct" || k == "import" || k == "link" {
         fail(p, cur(p), "'" + k + "' can't be used here in the self-hosted compiler")
     }
 

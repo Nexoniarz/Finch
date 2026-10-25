@@ -10,15 +10,21 @@ struct Var {
     ast.Type ty
     str slot
     bool readonly
+    int order       // how many variables were declared before this one (for defer)
 }
 
+// A scope's variables, and the defers that run when it ends, newest first.
+// A defer sees only the variables declared before it: `orders` says how many.
 struct Scope {
     []Var vars
+    []ast.Node defers
+    []int orders
 }
 
 struct Loop {
     str cont
     str brk
+    int depth       // the scope depth at the loop: break and continue unwind down to it
 }
 
 struct FnSig {
@@ -83,6 +89,10 @@ struct Gen {
     []StructDef structs
     []str done
     []str mm        // names of methods that change self, for the mutation analysis
+    int nvars       // variables declared so far in this function
+    bool deferOn    // running a defer: variables declared after it are out of sight
+    int deferLimit
+    int inDefer
 }
 
 // ---------- basics ----------
@@ -776,6 +786,9 @@ fn lookup(ptr[Gen] g, str name) -> int {
         s := g.scopes.len - 1 - k
         for i in 0..g.scopes[s].vars.len {
             if g.scopes[s].vars[i].name == name {
+                if g.deferOn && g.scopes[s].vars[i].order >= g.deferLimit {
+                    continue
+                }
                 return s * 100000 + i
             }
         }
@@ -824,7 +837,8 @@ fn addVar(ptr[Gen] g, ast.Node at, str name, ast.Type t, str init, bool readonly
     }
     slot := alloca(g, llty(g, t))
     store(g, llty(g, t), init, slot)
-    g.scopes[g.scopes.len - 1].vars.push(Var(name: name, ty: t, slot: slot, readonly: readonly))
+    g.scopes[g.scopes.len - 1].vars.push(Var(name: name, ty: t, slot: slot, readonly: readonly, order: g.nvars))
+    g.nvars += 1
     return slot
 }
 
@@ -833,6 +847,43 @@ fn pushScope(ptr[Gen] g) {
 }
 
 fn popScope(ptr[Gen] g) {
+    g.scopes.pop()
+}
+
+// Run the defers of scope `idx`, newest first, as if written where the scope ends.
+fn runDefers(ptr[Gen] g, int idx) {
+    sc := g.scopes[idx]
+    k := sc.defers.len
+    while k > 0 {
+        k -= 1
+        savedOn := g.deferOn
+        savedLimit := g.deferLimit
+        g.deferOn = true
+        g.deferLimit = sc.orders[k]
+        g.inDefer += 1
+        pushScope(g)
+        stmt(g, sc.defers[k])
+        popScope(g)
+        g.inDefer -= 1
+        g.deferOn = savedOn
+        g.deferLimit = savedLimit
+    }
+}
+
+// The defers of every scope from the innermost down to `depth`, for return, break and continue.
+fn unwind(ptr[Gen] g, int depth) {
+    i := g.scopes.len
+    while i > depth {
+        i -= 1
+        runDefers(g, i)
+    }
+}
+
+// The end of a block: its defers run, unless the block has already left by return, break or continue.
+fn endScope(ptr[Gen] g) {
+    if !g.term {
+        runDefers(g, g.scopes.len - 1)
+    }
     g.scopes.pop()
 }
 
@@ -992,6 +1043,9 @@ fn define(ptr[Gen] g, int si) {
     g.allocas = empty
     g.tmp = 0
     g.term = false
+    g.nvars = 0
+    g.deferOn = false
+    g.inDefer = 0
     []Scope none
     g.scopes = none
     pushScope(g)
@@ -1015,6 +1069,7 @@ fn define(ptr[Gen] g, int si) {
         if g.cur.ret.kind != "void" {
             fail(g, f, "function '" + f.name + "' can reach its end without returning " + ast.show(g.cur.ret))
         }
+        runDefers(g, 0)
         emit(g, "ret void")
     }
     g.out.push("define internal " + llty(g, g.cur.ret) + " " + g.cur.ll + "(" + params.join(", ") + ") {\nentry:\n" +
@@ -1034,7 +1089,7 @@ fn block(ptr[Gen] g, ast.Node b, bool scope) {
         stmt(g, s)
     }
     if scope {
-        popScope(g)
+        endScope(g)
     }
 }
 
@@ -1058,11 +1113,22 @@ fn stmt(ptr[Gen] g, ast.Node s) {
         eachStmt(g, s)
     } else if k == "return" {
         returnStmt(g, s)
+    } else if k == "defer" {
+        if g.inDefer > 0 {
+            fail(g, s, "defer inside defer is not allowed")
+        }
+        sc := g.scopes.len - 1
+        g.scopes[sc].defers.push(s.kids[0])
+        g.scopes[sc].orders.push(g.nvars)
     } else if k == "break" || k == "continue" {
+        if g.inDefer > 0 {
+            fail(g, s, k + " can't be used inside defer")
+        }
         if g.loops.len == 0 {
             fail(g, s, k + " can only be used inside a loop")
         }
         l := g.loops[g.loops.len - 1]
+        unwind(g, l.depth)
         if k == "break" {
             br(g, l.brk)
         } else {
@@ -1187,7 +1253,7 @@ fn whileStmt(ptr[Gen] g, ast.Node s) {
         condBr(g, c, body, end)
     }
     label(g, body)
-    g.loops.push(Loop(cont: cond, brk: end))
+    g.loops.push(Loop(cont: cond, brk: end, depth: g.scopes.len))
     breaks := countBreaks(s.kids[1])
     block(g, s.kids[1], true)
     g.loops.pop()
@@ -1228,7 +1294,7 @@ fn forStmt(ptr[Gen] g, ast.Node s) {
     c := op(g, "icmp slt i64 " + iv + ", " + to)
     condBr(g, c, body, end)
     label(g, body)
-    g.loops.push(Loop(cont: step, brk: end))
+    g.loops.push(Loop(cont: step, brk: end, depth: g.scopes.len))
     block(g, s.kids[2], true)
     g.loops.pop()
     br(g, step)
@@ -1279,7 +1345,7 @@ fn eachStmt(ptr[Gen] g, ast.Node s) {
     if copyElems {
         elem = copyValue(g, elem, et)
     }
-    g.loops.push(Loop(cont: step, brk: end))
+    g.loops.push(Loop(cont: step, brk: end, depth: g.scopes.len))
     pushScope(g)
     addVar(g, s, s.name, et, elem, true)
     block(g, s.kids[1], true)
@@ -1295,10 +1361,14 @@ fn eachStmt(ptr[Gen] g, ast.Node s) {
 }
 
 fn returnStmt(ptr[Gen] g, ast.Node s) {
+    if g.inDefer > 0 {
+        fail(g, s, "return can't be used inside defer")
+    }
     if g.cur.ret.kind == "void" {
         if s.kids.len > 0 {
             fail(g, s.kids[0], "'" + g.cur.name + "' doesn't return a value (it has no '-> type')")
         }
+        unwind(g, 0)
         emit(g, "ret void")
         g.term = true
         return
@@ -1317,6 +1387,7 @@ fn returnStmt(ptr[Gen] g, ast.Node s) {
     if !isLocal {
         out = own(g, v)
     }
+    unwind(g, 0)
     emit(g, "ret " + llty(g, g.cur.ret) + " " + out)
     g.term = true
 }
@@ -2433,7 +2504,13 @@ fn strMethod(ptr[Gen] g, ast.Node m, str s) -> Val {
         emit(g, "call void @finch_str_repeat(ptr " + out + ", ptr " + s + ", i64 " + k + ")")
         return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
     }
-    fail(g, m, "a str has no method '" + n + "' (it has: sub, find, contains, starts_with, ends_with, split, trim, upper, lower, replace, repeat)")
+    if n == "bytes" {
+        need(g, m, 0)
+        ao := strOut(g)
+        emit(g, "call void @finch_bytes_from_str(ptr " + ao + ", ptr " + s + ")")
+        return Val(v: load(g, "{ ptr, i64, i64 }", ao), ty: ast.arrayOf(T("u8")), fresh: true)
+    }
+    fail(g, m, "a str has no method '" + n + "' (it has: sub, find, contains, starts_with, ends_with, split, trim, upper, lower, replace, repeat, bytes)")
     return Val()
 }
 
@@ -2476,6 +2553,7 @@ fn runtimeDecls() -> str {
         "declare void @finch_str_split(ptr, ptr, ptr)",
         "declare void @finch_str_join(ptr, ptr, ptr)",
         "declare void @finch_str_repeat(ptr, ptr, i64)",
+        "declare void @finch_bytes_from_str(ptr, ptr)",
         "declare void @finch_arr_reserve(ptr, i64, i64)",
         "declare void @finch_arr_clone_raw(ptr, ptr, i64)",
         "declare void @finch_arr_make(ptr, i64, i64)",
