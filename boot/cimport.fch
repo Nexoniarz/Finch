@@ -1,0 +1,553 @@
+// C headers, read through libclang, written in Finch.
+//
+// What `import "stdio.h"` teaches the compiler: the C functions, the constants (enum values and
+// plain #define numbers), the extern variables (stdout) and the structs. The same job as
+// src/cimport.cpp, done by calling libclang's C API through Finch's own C import -- which is
+// what makes this the part that closes the bootstrap: to compile this file the self-hosted
+// compiler has to read libclang's headers with this very code.
+//
+// C structs by value appear in types as the named type `module "C"`.
+import ast
+import "clang-c/Index.h"
+link "clang"
+
+struct CFunc {
+    str name
+    str header          // the import it came from
+    ast.Type ret
+    []ast.Type params
+    bool variadic
+    str unsupported     // non-empty: why Finch can't call it (yet)
+}
+
+struct CConst {         // enum values and simple #define numbers
+    bool isFloat
+    int i
+    float f
+}
+
+struct CField {
+    str name
+    ast.Type ty
+    int offset          // bytes
+    int size
+    int align
+    bool hidden         // unions, bit fields, unmappable types: kept for layout only
+}
+
+struct CStruct {
+    str name
+    []CField fields
+    int size
+    int align
+    str unsupported     // why it can't be used by value (pointers to it still work)
+    bool hasHidden
+}
+
+struct CImports {
+    map[str]CFunc fns
+    map[str]CConst consts
+    map[str]ast.Type globals
+    map[str]CStruct structs
+    []str structOrder   // the order they were defined in
+}
+
+// A header to read: the path as written, and where it was written, for error messages.
+struct Header {
+    str path
+    str where
+}
+
+// Where a C type is used decides how `char *` looks in Finch: in function signatures it is a
+// `str`; inside structs, globals and behind pointers it stays a raw `ptr[char]`.
+struct Mapped {
+    ast.Type ty
+    str why
+    bool ok
+}
+
+struct Importer {
+    CImports out
+    ptr tu
+    str header
+    map[str]str recordNames     // record USR -> Finch name (a typedef name wins)
+    map[str]bool defining       // USR -> true while its fields are being mapped
+    int anon
+}
+
+fn text(CXString s) -> str {
+    out := clang_getCString(s)
+    clang_disposeString(s)
+    return out
+}
+
+fn ok(ast.Type t) -> Mapped {
+    return Mapped(ty: t, ok: true)
+}
+
+fn no(str why) -> Mapped {
+    return Mapped(why: why, ok: false)
+}
+
+fn fixed(ast.Type elem, int count) -> ast.Type {
+    t := ast.Type(kind: "fixed", count: count)
+    t.elem.push(elem)
+    return t
+}
+
+// ---------- the system's header folders ----------
+
+// Ask the system C compiler where it looks for headers, so we find the same stdio.h it would.
+fn systemIncludeArgs() -> []str {
+    []str dirs
+    tmp := "/tmp/finch_cc_dirs.txt"
+    shell("cc -E -v -x c /dev/null 2> '" + tmp + "' > /dev/null")
+    if !file_exists(tmp) {
+        return dirs
+    }
+    inList := false
+    for line in read_file(tmp).split("\n") {
+        l := line.trim()
+        if l.starts_with("#include <...> search starts here:") {
+            inList = true
+            continue
+        }
+        if l.starts_with("End of search list.") {
+            break
+        }
+        if !inList || l.len == 0 {
+            continue
+        }
+        // macOS: "/.../Frameworks (framework directory)"
+        if l.ends_with(" (framework directory)") {
+            dirs.push("-iframework" + l.sub(0, l.len - 22))
+        } else {
+            dirs.push("-isystem" + l)
+        }
+    }
+    shell("rm -f '" + tmp + "'")
+    return dirs
+}
+
+// ---------- records ----------
+
+// The Finch name of a C record: its typedef name, its tag, or a made-up one.
+fn recordName(ptr[Importer] imp, CXType t) -> str {
+    decl := clang_getTypeDeclaration(t)
+    usr := text(clang_getCursorUSR(decl))
+    if imp.recordNames.has(usr) {
+        return imp.recordNames[usr]
+    }
+    name := text(clang_getCursorSpelling(decl))
+    if name.len == 0 || name.contains(" ") {
+        imp.anon += 1
+        name = "anon_struct_" + str(imp.anon)
+    }
+    imp.recordNames[usr] = name
+    return name
+}
+
+// Fill out.structs[name] for a complete record; returns its name, or "" if it can't be one.
+fn defineRecord(ptr[Importer] imp, CXType type) -> str {
+    t := clang_getCanonicalType(type)
+    decl := clang_getTypeDeclaration(t)
+    usr := text(clang_getCursorUSR(decl))
+    name := recordName(imp, t)
+    if imp.out.structs.has(name) || imp.defining.has(usr) {
+        return name
+    }
+    size := int(clang_Type_getSizeOf(t))
+    if size < 0 {
+        return ""           // incomplete (opaque) struct
+    }
+    imp.defining[usr] = true
+    s := CStruct(name: name, size: size, align: int(clang_Type_getAlignOf(t)))
+    if clang_getCursorKind(decl) == CXCursor_UnionDecl {
+        s.unsupported = "is a C union"
+    }
+    // the fields are collected by a callback that gets the importer and the struct through one pointer
+    ctx := FieldCtx(imp: imp, s: addr(s))
+    clang_Type_visitFields(t, addr(visitField), addr(ctx))
+    imp.defining.remove(usr)
+    imp.out.structs[name] = s
+    imp.out.structOrder.push(name)
+    return name
+}
+
+struct FieldCtx {
+    ptr[Importer] imp
+    ptr[CStruct] s
+}
+
+fn visitField(CXCursor field, ptr data) -> i32 {
+    ptr[FieldCtx] c = data
+    f := CField(name: text(clang_getCursorSpelling(field)))
+    ft := clang_getCanonicalType(clang_getCursorType(field))
+    f.offset = int(clang_Cursor_getOffsetOfField(field)) / 8
+    f.size = int(clang_Type_getSizeOf(ft))
+    f.align = int(clang_Type_getAlignOf(ft))
+    if clang_Cursor_isBitField(field) != 0 {
+        c.s.unsupported = "has bit fields"
+        f.hidden = true
+    } else if ft.kind == CXType_Record && clang_getCursorKind(clang_getTypeDeclaration(ft)) == CXCursor_UnionDecl {
+        f.hidden = true     // unions are kept as opaque bytes
+    } else {
+        m := mapType(c.imp, ft, false)
+        if m.ok {
+            f.ty = m.ty
+        } else {
+            f.hidden = true
+        }
+    }
+    if f.hidden {
+        c.s.hasHidden = true
+    }
+    if f.name.len == 0 {
+        f.hidden = true
+    }
+    c.s.fields.push(f)
+    return CXVisit_Continue
+}
+
+// ---------- types ----------
+
+fn sized(int size, bool signed) -> Mapped {
+    if size == 1 {
+        if signed {
+            return ok(ast.simple("i8"))
+        }
+        return ok(ast.simple("u8"))
+    }
+    if size == 2 {
+        if signed {
+            return ok(ast.simple("i16"))
+        }
+        return ok(ast.simple("u16"))
+    }
+    if size == 4 {
+        if signed {
+            return ok(ast.simple("i32"))
+        }
+        return ok(ast.simple("u32"))
+    }
+    if size == 8 {
+        if signed {
+            return ok(ast.simple("int"))
+        }
+        return ok(ast.simple("u64"))
+    }
+    return no("uses a " + str(size * 8) + "-bit number")
+}
+
+// C type -> Finch type. Not ok (with a reason) if Finch can't express it.
+// `signature`: a char * is a str (a function's parameters and result); anywhere else it stays a ptr[char].
+fn mapType(ptr[Importer] imp, CXType type, bool signature) -> Mapped {
+    t := clang_getCanonicalType(type)
+    size := int(clang_Type_getSizeOf(t))
+    k := t.kind
+    if k == CXType_Void {
+        return ok(ast.simple("void"))
+    }
+    if k == CXType_Bool {
+        return ok(ast.simple("bool"))
+    }
+    if k == CXType_Char_S || k == CXType_Char_U {
+        return ok(ast.simple("char"))
+    }
+    if k == CXType_SChar || k == CXType_Short || k == CXType_Int || k == CXType_Long || k == CXType_LongLong {
+        return sized(size, true)
+    }
+    if k == CXType_UChar || k == CXType_UShort || k == CXType_UInt || k == CXType_ULong || k == CXType_ULongLong {
+        return sized(size, false)
+    }
+    if k == CXType_Enum {
+        return sized(size, true)
+    }
+    if k == CXType_Float {
+        return ok(ast.simple("f32"))
+    }
+    if k == CXType_Double {
+        return ok(ast.simple("float"))
+    }
+    if k == CXType_Pointer {
+        pointee := clang_getCanonicalType(clang_getPointeeType(t))
+        if (pointee.kind == CXType_Char_S || pointee.kind == CXType_Char_U) && signature {
+            return ok(ast.simple("str"))        // char* in a signature is a C string
+        }
+        if pointee.kind == CXType_Void || pointee.kind == CXType_FunctionProto || pointee.kind == CXType_FunctionNoProto {
+            return ok(ast.simple("ptr"))        // an opaque `ptr` you can pass around
+        }
+        inner := mapType(imp, pointee, false)
+        if !inner.ok || inner.ty.kind == "void" || inner.ty.kind == "fixed" {
+            return ok(ast.simple("ptr"))
+        }
+        return ok(ast.ptrTo(inner.ty))
+    }
+    if k == CXType_Record {
+        if clang_getCursorKind(clang_getTypeDeclaration(t)) == CXCursor_UnionDecl {
+            return no("uses a C union by value")
+        }
+        name := defineRecord(imp, t)
+        if name.len == 0 {
+            return no("uses an incomplete C struct by value")
+        }
+        return ok(ast.Type(kind: "named", name: name, module: "C"))
+    }
+    if k == CXType_ConstantArray {
+        inner := mapType(imp, clang_getArrayElementType(t), false)
+        if !inner.ok {
+            return inner
+        }
+        return ok(fixed(inner.ty, int(clang_getArraySize(t))))
+    }
+    if k == CXType_LongDouble {
+        return no("uses long double")
+    }
+    return no("uses the C type '" + text(clang_getTypeSpelling(t)) + "'")
+}
+
+// ---------- #define numbers ----------
+
+struct Number {
+    CConst c
+    bool ok
+}
+
+// "0x1F", "010", "10UL" -> the value, and whether the text was a whole number
+fn parseInt(str lit) -> Number {
+    s := lit
+    base := 10
+    if s.starts_with("0x") || s.starts_with("0X") {
+        base = 16
+        s = s.sub(2, s.len)
+    } else if s.len > 1 && s[0] == '0' {
+        base = 8
+        s = s.sub(1, s.len)
+    }
+    n := 0
+    seen := false
+    i := 0
+    while i < s.len {
+        c := s[i]
+        d := 99
+        if c >= '0' && c <= '9' {
+            d = int(c) - int('0')
+        } else if c >= 'a' && c <= 'f' {
+            d = int(c) - int('a') + 10
+        } else if c >= 'A' && c <= 'F' {
+            d = int(c) - int('A') + 10
+        }
+        if d >= base {
+            break
+        }
+        n = n * base + d
+        seen = true
+        i += 1
+    }
+    // what is left may only be suffixes: 10UL
+    while i < s.len {
+        if !"uUlL".contains(str(s[i])) {
+            return Number()
+        }
+        i += 1
+    }
+    if !seen && base != 8 {
+        return Number()
+    }
+    return Number(c: CConst(i: n), ok: true)
+}
+
+// Simple #defines: a single number, maybe negative, maybe in parentheses.
+fn macroValue(ptr[Importer] imp, CXCursor c) -> Number {
+    ptr[CXToken] tokens = null
+    u32 n = 0
+    clang_tokenize(imp.tu, clang_getCursorExtent(c), addr(tokens), addr(n))
+    []str parts
+    for k in 1..int(n) {            // token 0 is the macro's name
+        if clang_getTokenKind(tokens[k]) == CXToken_Comment {
+            continue
+        }
+        parts.push(text(clang_getTokenSpelling(imp.tu, tokens[k])))
+    }
+    clang_disposeTokens(imp.tu, tokens, n)
+
+    while parts.len >= 2 && parts[0] == "(" && parts[parts.len - 1] == ")" {
+        parts.remove(0)
+        parts.pop()
+    }
+    neg := false
+    if parts.len == 2 && parts[0] == "-" {
+        neg = true
+        parts.remove(0)
+    }
+    if parts.len != 1 {
+        return Number()
+    }
+    lit := parts[0]
+    if lit.len == 0 || !((lit[0] >= '0' && lit[0] <= '9') || lit[0] == '.') {
+        return Number()
+    }
+    isFloat := (lit.contains(".") || lit.contains("e") || lit.contains("E")) && !lit.starts_with("0x")
+    if isFloat {
+        body := lit
+        while body.len > 0 && "fFlL".contains(str(body[body.len - 1])) {
+            body = body.sub(0, body.len - 1)
+        }
+        v := float(body) or {
+            return Number()
+        }
+        if neg {
+            v = 0.0 - v
+        }
+        return Number(c: CConst(isFloat: true, f: v), ok: true)
+    }
+    r := parseInt(lit)
+    if r.ok && neg {
+        r.c.i = 0 - r.c.i
+    }
+    return r
+}
+
+// ---------- the top level ----------
+
+fn visitTop(CXCursor c, CXCursor parent, ptr data) -> i32 {
+    ptr[Importer] imp = data
+    visit(imp, c)
+    return CXChildVisit_Continue
+}
+
+fn visit(ptr[Importer] imp, CXCursor c) {
+    name := text(clang_getCursorSpelling(c))
+    kind := clang_getCursorKind(c)
+    if kind == CXCursor_TypedefDecl {
+        // typedef struct {...} Name;  ->  the struct is called Name in Finch
+        u := clang_getCanonicalType(clang_getTypedefDeclUnderlyingType(c))
+        if u.kind == CXType_Record {
+            usr := text(clang_getCursorUSR(clang_getTypeDeclaration(u)))
+            // prefer the typedef name, unless the struct is already known under its tag
+            used := imp.recordNames.has(usr) && imp.out.structs.has(imp.recordNames[usr])
+            if !used && !imp.out.structs.has(name) {
+                imp.recordNames[usr] = name
+            }
+        }
+    } else if kind == CXCursor_FunctionDecl {
+        if imp.out.fns.has(name) {
+            return
+        }
+        f := CFunc(name: name, header: imp.header)
+        if clang_Cursor_getStorageClass(c) == CX_SC_Static {
+            f.unsupported = "is a static inline C function (it has no code to link against)"
+            imp.out.fns[name] = f
+            return
+        }
+        ft := clang_getCanonicalType(clang_getCursorType(c))
+        if ft.kind == CXType_FunctionNoProto {
+            f.unsupported = "has no parameter list in its C declaration"
+            imp.out.fns[name] = f
+            return
+        }
+        r := mapType(imp, clang_getResultType(ft), true)
+        if r.ok {
+            f.ret = r.ty
+        } else {
+            f.unsupported = r.why
+        }
+        n := int(clang_getNumArgTypes(ft))
+        for k in 0..n {
+            if f.unsupported.len > 0 {
+                break
+            }
+            p := mapType(imp, clang_getArgType(ft, u32(k)), true)
+            if p.ok {
+                f.params.push(p.ty)
+            } else {
+                f.unsupported = p.why
+            }
+        }
+        f.variadic = clang_isFunctionTypeVariadic(ft) != 0
+        imp.out.fns[name] = f
+    } else if kind == CXCursor_VarDecl {
+        if clang_Cursor_getStorageClass(c) != CX_SC_Extern || imp.out.globals.has(name) {
+            return
+        }
+        g := mapType(imp, clang_getCursorType(c), false)
+        if g.ok {
+            imp.out.globals[name] = g.ty
+        }
+    } else if kind == CXCursor_StructDecl {
+        if clang_isCursorDefinition(c) != 0 && name.len > 0 && !name.contains(" ") {
+            usr := text(clang_getCursorUSR(c))
+            if !imp.recordNames.has(usr) {
+                imp.recordNames[usr] = name
+            }
+        }
+    } else if kind == CXCursor_EnumDecl {
+        clang_visitChildren(c, addr(visitTop), imp)
+    } else if kind == CXCursor_EnumConstantDecl {
+        if !imp.out.consts.has(name) {
+            imp.out.consts[name] = CConst(i: int(clang_getEnumConstantDeclValue(c)))
+        }
+    } else if kind == CXCursor_MacroDefinition {
+        if clang_Cursor_isMacroBuiltin(c) != 0 || clang_Cursor_isMacroFunctionLike(c) != 0 {
+            return
+        }
+        v := macroValue(imp, c)
+        if v.ok && !imp.out.consts.has(name) {
+            imp.out.consts[name] = v.c
+        }
+    }
+}
+
+// Read every header in `headers`; `dirs` are searched first for "local.h" headers.
+fn importHeaders([]Header headers, []str dirs) -> CImports! {
+    imp := Importer()
+    if headers.len == 0 {
+        return imp.out
+    }
+    []str args = ["-x", "c", "-std=gnu11"]
+    for d in dirs {
+        args.push("-I" + d)
+    }
+    for d in systemIncludeArgs() {
+        args.push(d)
+    }
+    []ptr[char] argv
+    for i in 0..args.len {
+        argv.push(args[i].ptr)
+    }
+    index := clang_createIndex(0, 0)
+    for h in headers {
+        src := "#include \"" + h.path + "\"\n"
+        file := CXUnsavedFile(Filename: "finch_import.c".ptr, Contents: src.ptr, Length: u64(src.len))
+        ptr tu = null
+        flags := CXTranslationUnit_DetailedPreprocessingRecord | CXTranslationUnit_SkipFunctionBodies
+        err := clang_parseTranslationUnit2(index, "finch_import.c", argv.ptr, i32(argv.len), addr(file), 1, u32(flags), addr(tu))
+        if err != CXError_Success || tu == null {
+            return error(h.where + ": error: couldn't read C header '" + h.path + "'")
+        }
+        nd := int(clang_getNumDiagnostics(tu))
+        for k in 0..nd {
+            d := clang_getDiagnostic(tu, u32(k))
+            if clang_getDiagnosticSeverity(d) >= CXDiagnostic_Error {
+                msg := text(clang_getDiagnosticSpelling(d))
+                clang_disposeDiagnostic(d)
+                if msg.contains("file not found") {
+                    // "'GL/gl.h' file not found": it may be a header that this one includes
+                    missing := msg.sub(1, msg.sub(1, msg.len).find("'") + 1)
+                    if missing == h.path {
+                        return error(h.where + ": error: can't find the C header '" + h.path + "'")
+                    }
+                    return error(h.where + ": error: can't find the C header '" + missing + "', which '" + h.path + "' includes (is its library's development package installed?)")
+                }
+                return error(h.where + ": error: C header '" + h.path + "' has an error: " + msg)
+            }
+            clang_disposeDiagnostic(d)
+        }
+        imp.tu = tu
+        imp.header = h.path
+        clang_visitChildren(clang_getTranslationUnitCursor(tu), addr(visitTop), addr(imp))
+        clang_disposeTranslationUnit(tu)
+    }
+    clang_disposeIndex(index)
+    return imp.out
+}

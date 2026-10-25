@@ -9,6 +9,7 @@ struct Type {
     []Type elem
     str name
     str module
+    int count       // "fixed": [N]T, only inside C structs
 }
 
 fn simple(str kind) -> Type {
@@ -42,7 +43,10 @@ fn same(Type a, Type b) -> bool {
     if a.kind == "struct" || a.kind == "named" {
         return a.name == b.name && a.module == b.module
     }
-    if a.kind == "array" || a.kind == "ptr" || a.kind == "map" {
+    if a.kind == "fixed" && a.count != b.count {
+        return false
+    }
+    if a.kind == "array" || a.kind == "ptr" || a.kind == "map" || a.kind == "fixed" {
         if a.elem.len != b.elem.len {
             return false
         }
@@ -59,6 +63,9 @@ fn same(Type a, Type b) -> bool {
 fn show(Type t) -> str {
     if t.kind == "array" {
         return "[]" + show(t.elem[0])
+    }
+    if t.kind == "fixed" {
+        return "[" + str(t.count) + "]" + show(t.elem[0])
     }
     if t.kind == "map" {
         return "map[" + show(t.elem[0]) + "]" + show(t.elem[1])

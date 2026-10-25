@@ -1,0 +1,18 @@
+import ast
+import cimport
+
+fn main() -> ! {
+    headers := [cimport.Header(path: "stdio.h", where: "test:1:1"), cimport.Header(path: "/home/nexoniarz/.claude/jobs/4af40c6f/tmp/cx/h.h", where: "test:2:1")]
+    c := try cimport.importHeaders(headers, [])
+    print("functions", c.fns.len, "consts", c.consts.len, "globals", c.globals.len, "structs", c.structs.len)
+    f := c.fns["add"]
+    print(f.name, ast.show(f.ret), f.params.len, f.unsupported)
+    m := c.fns["many"]
+    print(m.name, ast.show(m.ret), m.params.len, ast.show(m.params[0]), ast.show(m.params[1]), m.unsupported)
+    print(c.consts["N"].i, c.consts["Green"].i, c.consts["EOF"].i)
+    print(ast.show(c.globals["counter"]), ast.show(c.globals["stdout"]))
+    s := c.structs["Vec2"]
+    print(s.name, s.size, s.align, s.fields.len, s.unsupported)
+    printf := c.fns["printf"]
+    print(printf.name, printf.variadic, printf.params.len, ast.show(printf.params[0]))
+}
