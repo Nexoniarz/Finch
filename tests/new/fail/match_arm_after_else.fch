@@ -1,0 +1,8 @@
+// expect: this arm can never be used
+fn main() {
+    n := 3
+    match n {
+        else -> print("any")
+        1 -> print("one")
+    }
+}

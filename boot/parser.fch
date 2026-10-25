@@ -173,11 +173,93 @@ fn parseProgram(ptr[Parser] p) -> ast.Program {
             prog.links.push(expect(p, "string", "a library or C file name, like  link \"glfw\"").text)
         } else if at(p, "struct") {
             prog.structs.push(parseStruct(p))
+        } else if at(p, "enum") {
+            prog.enums.push(parseEnum(p))
         } else {
             prog.fns.push(parseFn(p))
         }
     }
     return prog
+}
+
+// enum Color { Red, Green, Blue }      enum Status { Ok = 200, NotFound = 404 }
+// The variants are numbered from 0 (or from the last number given) and are written Color.Red.
+fn parseEnum(ptr[Parser] p) -> ast.Node {
+    e := node(p, "enum")
+    expect(p, "enum", "'enum'")
+    e.name = expect(p, "ident", "an enum name").text
+    expect(p, "{", "'{'")
+    while !at(p, "}") {
+        if at(p, "eof") {
+            fail(p, cur(p), "an enum is never closed (missing '}')")
+        }
+        v := node(p, "variant")
+        v.name = expect(p, "ident", "a variant name, like Red").text
+        if accept(p, "=") {
+            sign := ""
+            if accept(p, "-") {
+                sign = "-"
+            }
+            v.text = sign + expect(p, "int", "a whole number, like  Ok = 200").text
+        }
+        e.kids.push(v)
+        if !accept(p, ",") {
+            endOfStatement(p)
+        }
+    }
+    next(p)
+    if e.kids.len == 0 {
+        fail(p, cur(p), "the enum " + e.name + " has no variants")
+    }
+    return e
+}
+
+// match value {  A, B -> ...   C -> ...   else -> ... }
+// As a statement the arms are statements or { blocks }; as an expression they are expressions.
+fn parseMatch(ptr[Parser] p, bool asExpr) -> ast.Node {
+    m := node(p, "match")
+    m.flag = asExpr
+    expect(p, "match", "'match'")
+    m.kids.push(parseExpr(p))
+    expect(p, "{", "'{'")
+    saved := p.depth
+    p.depth = 0
+    while !at(p, "}") {
+        if at(p, "eof") {
+            fail(p, cur(p), "a match is never closed (missing '}')")
+        }
+        arm := node(p, "arm")
+        pats := node(p, "patterns")
+        if accept(p, "else") {
+            arm.flag = true
+        } else {
+            while true {
+                pats.kids.push(parseExpr(p))
+                if !accept(p, ",") {
+                    break
+                }
+            }
+        }
+        arm.kids.push(pats)
+        expect(p, "->", "'->' after the value to match, like   Red -> print(\"red\")")
+        if at(p, "{") && !asExpr {
+            arm.kids.push(parseBlock(p))
+        } else if asExpr {
+            arm.kids.push(parseExpr(p))
+        } else {
+            arm.kids.push(parseStatement(p))
+        }
+        m.kids.push(arm)
+        if !accept(p, ",") {
+            endOfStatement(p)
+        }
+    }
+    p.depth = saved
+    next(p)
+    if m.kids.len == 1 {
+        fail(p, cur(p), "a match needs at least one arm")
+    }
+    return m
 }
 
 fn parseStruct(ptr[Parser] p) -> ast.Node {
@@ -292,6 +374,9 @@ fn parseStatement(ptr[Parser] p) -> ast.Node {
         }
         s.kids.push(parseBlock(p))
         return s
+    }
+    if k == "match" {
+        return parseMatch(p, false)
     }
     if k == "return" {
         s := node(p, "return")
@@ -531,6 +616,9 @@ fn parsePrimary(ptr[Parser] p) -> ast.Node {
         p.depth -= 1
         expect(p, ")", "')'")
         return inner
+    }
+    if k == "match" {
+        return parseMatch(p, true)
     }
     if k == "[" {
         next(p)

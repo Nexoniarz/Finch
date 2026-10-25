@@ -1,0 +1,10 @@
+// expect: doesn't handle Blue
+enum Color { Red, Green, Blue }
+
+fn main() {
+    c := Color.Red
+    match c {
+        Red -> print(1)
+        Green -> print(2)
+    }
+}

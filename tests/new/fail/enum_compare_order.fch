@@ -1,0 +1,6 @@
+// expect: enums can only be compared with == and !=
+enum Color { Red, Green }
+
+fn main() {
+    print(Color.Red < Color.Green)
+}

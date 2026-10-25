@@ -1,0 +1,11 @@
+// expect: 'Purple' is not a variant of Color
+enum Color { Red, Green }
+
+fn main() {
+    c := Color.Red
+    match c {
+        Red -> print(1)
+        Purple -> print(2)
+        else -> print(3)
+    }
+}

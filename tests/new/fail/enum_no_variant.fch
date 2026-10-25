@@ -1,0 +1,6 @@
+// expect: the enum Color has no variant 'Blue'
+enum Color { Red, Green }
+
+fn main() {
+    print(Color.Blue)
+}

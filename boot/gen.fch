@@ -16,6 +16,13 @@ struct Var {
 
 // A scope's variables, and the defers that run when it ends, newest first.
 // A defer sees only the variables declared before it: `orders` says how many.
+struct EnumDef {
+    str module
+    str name
+    []str variants
+    []int values
+}
+
 struct Scope {
     []Var vars
     []ast.Node defers
@@ -33,6 +40,7 @@ struct FnSig {
     str name
     str recv        // a method of this struct ("" for a function)
     str recvmod     // and the module of that struct: "C" for a struct from a header
+    bool recvEnum   // the receiver is an enum
     bool fallible   // -> T!: returns { i1 ok, T value, str error }
     bool mutself    // the method changes self
     str ll
@@ -96,6 +104,7 @@ struct Gen {
     str module
     []FnSig sigs
     []StructDef structs
+    []EnumDef enums
     []str done
     []str mm        // names of methods that change self, for the mutation analysis
     int nvars       // variables declared so far in this function
@@ -273,6 +282,15 @@ fn findStruct(ptr[Gen] g, str module, str name) -> int {
     return -1
 }
 
+fn findEnum(ptr[Gen] g, str module, str name) -> int {
+    for i in 0..g.enums.len {
+        if g.enums[i].module == module && g.enums[i].name == name {
+            return i
+        }
+    }
+    return -1
+}
+
 fn progOf(ptr[Gen] g, str module) -> int {
     for i in 0..g.progs.len {
         if g.progs[i].module == module {
@@ -320,6 +338,9 @@ fn resolve(ptr[Gen] g, ast.Type t, ast.Node at) -> ast.Type {
         }
         module = t.module
     }
+    if findEnum(g, module, t.name) >= 0 {
+        return ast.Type(kind: "enum", name: t.name, module: module)
+    }
     if findStruct(g, module, t.name) < 0 {
         // a bare name may be a struct from a C header
         if t.module.len == 0 && findStruct(g, "C", t.name) >= 0 {
@@ -360,6 +381,9 @@ fn llty(ptr[Gen] g, ast.Type t) -> str {
     if k == "fixed" {
         return "[" + str(t.count) + " x " + llty(g, t.elem[0]) + "]"
     }
+    if k == "enum" {
+        return "i32"
+    }
     if k == "ptr" || k == "null" {
         return "ptr"
     }
@@ -389,7 +413,7 @@ fn nodeKey(ast.Node n) -> str {
 
 fn zeroOf(ast.Type t) -> str {
     k := t.kind
-    if isInt(t) || k == "char" {
+    if isInt(t) || k == "char" || k == "enum" {
         return "0"
     }
     if k == "bool" {
@@ -424,6 +448,9 @@ fn typeKey(ast.Type t) -> str {
     }
     if t.kind == "map" {
         return "map_" + typeKey(t.elem[0]) + "_" + typeKey(t.elem[1])
+    }
+    if t.kind == "enum" {
+        return "E_" + modName(t.module) + "_" + t.name
     }
     if t.kind == "struct" {
         return "S_" + modName(t.module) + "_" + t.name
@@ -751,6 +778,31 @@ fn formatFn(ptr[Gen] g, ast.Type t) -> str {
         emitFormat(g, "%buf", load(g, llty(g, et), ep), et, true)
         loopEnd(g, l)
         bufText(g, "%buf", "]")
+    } else if t.kind == "enum" {
+        // the variant's name; a number that is no variant shows as Color(7)
+        ed := g.enums[findEnum(g, t.module, t.name)]
+        v := load(g, "i32", "%a")
+        def := newLabel(g, "enum.other")
+        done := newLabel(g, "enum.done")
+        []str cases
+        []str labels
+        for k in 0..ed.variants.len {
+            labels.push(newLabel(g, "enum.v"))
+            cases.push("i32 " + str(ed.values[k]) + ", label %" + labels[k])
+        }
+        emit(g, "switch i32 " + v + ", label %" + def + " [ " + cases.join(" ") + " ]")
+        g.term = true
+        for k in 0..ed.variants.len {
+            label(g, labels[k])
+            bufText(g, "%buf", ed.variants[k])
+            br(g, done)
+        }
+        label(g, def)
+        bufText(g, "%buf", ed.name + "(")
+        emit(g, "call void @finch_buf_int(ptr %buf, i64 " + op(g, "sext i32 " + v + " to i64") + ")")
+        bufText(g, "%buf", ")")
+        br(g, done)
+        label(g, done)
     } else if t.kind == "map" {
         // {"a": 1, "b": 2}
         first := alloca(g, "i1")
@@ -1038,6 +1090,32 @@ fn declare(ptr[Gen] g) {
             g.structs.push(StructDef(module: g.module, name: s.name, prog: pi, index: si))
         }
     }
+    for pi in 0..g.progs.len {
+        g.module = g.progs[pi].module
+        for ei in 0..g.progs[pi].enums.len {
+            e := g.progs[pi].enums[ei]
+            if findEnum(g, g.module, e.name) >= 0 || findStruct(g, g.module, e.name) >= 0 {
+                fail(g, e, "'" + e.name + "' is defined twice")
+            }
+            ed := EnumDef(module: g.module, name: e.name)
+            next := 0
+            for v in e.kids {
+                if v.text.len > 0 {
+                    next = int(v.text)
+                }
+                if ed.variants.contains(v.name) {
+                    fail(g, v, "the enum " + e.name + " has the variant " + v.name + " twice")
+                }
+                if ed.values.contains(next) {
+                    fail(g, v, "two variants of " + e.name + " have the number " + str(next) + " (give each its own)")
+                }
+                ed.variants.push(v.name)
+                ed.values.push(next)
+                next += 1
+            }
+            g.enums.push(ed)
+        }
+    }
     for ni in 0..g.ci.structOrder.len {
         g.structs.push(StructDef(module: "C", name: g.ci.structOrder[ni], isC: true, prog: -1, index: ni))
     }
@@ -1049,7 +1127,13 @@ fn declare(ptr[Gen] g) {
         for fi in 0..g.progs[pi].fns.len {
             f := g.progs[pi].fns[fi]
             recvmod := g.module
-            if f.recv.len > 0 {
+            recvEnum := false
+            if f.recv.len > 0 && findEnum(g, g.module, f.recv) >= 0 {
+                recvEnum = true
+                if findMethod(g, recvmod, f.recv, f.name) >= 0 {
+                    fail(g, f, "the method " + f.recv + "." + f.name + " is defined twice")
+                }
+            } else if f.recv.len > 0 {
                 si := findStruct(g, g.module, f.recv)
                 if si < 0 && findStruct(g, "C", f.recv) >= 0 {
                     si = findStruct(g, "C", f.recv)         // a method on a struct from C
@@ -1072,7 +1156,7 @@ fn declare(ptr[Gen] g) {
                     fail(g, f, "'" + f.name + "' is a built-in function, pick another name")
                 }
             }
-            sig := FnSig(module: g.module, name: f.name, recv: f.recv, recvmod: recvmod, fallible: f.fallible, prog: pi, index: fi)
+            sig := FnSig(module: g.module, name: f.name, recv: f.recv, recvmod: recvmod, recvEnum: recvEnum, fallible: f.fallible, prog: pi, index: fi)
             sig.ll = "@finch." + modName(g.module) + "." + f.name
             if f.recv.len > 0 {
                 sig.ll = "@finch." + modName(g.module) + "." + f.recv + "." + f.name
@@ -1208,7 +1292,11 @@ fn define(ptr[Gen] g, int si) {
     if g.cur.recv.len > 0 {
         // self is the caller's struct itself, reached through its address
         params.push("ptr %self")
-        g.scopes[0].vars.push(Var(name: "self", ty: ast.Type(kind: "struct", name: g.cur.recv, module: g.cur.recvmod), slot: "%self", readonly: false))
+        selfKind := "struct"
+        if g.cur.recvEnum {
+            selfKind = "enum"
+        }
+        g.scopes[0].vars.push(Var(name: "self", ty: ast.Type(kind: selfKind, name: g.cur.recv, module: g.cur.recvmod), slot: "%self", readonly: false))
     }
     for k in 0..g.cur.params.len {
         pt := g.cur.params[k]
@@ -1266,6 +1354,8 @@ fn stmt(ptr[Gen] g, ast.Node s) {
         } else {
             expr(g, s.kids[0])
         }
+    } else if k == "match" {
+        matchGen(g, s, false)
     } else if k == "if" {
         ifStmt(g, s)
     } else if k == "while" {
@@ -1914,6 +2004,139 @@ fn mapMethod(ptr[Gen] g, ast.Node m, str mp, ast.Type t) -> Val {
     return Val()
 }
 
+// ---------- match ----------
+
+// A pattern as a value of the subject's type. For an enum, a bare variant name (Red) works too.
+fn patternValue(ptr[Gen] g, ast.Node pat, ast.Type st) -> Val {
+    if st.kind == "enum" && pat.kind == "var" && lookup(g, pat.name) < 0 {
+        ed := g.enums[findEnum(g, st.module, st.name)]
+        k := ed.variants.find(pat.name)
+        if k < 0 {
+            fail(g, pat, "'" + pat.name + "' is not a variant of " + ed.name + " (it has: " + ed.variants.join(", ") + ")")
+        }
+        return Val(v: str(ed.values[k]), ty: st)
+    }
+    return coerce(g, exprWant(g, pat, st), st, pat, "this pattern")
+}
+
+// match value { A, B -> ... C -> ... else -> ... }, as a statement or (asValue) as an expression.
+// The patterns are tried in order; for an enum the arms have to cover every variant, or end with else.
+fn matchGen(ptr[Gen] g, ast.Node e, bool asValue) -> Val {
+    subj := expr(g, e.kids[0])
+    st := subj.ty
+    if st.kind == "void" || st.kind == "null" {
+        fail(g, e.kids[0], "there is nothing to match here")
+    }
+    end := newLabel(g, "match.end")
+    hasElse := false
+    reached := false            // does any arm go on to the end?
+    []str covered
+    []str inVals
+    []str inLabels
+    resultTy := T("void")
+    arms := e.kids.len - 1
+    for ai in 0..arms {
+        arm := e.kids[1 + ai]
+        if hasElse {
+            fail(g, arm, "this arm can never be used: 'else' already takes everything that is left")
+        }
+        body := newLabel(g, "match.arm")
+        next := newLabel(g, "match.next")
+        if arm.flag {
+            hasElse = true
+            br(g, body)
+        } else {
+            pats := arm.kids[0].kids
+            for pi in 0..pats.len {
+                pv := patternValue(g, pats[pi], st)
+                if covered.contains(pv.v) && st.kind == "enum" {
+                    fail(g, pats[pi], "this variant is already handled by an earlier arm")
+                }
+                covered.push(pv.v)
+                hit := compare(g, "==", subj, pv, pats[pi])
+                if pi == pats.len - 1 {
+                    condBr(g, hit.v, body, next)
+                } else {
+                    more := newLabel(g, "match.or")
+                    condBr(g, hit.v, body, more)
+                    label(g, more)
+                }
+            }
+        }
+        label(g, body)
+        node := arm.kids[1]
+        if asValue {
+            v := expr(g, node)
+            if ai == 0 || resultTy.kind == "void" {
+                if v.ty.kind == "void" || v.ty.kind == "null" {
+                    fail(g, node, "an arm of a match that gives a value has to give one")
+                }
+                resultTy = v.ty
+            }
+            v = coerce(g, v, resultTy, node, "this arm (the arms of a match have to give the same type)")
+            out := own(g, v)
+            from := newLabel(g, "match.from")
+            br(g, from)
+            label(g, from)
+            inVals.push(out)
+            inLabels.push(from)
+            br(g, end)
+            reached = true
+        } else {
+            if node.kind == "block" {
+                block(g, node, true)
+            } else {
+                stmt(g, node)
+            }
+            if !g.term {
+                reached = true
+            }
+            br(g, end)
+        }
+        if !arm.flag {
+            label(g, next)
+        }
+    }
+    if !hasElse {
+        if st.kind == "enum" {
+            ed := g.enums[findEnum(g, st.module, st.name)]
+            []str missing
+            for k in 0..ed.variants.len {
+                if !covered.contains(str(ed.values[k])) {
+                    missing.push(ed.variants[k])
+                }
+            }
+            if missing.len > 0 {
+                fail(g, e, "this match doesn't handle " + missing.join(", ") + " (add them, or an 'else' arm)")
+            }
+        } else {
+            fail(g, e, "a match on " + ast.show(st) + " needs an 'else' arm for everything that is not listed")
+        }
+        // every variant is handled; only a number that was never a variant gets here
+        panicIf(g, "true", "no arm of this match fits the value", e)
+        emit(g, "unreachable")
+        g.term = true
+    }
+    label(g, end)
+    if !reached {
+        emit(g, "unreachable")
+        g.term = true
+        return Val(ty: T("void"))
+    }
+    if asValue {
+        return Val(v: op(g, "phi " + llty(g, resultTy) + " " + phiList(inVals, inLabels)), ty: resultTy, fresh: owning(g, resultTy))
+    }
+    return Val(ty: T("void"))
+}
+
+fn phiList([]str vals, []str labels) -> str {
+    []str parts
+    for i in 0..vals.len {
+        parts.push("[ " + vals[i] + ", %" + labels[i] + " ]")
+    }
+    return parts.join(", ")
+}
+
 // ---------- errors as values ----------
 
 struct Fallible {
@@ -2067,6 +2290,9 @@ fn expr(ptr[Gen] g, ast.Node e) -> Val {
             return r.val
         }
         return Val(v: load(g, llty(g, r.pl.ty), r.pl.addr), ty: r.pl.ty)
+    }
+    if k == "match" {
+        return matchGen(g, e, true)
     }
     if k == "try" {
         return tryExpr(g, e)
@@ -2263,6 +2489,16 @@ fn compare(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
         preds := ["oeq", "une", "olt", "ole", "ogt", "oge"]
         return Val(v: op(g, "fcmp " + preds[ops.find(o)] + " " + llty(g, l.ty) + " " + l.v + ", " + r.v), ty: T("bool"))
     }
+    if k == "enum" {
+        if !eq {
+            fail(g, at, "enums can only be compared with == and != (to go through them in order, give the variants numbers and use int(...))")
+        }
+        pred := "eq"
+        if o == "!=" {
+            pred = "ne"
+        }
+        return Val(v: op(g, "icmp " + pred + " i32 " + l.v + ", " + r.v), ty: T("bool"))
+    }
     if k == "bool" && !eq {
         badOperands(g, o, l, r, at)
     }
@@ -2420,7 +2656,35 @@ fn llFloat(str text) -> str {
     return s
 }
 
+// Which enum does `m.kids[0]` name, if it names one? Color, or shapes.Color. -1 if neither.
+fn enumNamed(ptr[Gen] g, ast.Node n) -> int {
+    if n.kind == "var" && lookup(g, n.name) < 0 {
+        return findEnum(g, g.module, n.name)
+    }
+    if n.kind == "member" && n.kids[0].kind == "var" && lookup(g, n.kids[0].name) < 0 && imports(g, n.kids[0].name) {
+        return findEnum(g, n.kids[0].name, n.name)
+    }
+    return -1
+}
+
+// Color.Red
+fn enumValue(ptr[Gen] g, ast.Node m, int ei) -> Val {
+    ed := g.enums[ei]
+    k := ed.variants.find(m.name)
+    if k < 0 {
+        fail(g, m, "the enum " + ed.name + " has no variant '" + m.name + "' (it has: " + ed.variants.join(", ") + ")")
+    }
+    return Val(v: str(ed.values[k]), ty: ast.Type(kind: "enum", name: ed.name, module: ed.module))
+}
+
 fn member(ptr[Gen] g, ast.Node m, bool write) -> Ref {
+    ei := enumNamed(g, m.kids[0])
+    if ei >= 0 {
+        if write {
+            fail(g, m, "a variant of an enum can't be changed")
+        }
+        return Ref(isPlace: false, val: enumValue(g, m, ei))
+    }
     obj := ref(g, m.kids[0], write)
     t := obj.val.ty
     if obj.isPlace {
@@ -2654,6 +2918,9 @@ fn convert(ptr[Gen] g, ast.Node c, ast.Type to) -> Val {
         }
         r := op(g, "call double @finch_str_to_float(ptr " + spill(g, v) + ", ptr " + file + ", i64 " + str(c.line) + ")")
         return Val(v: floatCast(g, r, T("float"), to), ty: to)
+    }
+    if isInt(to) && from.kind == "enum" {
+        return Val(v: intCast(g, v.v, T("i32"), to), ty: to)
     }
     if isInt(to) || to.kind == "char" {
         if isInt(from) || from.kind == "char" {
@@ -2964,6 +3231,35 @@ fn cThunk(ptr[Gen] g, int fi, ast.Node at) -> str {
     return name
 }
 
+// Color(n): a number as an enum. A literal is checked while compiling, anything else when it runs.
+fn enumFrom(ptr[Gen] g, ast.Node c, int ei) -> Val {
+    ed := g.enums[ei]
+    checkArgs(g, c, 0, 1, ed.name)
+    v := expr(g, c.kids[0])
+    if !isInt(v.ty) {
+        fail(g, c.kids[0], ed.name + "(...) turns a whole number into the enum, but this is " + ast.show(v.ty))
+    }
+    t := ast.Type(kind: "enum", name: ed.name, module: ed.module)
+    if v.lit {
+        if !ed.values.contains(int(v.v)) {
+            fail(g, c.kids[0], v.v + " is not the number of any variant of " + ed.name)
+        }
+        return Val(v: v.v, ty: t)
+    }
+    wide := intCast(g, v.v, v.ty, T("int"))
+    known := ""
+    for k in 0..ed.values.len {
+        hit := op(g, "icmp eq i64 " + wide + ", " + str(ed.values[k]))
+        if k == 0 {
+            known = hit
+        } else {
+            known = op(g, "or i1 " + known + ", " + hit)
+        }
+    }
+    panicIf(g, op(g, "xor i1 " + known + ", true"), "this number is not a variant of " + ed.name, c)
+    return Val(v: op(g, "trunc i64 " + wide + " to i32"), ty: t)
+}
+
 // ---------- calling C ----------
 
 // How C extends a number narrower than 32 bits: plain `char` is signed on x86.
@@ -3173,7 +3469,7 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
         } else if k == "bool" {
             z := op(g, "zext i1 " + v.v + " to i32")
             emit(g, "call void @finch_str_from_bool(ptr " + out + ", i32 " + z + ")")
-        } else if k == "bool" || k == "char" || k == "array" || k == "map" || k == "struct" {
+        } else if k == "bool" || k == "char" || k == "array" || k == "map" || k == "struct" || k == "enum" {
             store(g, "{ ptr, i64, i64 }", "zeroinitializer", out)
             emitFormat(g, out, v.v, v.ty, false)
         } else {
@@ -3285,6 +3581,10 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     si := findStruct(g, g.module, n)
     if si >= 0 {
         return construct(g, si, c.kids, c.names, c)
+    }
+    ei := findEnum(g, g.module, n)
+    if ei >= 0 {
+        return enumFrom(g, c, ei)
     }
     if g.ci.fns.has(n) {
         return callC(g, c, g.ci.fns[n])
@@ -3411,6 +3711,10 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
         if fi >= 0 {
             return callFn(g, fi, m, 1, mn + "." + m.name, "", "")
         }
+        mei := findEnum(g, mn, m.name)
+        if mei >= 0 {
+            return enumFrom(g, m, mei)
+        }
         si := findStruct(g, mn, m.name)
         if si >= 0 {
             []ast.Node args
@@ -3468,20 +3772,20 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
         panicIf(g, op(g, "icmp eq ptr " + pv + ", null"), "called ." + m.name + "() on a null pointer", m)
         st = t.elem[0]
         selfAddr = pv
-    } else if t.kind == "struct" {
+    } else if t.kind == "struct" || t.kind == "enum" {
         if r.isPlace {
             selfAddr = r.pl.addr
         } else {
             selfAddr = spill(g, r.val)
         }
     }
-    if st.kind == "struct" {
+    if st.kind == "struct" || st.kind == "enum" {
         fi := findMethod(g, st.module, st.name, m.name)
         if fi < 0 {
-            fail(g, m, "the struct " + ast.show(st) + " has no method '" + m.name + "'")
+            fail(g, m, "the " + st.kind + " " + ast.show(st) + " has no method '" + m.name + "'")
         }
         // a method that changes self can't be called on a temporary or a read-only value
-        if g.sigs[fi].mutself && t.kind == "struct" {
+        if g.sigs[fi].mutself && (t.kind == "struct" || t.kind == "enum") {
             if !r.isPlace {
                 fail(g, m, m.name + "() would change a temporary " + ast.show(st) + "; store it in a variable first")
             }

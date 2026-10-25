@@ -1,0 +1,8 @@
+// expect: needs an 'else' arm
+fn main() {
+    n := 3
+    match n {
+        1 -> print("one")
+        2 -> print("two")
+    }
+}

@@ -1,0 +1,75 @@
+enum Color { Red, Green, Blue }
+enum Status { Ok = 200, NotFound = 404, Teapot = 418 }
+
+struct Pixel {
+    Color color
+    int x
+}
+
+fn Color.warm() -> bool {
+    return self == Color.Red
+}
+
+fn Color.next() -> Color {
+    if self == Color.Red {
+        return Color.Green
+    }
+    if self == Color.Green {
+        return Color.Blue
+    }
+    return Color.Red
+}
+
+fn describe(Color c) -> str {
+    return match c {
+        Red -> "red"
+        Green -> "green"
+        Blue -> "blue"
+    }
+}
+
+fn code(Status s) -> str {
+    match s {
+        Status.Ok -> return "fine"
+        Status.NotFound, Status.Teapot -> return "odd"
+    }
+}
+
+fn main() {
+    c := Color.Green
+    print(c, Color.Blue, int(Color.Blue), int(Status.Teapot))
+    print(c == Color.Green, c != Color.Green)
+    print(describe(Color.Red), describe(c.next()), c.warm(), Color.Red.warm())
+    print(code(Status.Ok), code(Status.NotFound))
+    p := Pixel(color: Color.Blue, x: 3)
+    print(p)
+    []Color all = [Color.Red, Color.Blue]
+    print(all, all.len)
+    for col in all {
+        match col {
+            Color.Red -> print("a red one")
+            else -> print("something else")
+        }
+    }
+    s := Status(404)
+    print(s, Status(200))
+    n := 5
+    kind := match n {
+        1, 2, 3 -> "small"
+        4, 5 -> "medium"
+        else -> "large"
+    }
+    print(kind)
+    word := "two"
+    match word {
+        "one" -> print(1)
+        "two" -> {
+            print(2)
+            print("two!")
+        }
+        else -> print("many")
+    }
+    counts := [Color.Red: 2, Color.Blue: 5]
+    print(counts[Color.Blue], counts)
+    print(str(Color.Green) + "!")
+}

@@ -26,12 +26,10 @@ else
 fi
 
 pass=0; failed=0; skipped=0
-for f in tests/run/*.fch; do
+# tests/run: what the C++ compiler also runs. tests/new: the language since then (enums, match, ...),
+# which only this compiler has.
+for f in tests/run/*.fch tests/new/*.fch; do
     grep -q "^fn main" "$f" || continue
-    # the bootstrap compiler doesn't do C structs by value
-    # (checked in the test and in the modules it imports)
-    files="$f"
-    for m in $(sed -n 's/^import \([a-z_]*\)$/\1/p' "$f"); do files="$files tests/run/$m.fch"; done
     input="${f%.fch}.in"
     [ -f "$input" ] || input=/dev/null
     if ! "$boot" build "$f" -o "$tmp/prog" > "$tmp/err" 2>&1; then
@@ -47,6 +45,19 @@ for f in tests/run/*.fch; do
         failed=$((failed + 1))
         echo "FAIL (output) $f"
         diff <(echo "$got") "${f%.fch}.out" | head -10
+    fi
+done
+# programs that must be refused, and say why: the first line is "// expect: <text of the error>"
+for f in tests/new/fail/*.fch; do
+    expect=$(head -1 "$f" | sed -n 's|^// expect: ||p')
+    got=$("$boot" build "$f" -o "$tmp/refused" 2>&1)
+    status=$?
+    if [ $status -ne 0 ] && [[ "$got" == *"$expect"* ]]; then
+        pass=$((pass + 1))
+    else
+        failed=$((failed + 1))
+        echo "FAIL $f (wanted: $expect)"
+        echo "$got" | head -3
     fi
 done
 echo "self-hosted compiler: $pass passed, $failed failed, $skipped skipped (features it doesn't have)"

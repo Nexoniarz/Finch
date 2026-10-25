@@ -1,0 +1,9 @@
+// expect: the arms of a match have to give the same type
+fn main() {
+    n := 3
+    x := match n {
+        1 -> "one"
+        else -> 2
+    }
+    print(x)
+}

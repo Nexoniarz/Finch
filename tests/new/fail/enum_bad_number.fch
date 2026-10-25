@@ -1,0 +1,6 @@
+// expect: 7 is not the number of any variant of Color
+enum Color { Red, Green }
+
+fn main() {
+    print(Color(7))
+}

@@ -40,7 +40,7 @@ fn same(Type a, Type b) -> bool {
     if a.kind != b.kind {
         return false
     }
-    if a.kind == "struct" || a.kind == "named" {
+    if a.kind == "struct" || a.kind == "named" || a.kind == "enum" {
         return a.name == b.name && a.module == b.module
     }
     if a.kind == "fixed" && a.count != b.count {
@@ -76,7 +76,7 @@ fn show(Type t) -> str {
         }
         return "ptr[" + show(t.elem[0]) + "]"
     }
-    if t.kind == "struct" || t.kind == "named" {
+    if t.kind == "struct" || t.kind == "named" || t.kind == "enum" {
         if t.module.len > 0 {
             return t.module + "." + t.name
         }
@@ -91,7 +91,8 @@ fn show(Type t) -> str {
 // One node of the tree, for expressions, statements, functions and structs alike.
 //   expressions: int float str char bool null var unary binary call member index array method
 //   statements:  decl assign expr if while for each return break continue block
-//   top level:   fn param struct field
+//   top level:   fn param struct field enum variant
+//   match:       match (kids: subject, arms...), arm (kids: patterns node, body; flag: the else arm), patterns
 struct Node {
     str kind
     str name      // identifier, operator, callee, field or method name
@@ -115,5 +116,6 @@ struct Program {
     []str cwhere    // where each was written, for error messages
     []str links     // link "glfw", link "mine.c"
     []Node structs
+    []Node enums
     []Node fns
 }
