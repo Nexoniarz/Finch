@@ -49,6 +49,7 @@ struct StructDef {
     str name
     bool isC            // a struct from a C header: module "C", laid out as C laid it out
     []int lidx          // the LLVM element number of each field (C structs have padding between)
+    []int offs          // C: the byte offset of each field
     str unsupported     // C: why it can't be passed by value
     int csize
     int calign
@@ -1135,6 +1136,7 @@ fn resolveCStruct(ptr[Gen] g, int i) {
         g.structs[i].fnames.push(f.name)
         g.structs[i].ftypes.push(t)
         g.structs[i].lidx.push(elems.len)
+        g.structs[i].offs.push(f.offset)
         elems.push(llty(g, t))
         cur = f.offset + f.size
     }
@@ -2695,6 +2697,273 @@ fn convert(ptr[Gen] g, ast.Node c, ast.Type to) -> Val {
     return v
 }
 
+// ---------- the C calling convention for structs passed by value (System V x86-64) ----------
+//
+// A struct of up to 16 bytes travels in registers, one INTEGER or SSE class per eightbyte;
+// bigger ones are copied to the stack (byval) and returned through a hidden pointer (sret).
+// Other targets (Windows, ARM64) have their own rules and are not done here yet.
+
+struct Abi {
+    str kind            // "direct", "expand" (in registers: `parts`) or "memory"
+    []str parts
+    str coerced
+    int align
+}
+
+struct Leaf {
+    int offset
+    int size
+    bool isFloat
+    bool isDouble
+}
+
+struct Plan {
+    Abi ret
+    []Abi params
+    str retLL
+    bool sret
+}
+
+fn sizeBytes(ptr[Gen] g, ast.Type t) -> int {
+    if t.kind == "struct" {
+        return g.structs[findStruct(g, t.module, t.name)].csize
+    }
+    if t.kind == "fixed" {
+        return t.count * sizeBytes(g, t.elem[0])
+    }
+    if t.kind == "ptr" || t.kind == "str" {
+        return 8
+    }
+    if t.kind == "float" {
+        return 8
+    }
+    if t.kind == "f32" {
+        return 4
+    }
+    if t.kind == "bool" {
+        return 1
+    }
+    return bitsOf(t) / 8
+}
+
+// A value flattened into its scalar pieces, with byte offsets.
+fn leavesOf(ptr[Gen] g, ast.Type t, int base) -> []Leaf {
+    []Leaf out
+    if t.kind == "struct" {
+        sd := g.structs[findStruct(g, t.module, t.name)]
+        for k in 0..sd.ftypes.len {
+            for l in leavesOf(g, sd.ftypes[k], base + sd.offs[k]) {
+                out.push(l)
+            }
+        }
+    } else if t.kind == "fixed" {
+        es := sizeBytes(g, t.elem[0])
+        for i in 0..t.count {
+            for l in leavesOf(g, t.elem[0], base + i * es) {
+                out.push(l)
+            }
+        }
+    } else {
+        out.push(Leaf(offset: base, size: sizeBytes(g, t), isFloat: isFloat(t), isDouble: t.kind == "float"))
+    }
+    return out
+}
+
+fn classify(ptr[Gen] g, ast.Type t) -> Abi {
+    a := Abi(kind: "direct")
+    if t.kind != "struct" {
+        return a
+    }
+    sd := g.structs[findStruct(g, t.module, t.name)]
+    size := sd.csize
+    a.align = 8
+    if sd.calign > 8 {
+        a.align = sd.calign
+    }
+    if size > 16 || size == 0 {
+        a.kind = "memory"
+        return a
+    }
+    ls := leavesOf(g, t, 0)
+    n := (size + 7) / 8
+    []int cls = [0, 0]              // 0 nothing, 1 INTEGER, 2 SSE
+    []bool dbl = [false, false]
+    for l in ls {
+        m := l.size
+        if m > 8 {
+            m = 8
+        }
+        if l.offset % m != 0 {      // a misaligned field (a packed struct): memory
+            a.kind = "memory"
+            return a
+        }
+        k := l.offset / 8
+        if cls[k] == 1 || !l.isFloat {
+            cls[k] = 1
+        } else {
+            cls[k] = 2
+        }
+        if l.isDouble {
+            dbl[k] = true
+        }
+    }
+    a.kind = "expand"
+    for k in 0..n {
+        bytes := size - 8 * k
+        if bytes > 8 {
+            bytes = 8
+        }
+        if cls[k] == 2 {
+            if dbl[k] {
+                a.parts.push("double")
+            } else if bytes > 4 {
+                a.parts.push("<2 x float>")
+            } else {
+                a.parts.push("float")
+            }
+        } else {
+            a.parts.push("i" + str(bytes * 8))
+        }
+    }
+    if a.parts.len == 1 {
+        a.coerced = a.parts[0]
+    } else {
+        a.coerced = "{ " + a.parts.join(", ") + " }"
+    }
+    return a
+}
+
+// Decide how every parameter travels, counting the 6 integer and 8 SSE argument registers.
+fn makePlan(ptr[Gen] g, ast.Type ret, []ast.Type params) -> Plan {
+    pl := Plan()
+    intRegs := 6
+    sseRegs := 8
+    pl.ret = classify(g, ret)
+    pl.retLL = "void"
+    if ret.kind != "void" {
+        pl.retLL = cLL(g, ret)
+    }
+    if pl.ret.kind == "memory" {
+        pl.sret = true
+        pl.retLL = "void"
+        intRegs -= 1
+    } else if pl.ret.kind == "expand" {
+        pl.retLL = pl.ret.coerced
+    }
+    for t in params {
+        a := classify(g, t)
+        if a.kind == "expand" {
+            ni := 0
+            ns := 0
+            for p in a.parts {
+                if p.starts_with("i") {
+                    ni += 1
+                } else {
+                    ns += 1
+                }
+            }
+            if ni <= intRegs && ns <= sseRegs {
+                intRegs -= ni
+                sseRegs -= ns
+            } else {
+                a.kind = "memory"       // out of registers: the whole struct goes on the stack
+            }
+        } else if a.kind == "direct" {
+            if isFloat(t) {
+                sseRegs -= 1
+            } else {
+                intRegs -= 1
+            }
+        }
+        pl.params.push(a)
+    }
+    return pl
+}
+
+fn checkByValue(ptr[Gen] g, ast.Node at, str fname, ast.Type t, str what) {
+    if t.kind != "struct" {
+        return
+    }
+    sd := g.structs[findStruct(g, t.module, t.name)]
+    if !sd.isC {
+        fail(g, at, "the C function '" + fname + "' " + what + " the Finch struct " + ast.show(t) + ", which C can't take")
+    }
+    if sd.unsupported.len > 0 {
+        fail(g, at, "the C function '" + fname + "' " + what + " the struct " + ast.show(t) + " by value, which Finch can't do yet: it " + sd.unsupported)
+    }
+}
+
+// A C-callable door into a Finch function, for addr(fn): callbacks like qsort's or libclang's.
+fn cThunk(ptr[Gen] g, int fi, ast.Node at) -> str {
+    sig := g.sigs[fi]
+    name := "@finch.c." + modName(sig.module) + "." + sig.name
+    if g.cdone.contains("t:" + name) {
+        return name
+    }
+    g.cdone.push("t:" + name)
+    if sig.recv.len > 0 || sig.fallible {
+        fail(g, at, "addr(" + sig.name + ") gives C a function pointer, so it can't be a method or a function that can fail")
+    }
+    for t in sig.params {
+        if !(isNumber(t) || t.kind == "bool" || t.kind == "char" || t.kind == "ptr" || (t.kind == "struct" && g.structs[findStruct(g, t.module, t.name)].isC)) {
+            fail(g, at, "addr(" + sig.name + ") gives C a function pointer, so its parameters must be C types (numbers, ptr, C structs), not " + ast.show(t))
+        }
+    }
+    if !(isNumber(sig.ret) || sig.ret.kind == "bool" || sig.ret.kind == "char" || sig.ret.kind == "ptr" || sig.ret.kind == "void" || (sig.ret.kind == "struct" && g.structs[findStruct(g, sig.ret.module, sig.ret.name)].isC)) {
+        fail(g, at, "addr(" + sig.name + "): a function given to C can't return " + ast.show(sig.ret))
+    }
+    pl := makePlan(g, sig.ret, sig.params)
+    s := beginHelper(g)
+    []str hdr
+    ai := 0
+    sretName := ""
+    if pl.sret {
+        hdr.push("ptr sret(" + llty(g, sig.ret) + ") align 16 %c0")
+        sretName = "%c0"
+        ai = 1
+    }
+    []str args
+    for i in 0..sig.params.len {
+        t := sig.params[i]
+        a := pl.params[i]
+        if a.kind == "memory" {
+            hdr.push("ptr byval(" + llty(g, t) + ") align " + str(a.align) + " %c" + str(ai))
+            args.push(llty(g, t) + " " + load(g, llty(g, t), "%c" + str(ai)))
+            ai += 1
+        } else if a.kind == "expand" {
+            slot := alloca(g, "[16 x i8]")
+            for k in 0..a.parts.len {
+                hdr.push(a.parts[k] + " %c" + str(ai))
+                store(g, a.parts[k], "%c" + str(ai), op(g, "getelementptr inbounds i8, ptr " + slot + ", i64 " + str(8 * k)))
+                ai += 1
+            }
+            args.push(llty(g, t) + " " + load(g, llty(g, t), slot))
+        } else {
+            hdr.push(cLL(g, t) + cExt(t) + " %c" + str(ai))
+            args.push(llty(g, t) + " %c" + str(ai))
+            ai += 1
+        }
+    }
+    text := "call " + llty(g, sig.ret) + " " + sig.ll + "(" + args.join(", ") + ")"
+    retExt := ""
+    if sig.ret.kind == "void" {
+        emit(g, text)
+        emit(g, "ret void")
+    } else if pl.sret {
+        store(g, llty(g, sig.ret), op(g, text), sretName)
+        emit(g, "ret void")
+    } else if pl.ret.kind == "expand" {
+        slot := alloca(g, "[16 x i8]")
+        store(g, llty(g, sig.ret), op(g, text), slot)
+        emit(g, "ret " + pl.ret.coerced + " " + load(g, pl.ret.coerced, slot))
+    } else {
+        retExt = cExt(sig.ret)
+        emit(g, "ret " + cLL(g, sig.ret) + " " + op(g, text))
+    }
+    endHelper(g, s, "define internal" + retExt + " " + pl.retLL + " " + name + "(" + hdr.join(", ") + ")")
+    return name
+}
+
 // ---------- calling C ----------
 
 // How C extends a number narrower than 32 bits: plain `char` is signed on x86.
@@ -2730,23 +2999,48 @@ fn callC(ptr[Gen] g, ast.Node c, cimport.CFunc f) -> Val {
         fail(g, c, "'" + f.name + "' takes " + str(f.params.len) + " argument(s), but got " + str(have))
     }
     ret := resolve(g, f.ret, c)
-    if ret.kind == "struct" {
-        fail(g, c, "the C function '" + f.name + "' returns the struct " + ast.show(ret) + " by value, which the self-hosted compiler can't receive yet")
+    checkByValue(g, c, f.name, ret, "returns")
+    []ast.Type ptypes
+    for p in f.params {
+        pt := resolve(g, p, c)
+        checkByValue(g, c, f.name, pt, "takes")
+        ptypes.push(pt)
     }
+    pl := makePlan(g, ret, ptypes)
     []str ptys
     []str args
+    sretSlot := ""
+    if pl.sret {
+        sretSlot = alloca(g, llty(g, ret))
+        ptys.push("ptr sret(" + llty(g, ret) + ") align 16")
+        args.push("ptr sret(" + llty(g, ret) + ") align 16 " + sretSlot)
+    }
     for i in 0..c.kids.len {
         if i < f.params.len {
-            pt := resolve(g, f.params[i], c)
-            if pt.kind == "struct" {
-                fail(g, c, "the C function '" + f.name + "' takes the struct " + ast.show(pt) + " by value, which the self-hosted compiler can't pass yet")
-            }
+            pt := ptypes[i]
+            a := pl.params[i]
             v := coerce(g, exprWant(g, c.kids[i], pt), pt, c.kids[i], "argument " + str(i + 1) + " of " + f.name)
-            ptys.push(cLL(g, pt) + cExt(pt))
-            if pt.kind == "str" {
-                args.push("ptr " + cstr(g, v.v))
+            if a.kind == "memory" {
+                slot := alloca(g, llty(g, pt))
+                store(g, llty(g, pt), v.v, slot)
+                spec := "ptr byval(" + llty(g, pt) + ") align " + str(a.align)
+                ptys.push(spec)
+                args.push(spec + " " + slot)
+            } else if a.kind == "expand" {
+                slot := alloca(g, "[16 x i8]")
+                store(g, llty(g, pt), v.v, slot)
+                for k in 0..a.parts.len {
+                    x := load(g, a.parts[k], op(g, "getelementptr inbounds i8, ptr " + slot + ", i64 " + str(8 * k)))
+                    ptys.push(a.parts[k])
+                    args.push(a.parts[k] + " " + x)
+                }
             } else {
-                args.push(llty(g, pt) + cExt(pt) + " " + v.v)
+                ptys.push(cLL(g, pt) + cExt(pt))
+                if pt.kind == "str" {
+                    args.push("ptr " + cstr(g, v.v))
+                } else {
+                    args.push(llty(g, pt) + cExt(pt) + " " + v.v)
+                }
             }
             continue
         }
@@ -2766,53 +3060,53 @@ fn callC(ptr[Gen] g, ast.Node c, cimport.CFunc f) -> Val {
         } else if t.kind == "str" {
             x = cstr(g, x)
             t = T("ptr")
-        } else if t.kind == "bool" || ((isInt(t) || t.kind == "char") && bitsOf(t) < 32) {
+        } else if t.kind == "bool" {
+            x = op(g, "zext i1 " + v.v + " to i32")
+            t = T("i32")
+        } else if (isInt(t) || t.kind == "char") && bitsOf(t) < 32 {
             x = intCast(g, x, t, T("i32"))
-            if t.kind == "bool" {
-                x = op(g, "zext i1 " + v.v + " to i32")
-            }
             t = T("i32")
         }
         args.push(llty(g, t) + " " + x)
     }
     // declared once (the runtime already declares a few of the libc ones)
-    retLL := cLL(g, ret)
-    if ret.kind == "void" {
-        retLL = "void"
+    retLL := pl.retLL
+    retExt := ""
+    if pl.ret.kind == "direct" {
+        retExt = cExt(ret)
     }
-    retExt := cExt(ret)
+    tail := ""
+    if f.variadic {
+        tail = ", ..."
+        if ptys.len == 0 {
+            tail = "..."
+        }
+    }
     if !g.cdone.contains("f:" + f.name) {
         g.cdone.push("f:" + f.name)
         if !runtimeDeclares(f.name) {
-            tail := ""
-            if f.variadic {
-                tail = ", ..."
-                if ptys.len == 0 || f.params.len == 0 {
-                    tail = "..."
-                }
-            }
-            []str decl
-            for k in 0..f.params.len {
-                decl.push(ptys[k])
-            }
-            g.head.push("declare" + retExt + " " + retLL + " @" + f.name + "(" + decl.join(", ") + tail + ")")
+            g.head.push("declare" + retExt + " " + retLL + " @" + f.name + "(" + ptys.join(", ") + tail + ")")
         }
     }
     sig := ""
     if f.variadic {
-        []str fixed
-        for k in 0..f.params.len {
-            fixed.push(ptys[k])
-        }
-        fixed.push("...")
-        sig = " (" + fixed.join(", ") + ")"
+        sig = " (" + ptys.join(", ") + tail + ")"
     }
     text := "call" + retExt + " " + retLL + sig + " @" + f.name + "(" + args.join(", ") + ")"
     if ret.kind == "void" {
         emit(g, text)
         return Val(ty: ret)
     }
+    if pl.sret {
+        emit(g, text)
+        return Val(v: load(g, llty(g, ret), sretSlot), ty: ret)
+    }
     r := op(g, text)
+    if pl.ret.kind == "expand" {
+        slot := alloca(g, "[16 x i8]")
+        store(g, pl.ret.coerced, r, slot)
+        return Val(v: load(g, llty(g, ret), slot), ty: ret)
+    }
     if ret.kind == "str" {
         out := strOut(g)
         store(g, "{ ptr, i64, i64 }", "zeroinitializer", out)
@@ -2849,6 +3143,12 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     if n == "addr" {
         checkArgs(g, c, 0, 1, n)
         a := c.kids[0]
+        if a.kind == "var" && lookup(g, a.name) < 0 {
+            fi := findFn(g, g.module, a.name)
+            if fi >= 0 {
+                return Val(v: cThunk(g, fi, a), ty: T("ptr"))      // a C function pointer to a Finch function
+            }
+        }
         if a.kind != "var" && a.kind != "member" && a.kind != "index" {
             fail(g, a, "addr(...) needs a variable, a field or an element, like addr(x)")
         }

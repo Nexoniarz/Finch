@@ -32,10 +32,6 @@ for f in tests/run/*.fch; do
     # (checked in the test and in the modules it imports)
     files="$f"
     for m in $(sed -n 's/^import \([a-z_]*\)$/\1/p' "$f"); do files="$files tests/run/$m.fch"; done
-    if grep -qE '"abi.h"' $files; then
-        skipped=$((skipped + 1))
-        continue
-    fi
     input="${f%.fch}.in"
     [ -f "$input" ] || input=/dev/null
     if ! "$boot" build "$f" -o "$tmp/prog" > "$tmp/err" 2>&1; then
