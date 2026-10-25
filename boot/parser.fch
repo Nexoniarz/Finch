@@ -195,6 +195,10 @@ fn parseFn(ptr[Parser] p) -> ast.Node {
     f := node(p, "fn")
     expect(p, "fn", "'fn', 'struct' or 'import'")
     f.name = expect(p, "ident", "a function name").text
+    if accept(p, ".") {
+        f.recv = f.name
+        f.name = expect(p, "ident", "a method name").text
+    }
     expect(p, "(", "'('")
     p.depth += 1
     if !at(p, ")") {

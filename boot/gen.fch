@@ -24,6 +24,8 @@ struct Loop {
 struct FnSig {
     str module
     str name
+    str recv        // a method of this struct ("" for a function)
+    bool mutself    // the method changes self
     str ll
     ast.Type ret
     []ast.Type params
@@ -80,6 +82,7 @@ struct Gen {
     []FnSig sigs
     []StructDef structs
     []str done
+    []str mm        // names of methods that change self, for the mutation analysis
 }
 
 // ---------- basics ----------
@@ -597,12 +600,47 @@ fn emitPrint(ptr[Gen] g, str v, ast.Type t, bool quoted) {
     } else if k == "null" {
         printf(g, "null", "")
     } else {
-        emit(g, "call void " + printFn(g, t) + "(ptr " + spill(g, Val(v: v, ty: t)) + ")")
+        // arrays and structs: built as text first, the same text str(x) gives
+        buf := alloca(g, "{ ptr, i64, i64 }")
+        store(g, "{ ptr, i64, i64 }", "zeroinitializer", buf)
+        emitFormat(g, buf, v, t, quoted)
+        emit(g, "call void @finch_buf_print(ptr " + buf + ")")
     }
 }
 
-fn printFn(ptr[Gen] g, ast.Type t) -> str {
-    name := "@finch.print." + typeKey(t)
+fn bufText(ptr[Gen] g, str buf, str text) {
+    emit(g, "call void @finch_buf_add(ptr " + buf + ", ptr " + strGlobal(g, text) + ", i64 " + str(text.len) + ")")
+}
+
+// Append a value's text to the str at `buf`. Quoted: how it looks inside an array or struct.
+fn emitFormat(ptr[Gen] g, str buf, str v, ast.Type t, bool quoted) {
+    k := t.kind
+    q := "0"
+    if quoted {
+        q = "1"
+    }
+    if isSigned(t) {
+        emit(g, "call void @finch_buf_int(ptr " + buf + ", i64 " + intCast(g, v, t, T("int")) + ")")
+    } else if isUnsigned(t) {
+        emit(g, "call void @finch_buf_uint(ptr " + buf + ", i64 " + intCast(g, v, t, T("u64")) + ")")
+    } else if isFloat(t) {
+        emit(g, "call void @finch_buf_float(ptr " + buf + ", double " + floatCast(g, v, t, T("float")) + ")")
+    } else if k == "char" {
+        emit(g, "call void @finch_buf_char(ptr " + buf + ", i8 " + v + ", i32 " + q + ")")
+    } else if k == "bool" {
+        emit(g, "call void @finch_buf_bool(ptr " + buf + ", i32 " + op(g, "zext i1 " + v + " to i32") + ")")
+    } else if k == "str" {
+        emit(g, "call void @finch_buf_str(ptr " + buf + ", ptr " + spill(g, Val(v: v, ty: t)) + ", i32 " + q + ")")
+    } else if k == "ptr" || k == "null" {
+        emit(g, "call void @finch_buf_ptr(ptr " + buf + ", ptr " + v + ")")
+    } else {
+        emit(g, "call void " + formatFn(g, t) + "(ptr " + buf + ", ptr " + spill(g, Val(v: v, ty: t)) + ")")
+    }
+}
+
+// One function per array / struct type: (str *buf, T *value)
+fn formatFn(ptr[Gen] g, ast.Type t) -> str {
+    name := "@finch.format." + typeKey(t)
     if has(g.done, name) {
         return name
     }
@@ -612,37 +650,37 @@ fn printFn(ptr[Gen] g, ast.Type t) -> str {
         et := t.elem[0]
         d := load(g, "ptr", "%a")
         len := load(g, "i64", op(g, "getelementptr inbounds { ptr, i64, i64 }, ptr %a, i32 0, i32 1"))
-        printf(g, "[", "")
+        bufText(g, "%buf", "[")
         l := loopStart(g, len)
         sep := newLabel(g, "sep")
         item := newLabel(g, "item")
         c := op(g, "icmp sgt i64 " + l[3] + ", 0")
         condBr(g, c, sep, item)
         label(g, sep)
-        printf(g, ", ", "")
+        bufText(g, "%buf", ", ")
         br(g, item)
         label(g, item)
         ep := op(g, "getelementptr inbounds " + llty(g, et) + ", ptr " + d + ", i64 " + l[3])
-        emitPrint(g, load(g, llty(g, et), ep), et, true)
+        emitFormat(g, "%buf", load(g, llty(g, et), ep), et, true)
         loopEnd(g, l)
-        printf(g, "]", "")
+        bufText(g, "%buf", "]")
     } else {
         sd := g.structs[findStruct(g, t.module, t.name)]
         st := llty(g, t)
-        printf(g, sd.name + "(", "")
+        bufText(g, "%buf", sd.name + "(")
         for k in 0..sd.ftypes.len {
             sep := ", "
             if k == 0 {
                 sep = ""
             }
-            printf(g, sep + sd.fnames[k] + ": ", "")
+            bufText(g, "%buf", sep + sd.fnames[k] + ": ")
             fp := op(g, "getelementptr inbounds " + st + ", ptr %a, i32 0, i32 " + str(k))
-            emitPrint(g, load(g, llty(g, sd.ftypes[k]), fp), sd.ftypes[k], true)
+            emitFormat(g, "%buf", load(g, llty(g, sd.ftypes[k]), fp), sd.ftypes[k], true)
         }
-        printf(g, ")", "")
+        bufText(g, "%buf", ")")
     }
     emit(g, "ret void")
-    endHelper(g, s, "define internal void " + name + "(ptr %a)")
+    endHelper(g, s, "define internal void " + name + "(ptr %buf, ptr %a)")
     return name
 }
 
@@ -751,7 +789,16 @@ fn varAt(ptr[Gen] g, int id) -> Var {
 
 fn findFn(ptr[Gen] g, str module, str name) -> int {
     for i in 0..g.sigs.len {
-        if g.sigs[i].module == module && g.sigs[i].name == name {
+        if g.sigs[i].module == module && g.sigs[i].name == name && g.sigs[i].recv.len == 0 {
+            return i
+        }
+    }
+    return -1
+}
+
+fn findMethod(ptr[Gen] g, str module, str recv, str name) -> int {
+    for i in 0..g.sigs.len {
+        if g.sigs[i].module == module && g.sigs[i].recv == recv && g.sigs[i].name == name {
             return i
         }
     }
@@ -801,19 +848,22 @@ fn rootVar(ast.Node e) -> str {
     return ""
 }
 
-fn mutates(str name, ast.Node n) -> bool {
+fn mutates(ptr[Gen] g, str name, ast.Node n) -> bool {
     changing := ["push", "pop", "insert", "remove", "clear", "resize", "sort", "reverse"]
     if n.kind == "assign" && rootVar(n.kids[0]) == name {
         return true
     }
-    if n.kind == "method" && changing.contains(n.name) && rootVar(n.kids[0]) == name {
+    // a method that changes its receiver changes whatever it is called on; the
+    // list holds names only, so a plain function by the same name is treated
+    // the same way -- never wrong, sometimes one copy too many
+    if n.kind == "method" && (changing.contains(n.name) || g.mm.contains(n.name)) && rootVar(n.kids[0]) == name {
         return true
     }
     if n.kind == "call" && n.name == "addr" && n.kids.len == 1 && rootVar(n.kids[0]) == name {
         return true
     }
     for k in n.kids {
-        if mutates(name, k) {
+        if mutates(g, name, k) {
             return true
         }
     }
@@ -840,23 +890,64 @@ fn declare(ptr[Gen] g) {
         g.module = g.progs[pi].module
         for fi in 0..g.progs[pi].fns.len {
             f := g.progs[pi].fns[fi]
-            if findFn(g, g.module, f.name) >= 0 {
-                fail(g, f, "function '" + f.name + "' is defined twice")
+            if f.recv.len > 0 {
+                si := findStruct(g, g.module, f.recv)
+                if si < 0 {
+                    fail(g, f, "there is no struct named '" + f.recv + "' here (a method goes in the same file as its struct)")
+                }
+                if findMethod(g, g.module, f.recv, f.name) >= 0 {
+                    fail(g, f, "the method " + f.recv + "." + f.name + " is defined twice")
+                }
+                if g.structs[si].fnames.contains(f.name) {
+                    fail(g, f, "the struct " + f.recv + " already has a field named '" + f.name + "'")
+                }
+            } else {
+                if findFn(g, g.module, f.name) >= 0 {
+                    fail(g, f, "function '" + f.name + "' is defined twice")
+                }
+                if isBuiltin(f.name) {
+                    fail(g, f, "'" + f.name + "' is a built-in function, pick another name")
+                }
             }
-            if isBuiltin(f.name) {
-                fail(g, f, "'" + f.name + "' is a built-in function, pick another name")
-            }
-            sig := FnSig(module: g.module, name: f.name, prog: pi, index: fi)
+            sig := FnSig(module: g.module, name: f.name, recv: f.recv, prog: pi, index: fi)
             sig.ll = "@finch." + modName(g.module) + "." + f.name
+            if f.recv.len > 0 {
+                sig.ll = "@finch." + modName(g.module) + "." + f.recv + "." + f.name
+            }
             sig.ret = resolve(g, f.ty, f)
-            body := f.kids[f.kids.len - 1]
             for k in 0..f.kids.len - 1 {
-                pt := resolve(g, f.kids[k].ty, f.kids[k])
-                sig.params.push(pt)
+                if f.kids[k].name == "self" && f.recv.len > 0 {
+                    fail(g, f.kids[k], "'self' is already the " + f.recv + " the method is called on")
+                }
+                sig.params.push(resolve(g, f.kids[k].ty, f.kids[k]))
                 sig.pnames.push(f.kids[k].name)
-                sig.borrow.push(owning(g, pt) && !mutates(f.kids[k].name, body))
             }
             g.sigs.push(sig)
+        }
+    }
+    // which methods change self? calling one of them on something changes it
+    // too, so repeat until nothing new turns up
+    changed := true
+    while changed {
+        changed = false
+        for i in 0..g.sigs.len {
+            if g.sigs[i].recv.len > 0 && !g.sigs[i].mutself {
+                f := g.progs[g.sigs[i].prog].fns[g.sigs[i].index]
+                if mutates(g, "self", f.kids[f.kids.len - 1]) {
+                    g.sigs[i].mutself = true
+                    g.mm.push(g.sigs[i].name)
+                    changed = true
+                }
+            }
+        }
+    }
+    // a parameter nobody changes is borrowed rather than copied
+    for i in 0..g.sigs.len {
+        f := g.progs[g.sigs[i].prog].fns[g.sigs[i].index]
+        body := f.kids[f.kids.len - 1]
+        for k in 0..g.sigs[i].params.len {
+            pt := g.sigs[i].params[k]
+            g.sigs[i].borrow.push(owning(g, pt) && !mutates(g, g.sigs[i].pnames[k], body))
         }
     }
 }
@@ -905,6 +996,11 @@ fn define(ptr[Gen] g, int si) {
     g.scopes = none
     pushScope(g)
     []str params
+    if g.cur.recv.len > 0 {
+        // self is the caller's struct itself, reached through its address
+        params.push("ptr %self")
+        g.scopes[0].vars.push(Var(name: "self", ty: ast.Type(kind: "struct", name: g.cur.recv, module: g.cur.module), slot: "%self", readonly: false))
+    }
     for k in 0..g.cur.params.len {
         pt := g.cur.params[k]
         params.push(llty(g, pt) + " %p" + str(k))
@@ -1163,7 +1259,7 @@ fn eachStmt(ptr[Gen] g, ast.Node s) {
     if lt.kind == "array" {
         et = lt.elem[0]
     }
-    copyElems := r.isPlace && owning(g, et) && mutates(rootVar(s.kids[0]), s.kids[1])
+    copyElems := r.isPlace && owning(g, et) && mutates(g, rootVar(s.kids[0]), s.kids[1])
     iv := alloca(g, "i64")
     store(g, "i64", "0", iv)
     cond := newLabel(g, "each.cond")
@@ -1827,6 +1923,9 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
         } else if k == "bool" {
             z := op(g, "zext i1 " + v.v + " to i32")
             emit(g, "call void @finch_str_from_bool(ptr " + out + ", i32 " + z + ")")
+        } else if k == "bool" || k == "char" || k == "array" || k == "struct" {
+            store(g, "{ ptr, i64, i64 }", "zeroinitializer", out)
+            emitFormat(g, out, v.v, v.ty, false)
         } else {
             fail(g, c.kids[0], "can't turn " + ast.show(v.ty) + " into str")
         }
@@ -1906,7 +2005,7 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     }
     fi := findFn(g, g.module, n)
     if fi >= 0 {
-        return callFn(g, fi, c, 0, n)
+        return callFn(g, fi, c, 0, n, "", "")
     }
     si := findStruct(g, g.module, n)
     if si >= 0 {
@@ -1919,16 +2018,23 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     return Val()
 }
 
-fn callFn(ptr[Gen] g, int fi, ast.Node c, int first, str shown) -> Val {
+fn callFn(ptr[Gen] g, int fi, ast.Node c, int first, str shown, str selfAddr, str selfRoot) -> Val {
     sig := g.sigs[fi]
     if sig.module.len == 0 && sig.name == "main" {
         fail(g, c, "main can't be called, it is where the program starts")
     }
     checkArgs(g, c, first, sig.params.len, shown)
     []str args
+    if sig.recv.len > 0 {
+        args.push("ptr " + selfAddr)
+    }
     for k in 0..sig.params.len {
         a := c.kids[first + k]
         v := coerce(g, exprWant(g, a, sig.params[k]), sig.params[k], a, "argument '" + sig.pnames[k] + "'")
+        // the argument lives inside the receiver (c.merge(c)): the method gets its own copy
+        if owning(g, sig.params[k]) && !v.fresh && selfRoot.len > 0 && rootVar(a) == selfRoot {
+            v = Val(v: copyValue(g, v.v, v.ty), ty: v.ty, fresh: true)
+        }
         args.push(llty(g, sig.params[k]) + " " + v.v)
     }
     text := "call " + llty(g, sig.ret) + " " + sig.ll + "(" + args.join(", ") + ")"
@@ -2005,7 +2111,7 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
         }
         fi := findFn(g, mn, m.name)
         if fi >= 0 {
-            return callFn(g, fi, m, 1, mn + "." + m.name)
+            return callFn(g, fi, m, 1, mn + "." + m.name, "", "")
         }
         si := findStruct(g, mn, m.name)
         if si >= 0 {
@@ -2042,8 +2148,42 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
         }
         return strMethod(g, m, spill(g, sv))
     }
-    if t.kind == "struct" {
-        fail(g, m, "structs don't have methods; write a function and call it: " + m.name + "(value, ...)")
+    st := t
+    selfAddr := ""
+    if t.kind == "ptr" && t.elem.len > 0 && t.elem[0].kind == "struct" {
+        pv := r.val.v
+        if r.isPlace {
+            pv = load(g, "ptr", r.pl.addr)
+        }
+        panicIf(g, op(g, "icmp eq ptr " + pv + ", null"), "called ." + m.name + "() on a null pointer", m)
+        st = t.elem[0]
+        selfAddr = pv
+    } else if t.kind == "struct" {
+        if r.isPlace {
+            selfAddr = r.pl.addr
+        } else {
+            selfAddr = spill(g, r.val)
+        }
+    }
+    if st.kind == "struct" {
+        fi := findMethod(g, st.module, st.name, m.name)
+        if fi < 0 {
+            fail(g, m, "the struct " + ast.show(st) + " has no method '" + m.name + "'")
+        }
+        // a method that changes self can't be called on a temporary or a read-only value
+        if g.sigs[fi].mutself && t.kind == "struct" {
+            if !r.isPlace {
+                fail(g, m, m.name + "() would change a temporary " + ast.show(st) + "; store it in a variable first")
+            }
+            root := rootVar(objNode)
+            if root.len > 0 {
+                id := lookup(g, root)
+                if id >= 0 && varAt(g, id).readonly {
+                    fail(g, m, "the loop variable '" + root + "' can't be changed")
+                }
+            }
+        }
+        return callFn(g, fi, m, 1, ast.show(st) + "." + m.name, selfAddr, rootVar(objNode))
     }
     fail(g, m, ast.show(t) + " has no methods")
     return Val()
@@ -2309,6 +2449,15 @@ fn runtimeDecls() -> str {
         "declare void @finch_str_concat(ptr, ptr, ptr)",
         "declare i32 @finch_str_eq(ptr, ptr)",
         "declare i64 @finch_str_cmp(ptr, ptr)",
+        "declare void @finch_buf_add(ptr, ptr, i64)",
+        "declare void @finch_buf_int(ptr, i64)",
+        "declare void @finch_buf_uint(ptr, i64)",
+        "declare void @finch_buf_float(ptr, double)",
+        "declare void @finch_buf_bool(ptr, i32)",
+        "declare void @finch_buf_ptr(ptr, ptr)",
+        "declare void @finch_buf_char(ptr, i8, i32)",
+        "declare void @finch_buf_str(ptr, ptr, i32)",
+        "declare void @finch_buf_print(ptr)",
         "declare void @finch_str_from_int(ptr, i64)",
         "declare void @finch_str_from_uint(ptr, i64)",
         "declare void @finch_str_from_float(ptr, double)",

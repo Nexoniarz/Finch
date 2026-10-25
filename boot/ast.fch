@@ -75,6 +75,7 @@ fn show(Type t) -> str {
 struct Node {
     str kind
     str name      // identifier, operator, callee, field or method name
+    str recv      // fn Point.move(...): "Point"; empty for a plain function
     str text      // literal text
     Type ty       // declared type (decl, param, field, fn result)
     bool flag     // decl: has a type; fn: has a body
