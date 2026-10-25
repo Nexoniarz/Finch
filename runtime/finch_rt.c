@@ -37,10 +37,24 @@ static char empty[1] = "";
 
 // ---------- runtime errors ----------
 
-__attribute__((noreturn, cold)) void finch_panic(const char *file, int64_t line, const char *msg) {
+// A program that loads Finch libraries (finch build --shared) can take runtime errors over
+// instead of the process exiting: finch_module_on_fatal(handler) in each library. The handler
+// gets the message and must not return (longjmp out, or exit itself).
+static void (*fatal_hook)(const char *msg);
+void finch_on_fatal(void (*hook)(const char *msg)) { fatal_hook = hook; }
+
+static __attribute__((noreturn)) void fatal(const char *msg) {
+    if (fatal_hook) fatal_hook(msg);
     fflush(stdout);
-    fprintf(stderr, "%s:%lld: runtime error: %s\n", file, (long long)line, msg);
+    fprintf(stderr, "%s\n", msg);
     exit(1);
+}
+
+__attribute__((noreturn, cold)) void finch_panic(const char *file, int64_t line, const char *msg) {
+    char full[1024];
+    snprintf(full, sizeof full, "%s:%lld: runtime error: %s", file, (long long)line, msg);
+    fflush(stdout);
+    fatal(full);
 }
 
 __attribute__((noreturn, cold)) void finch_panic_index(const char *file, int64_t line, int64_t i, int64_t len) {
@@ -52,8 +66,7 @@ __attribute__((noreturn, cold)) void finch_panic_index(const char *file, int64_t
 static void *must(void *p) {
     if (!p) {
         fflush(stdout);
-        fprintf(stderr, "runtime error: out of memory\n");
-        exit(1);
+        fatal("runtime error: out of memory");
     }
     return p;
 }

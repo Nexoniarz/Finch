@@ -60,5 +60,13 @@ for f in tests/new/fail/*.fch; do
         echo "$got" | head -3
     fi
 done
+# a library a C program loads (finch build --shared), with the compiler under test
+if FINCH_RT="$PWD/runtime/finch_rt.c" FINCH="$boot" tests/shared.sh > "$tmp/shared.out" 2>&1; then
+    pass=$((pass + 1))
+else
+    failed=$((failed + 1))
+    echo "FAIL tests/shared.sh"
+    head -5 "$tmp/shared.out"
+fi
 echo "self-hosted compiler: $pass passed, $failed failed, $skipped skipped (features it doesn't have)"
 [ $failed -eq 0 ]

@@ -24,7 +24,7 @@ fn isHex(char c) -> bool {
 
 fn isKeyword(str w) -> bool {
     keywords := ["fn", "return", "if", "else", "while", "for", "in", "break", "continue", "true", "false",
-                 "null", "import", "link", "struct", "defer", "or", "try", "enum", "match"]
+                 "null", "import", "link", "struct", "defer", "or", "try", "enum", "match", "export"]
     return keywords.contains(w)
 }
 

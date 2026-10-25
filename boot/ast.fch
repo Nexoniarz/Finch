@@ -102,6 +102,7 @@ struct Node {
     Type ty       // declared type (decl, param, field, fn result)
     bool flag     // decl: has a type; or: the right side is a { block }
     bool fallible // fn: -> T!  or  -> !
+    bool exported // export fn: a C function of a library (finch build --shared)
     []Node kids
     []str names   // named arguments: Point(x: 1)
     int line

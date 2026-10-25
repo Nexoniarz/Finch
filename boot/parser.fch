@@ -376,6 +376,7 @@ fn parseStruct(ptr[Parser] p) -> ast.Node {
 
 fn parseFn(ptr[Parser] p) -> ast.Node {
     f := node(p, "fn")
+    f.exported = accept(p, "export")
     expect(p, "fn", "'fn', 'struct' or 'import'")
     f.name = expect(p, "ident", "a function name").text
     if at(p, "[") {

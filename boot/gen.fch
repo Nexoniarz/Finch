@@ -58,6 +58,7 @@ struct FnSig {
     str recv        // a method of this struct ("" for a function)
     str recvmod     // and the module of that struct: "C" for a struct from a header
     bool recvEnum   // the receiver is an enum
+    bool exported   // export fn: also a C function of a library
     []str tnames    // an instance of a generic function: its type parameters and what they stand for
     []ast.Type targs
     str shown       // max[int], for messages
@@ -136,6 +137,7 @@ struct Gen {
     []str mm        // names of methods that change self, for the mutation analysis
     int nvars       // variables declared so far in this function
     cimport.CImports ci
+    bool shared         // building a library (finch build --shared): no main, its export fns are the way in
     []str cdone         // C functions and variables already declared
     str ftarget     // the call an enclosing or / try is waiting on (see nodeKey)
     str ffailed     // set by that call: an i1, true if it failed
@@ -1223,7 +1225,7 @@ fn declare(ptr[Gen] g) {
                     fail(g, f, "'" + f.name + "' is a built-in function, pick another name")
                 }
             }
-            sig := FnSig(module: g.module, name: f.name, recv: f.recv, recvmod: recvmod, recvEnum: recvEnum, fallible: f.fallible, prog: pi, index: fi)
+            sig := FnSig(module: g.module, name: f.name, recv: f.recv, recvmod: recvmod, recvEnum: recvEnum, fallible: f.fallible, exported: f.exported, prog: pi, index: fi)
             sig.ll = "@finch." + modName(g.module) + "." + f.name
             if f.recv.len > 0 {
                 sig.ll = "@finch." + modName(g.module) + "." + f.recv + "." + f.name
@@ -1235,6 +1237,9 @@ fn declare(ptr[Gen] g) {
                 }
                 sig.params.push(resolve(g, f.kids[k].ty, f.kids[k]))
                 sig.pnames.push(f.kids[k].name)
+            }
+            if f.exported {
+                checkExport(g, f, sig)
             }
             g.sigs.push(sig)
         }
@@ -3420,6 +3425,70 @@ fn checkByValue(ptr[Gen] g, ast.Node at, str fname, ast.Type t, str what) {
     }
 }
 
+// export fn: what a C program can be given, and call
+fn cPlain(ast.Type t) -> bool {
+    return isNumber(t) || t.kind == "bool" || t.kind == "char" || t.kind == "ptr"
+}
+
+fn checkExport(ptr[Gen] g, ast.Node f, FnSig sig) {
+    if f.recv.len > 0 {
+        fail(g, f, "methods can't be exported (export a plain fn that calls it)")
+    }
+    if f.fallible {
+        fail(g, f, "an export fn can't fail (C has no errors as values): handle them inside it")
+    }
+    if f.tparams.len > 0 {
+        fail(g, f, "an export fn can't be generic")
+    }
+    for k in 0..sig.params.len {
+        if !cPlain(sig.params[k]) {
+            fail(g, f.kids[k], "an export fn takes numbers, bool, char and pointers only (this is " + ast.show(sig.params[k]) + "; pass text as ptr[char] and make it a str inside)")
+        }
+    }
+    if sig.ret.kind != "void" && !cPlain(sig.ret) {
+        fail(g, f, "an export fn returns nothing, a number, bool, char or a pointer (not " + ast.show(sig.ret) + ")")
+    }
+    for other in g.sigs {
+        if other.exported && other.name == sig.name {
+            fail(g, f, "'" + sig.name + "' is exported twice (from two modules)")
+        }
+    }
+}
+
+// export fn name(...): a C function called `name` that calls the Finch one (a bool is a C byte)
+fn exportWrapper(ptr[Gen] g, FnSig sig) -> str {
+    []str params
+    []str args
+    s := beginHelper(g)
+    for k in 0..sig.params.len {
+        t := sig.params[k]
+        if t.kind == "bool" {
+            params.push("i8 zeroext %e" + str(k))
+            args.push("i1 " + op(g, "icmp ne i8 %e" + str(k) + ", 0"))
+        } else {
+            params.push(cLL(g, t) + cExt(t) + " %e" + str(k))
+            args.push(llty(g, t) + " %e" + str(k))
+        }
+    }
+    text := "call " + llty(g, sig.ret) + " " + sig.ll + "(" + args.join(", ") + ")"
+    retLL := "void"
+    retExt := ""
+    if sig.ret.kind == "void" {
+        emit(g, text)
+        emit(g, "ret void")
+    } else if sig.ret.kind == "bool" {
+        retLL = "i8"
+        retExt = " zeroext"
+        emit(g, "ret i8 " + op(g, "zext i1 " + op(g, text) + " to i8"))
+    } else {
+        retLL = llty(g, sig.ret)
+        retExt = cExt(sig.ret)
+        emit(g, "ret " + retLL + " " + op(g, text))
+    }
+    endHelper(g, s, "define" + retExt + " " + retLL + " @" + sig.name + "(" + params.join(", ") + ")")
+    return sig.name
+}
+
 // A C-callable door into a Finch function, for addr(fn): callbacks like qsort's or libclang's.
 fn cThunk(ptr[Gen] g, int fi, ast.Node at) -> str {
     sig := g.sigs[fi]
@@ -4438,6 +4507,7 @@ fn runtimeDecls() -> str {
         "declare i32 @printf(ptr, ...)",
         "declare i32 @fflush(ptr)",
         "declare void @finch_str_from_c(ptr, ptr)",
+        "declare void @finch_on_fatal(ptr)",
         "declare void @finch_str_from_bytes(ptr, ptr)",
         "declare void @exit(i32) noreturn",
         "declare void @free(ptr)",
@@ -4445,12 +4515,16 @@ fn runtimeDecls() -> str {
     return decls.join("\n") + "\n"
 }
 
-fn generate([]ast.Program progs, []str files, cimport.CImports ci) -> str {
-    gen := Gen(progs: progs, files: files, ci: ci)
+fn generate([]ast.Program progs, []str files, cimport.CImports ci, bool shared) -> str {
+    gen := Gen(progs: progs, files: files, ci: ci, shared: shared)
     g := addr(gen)
     declare(g)
     main := findFn(g, "", "main")
-    if main < 0 {
+    if shared {
+        if main >= 0 {
+            fail(g, g.progs[g.sigs[main].prog].fns[g.sigs[main].index], "a library (--shared) has no main: the program that loads it calls its 'export fn's")
+        }
+    } else if main < 0 {
         print(files[0] + ":1:1: error: there is no main function (add 'fn main() { ... }')")
         exit(1)
     }
@@ -4459,6 +4533,16 @@ fn generate([]ast.Program progs, []str files, cimport.CImports ci) -> str {
     while di < g.sigs.len {
         define(g, di)
         di += 1
+    }
+    for sg in g.sigs {
+        if sg.exported {
+            exportWrapper(g, sg)
+        }
+    }
+    if shared {
+        // finch_module_on_fatal(handler): the host's say on runtime errors (see runtime/finch_rt.c)
+        g.out.push("define void @finch_module_on_fatal(ptr %handler) {\nentry:\n  call void @finch_on_fatal(ptr %handler)\n  ret void\n}\n")
+        return "; generated by the Finch compiler written in Finch\n\n" + g.head.join("\n") + "\n\n" + runtimeDecls() + "\n" + g.out.join("\n")
     }
     // the C entry point calls the Finch main
     m := g.sigs[main]

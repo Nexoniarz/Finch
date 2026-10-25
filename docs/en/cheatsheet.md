@@ -12,6 +12,7 @@ Everything in Finch on one page. For explanations, see the [guides](../../README
 |---|---|
 | `finch run file.fch [args…]` | compile and run (args go to the program) |
 | `finch build file.fch [-o name]` | make a program (`name.exe` on Windows) |
+| `finch build file.fch --shared [-I dir]` | make a library (`libfile.so`, `file.dll`) that a C program loads; its `export fn`s are its C functions (numbers, bool, char, pointers) |
 | `finch ir file.fch` | print the LLVM IR |
 | `finch lsp` | the language server (editors use it) |
 | `finch version` | version |

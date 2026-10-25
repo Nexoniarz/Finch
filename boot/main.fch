@@ -10,6 +10,7 @@ import ast
 import parser
 import gen
 import cimport
+import "stdlib.h"
 
 fn dirOf(str path) -> str {
     i := path.len - 1
@@ -39,14 +40,20 @@ struct Loader {
     []str files
     []str loaded
     str std             // the standard library's folder, or ""
+    []str paths         // FINCH_PATH: more folders to look for modules in
 }
 
 // import json: the file next to the one that imports it, else the standard library's.
 // A program's own json.fch wins over the library's.
 fn findModule(ptr[Loader] l, str from, str name) -> str {
     local := dirOf(from) + "/" + name + ".fch"
-    if file_exists(local) || l.std.len == 0 {
+    if file_exists(local) {
         return local
+    }
+    for d in l.paths {
+        if file_exists(d + "/" + name + ".fch") {
+            return d + "/" + name + ".fch"
+        }
     }
     shared := l.std + "/" + name + ".fch"
     if file_exists(shared) {
@@ -127,6 +134,8 @@ fn main([]str args) -> int {
         usage()
     }
     out := stem(file)
+    outGiven := false
+    shared := false
     opt := "-O2"
     []str extraLibs
     []str extraDirs
@@ -138,7 +147,10 @@ fn main([]str args) -> int {
             progArgs.push(a)
         } else if a == "-o" && ai + 1 < args.len && cmd == "build" {
             out = args[ai + 1]
+            outGiven = true
             ai += 1
+        } else if a == "--shared" && cmd == "build" {
+            shared = true
         } else if a == "-O0" {
             opt = "-O0"
         } else if a == "-l" && ai + 1 < args.len {
@@ -162,11 +174,19 @@ fn main([]str args) -> int {
     if cmd == "run" {
         out = "/tmp/finch_run_" + stem(file)
     }
+    if shared && !outGiven {
+        out = "lib" + out + ".so"
+    }
 
     loader := Loader()
     for cand in [dirOf(args[0]) + "/../std", dirOf(args[0]) + "/std", "std"] {
         if loader.std.len == 0 && file_exists(cand + "/path.fch") {
             loader.std = cand
+        }
+    }
+    for d in getenv("FINCH_PATH").split(":") {
+        if d.len > 0 {
+            loader.paths.push(d)
         }
     }
     load(addr(loader), file, "")
@@ -199,14 +219,17 @@ fn main([]str args) -> int {
         print(err)
         return 1
     }
-    ir := gen.generate(loader.progs, loader.files, ci)
+    ir := gen.generate(loader.progs, loader.files, ci, shared)
     if cmd == "ir" {
         print(ir)
         return 0
     }
 
     // the runtime is Finch's C file; FINCH_RT can point somewhere else
-    rt := dirOf(args[0]) + "/../runtime/finch_rt.c"
+    rt := getenv("FINCH_RT")
+    if rt.len == 0 {
+        rt = dirOf(args[0]) + "/../runtime/finch_rt.c"
+    }
     if !file_exists(rt) {
         rt = dirOf(args[0]) + "/runtime/finch_rt.c"
     }
@@ -219,7 +242,16 @@ fn main([]str args) -> int {
     }
     llPath := out + ".ll"
     write_file(llPath, ir)
-    code := shell("clang " + opt + " -w '" + llPath + "' '" + rt + "' -o '" + out + "' -lm " + libs.join(" "))
+    sharedFlags := ""
+    if shared {
+        sharedFlags = " -shared -fPIC"
+    }
+    // the compiler of the IR is always a clang (CC may be gcc, which can't read it); FINCH_CC picks another clang
+    cc := getenv("FINCH_CC")
+    if cc.len == 0 {
+        cc = "clang"
+    }
+    code := shell(cc + " " + opt + sharedFlags + " -w '" + llPath + "' '" + rt + "' -o '" + out + "' -lm " + libs.join(" "))
     shell("rm -f '" + llPath + "'")
     if code != 0 {
         print("error: clang failed")
