@@ -1,0 +1,128 @@
+// Paths, as text. Elements are separated by "/".
+//
+//   import path
+//   path.join("a", "b.txt")        a/b.txt
+//   path.base("/tmp/x/a.tar.gz")   a.tar.gz       path.stem(...)  a.tar       path.ext(...)  .gz
+//   path.dir("/tmp/x/a.txt")       /tmp/x
+//   path.clean("a//b/../c/./d")    a/c/d
+
+// a and b with one separator between; an absolute b replaces a
+fn join(str a, str b) -> str {
+    if a.len == 0 {
+        return b
+    }
+    if b.len == 0 {
+        return a
+    }
+    if b[0] == '/' {
+        return b
+    }
+    if a[a.len - 1] == '/' {
+        return a + b
+    }
+    return a + "/" + b
+}
+
+fn is_abs(str p) -> bool {
+    return p.len > 0 && p[0] == '/'
+}
+
+// the last element: "a/b.txt" -> "b.txt", "a/b/" -> "b", "" -> ".", "/" -> "/"
+fn base(str p) -> str {
+    if p.len == 0 {
+        return "."
+    }
+    end := p.len
+    while end > 1 && p[end - 1] == '/' {
+        end -= 1
+    }
+    if end == 1 && p[0] == '/' {
+        return "/"
+    }
+    start := end
+    while start > 0 && p[start - 1] != '/' {
+        start -= 1
+    }
+    return p.sub(start, end)
+}
+
+// everything before the last element: "a/b.txt" -> "a", "b.txt" -> ".", "/b" -> "/"
+fn dir(str p) -> str {
+    end := p.len
+    while end > 1 && p[end - 1] == '/' {
+        end -= 1
+    }
+    i := end
+    while i > 0 && p[i - 1] != '/' {
+        i -= 1
+    }
+    if i == 0 {
+        return "."
+    }
+    while i > 1 && p[i - 1] == '/' {
+        i -= 1
+    }
+    return p.sub(0, i)
+}
+
+// the part of the last element from its last dot: "a.tar.gz" -> ".gz"; "" when there is none
+fn ext(str p) -> str {
+    b := base(p)
+    i := b.len
+    while i > 0 && b[i - 1] != '.' {
+        i -= 1
+    }
+    if i <= 1 {                 // no dot, or a name that only starts with one (.bashrc)
+        return ""
+    }
+    return b.sub(i - 1, b.len)
+}
+
+// the last element without its extension
+fn stem(str p) -> str {
+    b := base(p)
+    e := ext(p)
+    return b.sub(0, b.len - e.len)
+}
+
+// the elements of a path: "/a/b/c" -> ["a", "b", "c"]
+fn parts(str p) -> []str {
+    []str out
+    for piece in p.split("/") {
+        if piece.len > 0 {
+            out.push(piece)
+        }
+    }
+    return out
+}
+
+// the shortest path with the same meaning: no "//", no ".", and ".." resolved where it can be
+fn clean(str p) -> str {
+    if p.len == 0 {
+        return "."
+    }
+    abs := is_abs(p)
+    []str out
+    for piece in parts(p) {
+        if piece == "." {
+            continue
+        }
+        if piece == ".." {
+            if out.len > 0 && out[out.len - 1] != ".." {
+                out.pop()
+            } else if !abs {
+                out.push("..")
+            }
+            continue
+        }
+        out.push(piece)
+    }
+    joined := out.join("/")
+    if abs {
+        return "/" + joined
+    }
+    if joined.len == 0 {
+        return "."
+    }
+    return joined
+}

@@ -1,0 +1,518 @@
+// JSON: read it, build it, write it.
+//
+//   import json
+//
+//   doc := try json.parse("{\"name\": \"Finch\", \"tags\": [\"fast\", \"small\"], \"stars\": 5}")
+//   print(doc.get("name").str_or(""))             Finch
+//   print(doc.get("tags").at(1).str_or(""))       small
+//   print(doc.get("stars").int_or(0))             5
+//   print(doc.get("missing").is_null())           true       (a missing key is null, so chains never fail)
+//
+//   out := json.new_object()
+//   out.set("ok", json.new_bool(true))
+//   list := json.new_list()
+//   list.push(json.new_number(1.5))
+//   out.set("values", list)
+//   print(json.stringify(out))                    {"ok":true,"values":[1.5]}
+//   print(json.pretty(out))                       the same, over several lines
+
+enum Kind { Null, Bool, Number, Text, List, Object }
+
+// One JSON value. `kind` says which of the other fields it uses: flag for Bool, num for Number,
+// text for Text, items for List, and items with keys (the same length, in the same order) for Object.
+struct Json {
+    Kind kind
+    bool flag
+    float num
+    str text
+    []Json items
+    []str keys
+}
+
+fn new_null() -> Json {
+    return Json(kind: Kind.Null)
+}
+
+fn new_bool(bool b) -> Json {
+    return Json(kind: Kind.Bool, flag: b)
+}
+
+fn new_number(float n) -> Json {
+    return Json(kind: Kind.Number, num: n)
+}
+
+fn new_text(str s) -> Json {
+    return Json(kind: Kind.Text, text: s)
+}
+
+fn new_list() -> Json {
+    return Json(kind: Kind.List)
+}
+
+fn new_object() -> Json {
+    return Json(kind: Kind.Object)
+}
+
+// ---------- looking inside ----------
+
+fn Json.is_null() -> bool {
+    return self.kind == Kind.Null
+}
+
+// the number of elements of a list, of keys of an object, of bytes of a text; 0 for the rest
+fn Json.len() -> int {
+    return match self.kind {
+        List, Object -> self.items.len
+        Text -> self.text.len
+        else -> 0
+    }
+}
+
+fn Json.has(str key) -> bool {
+    return self.kind == Kind.Object && self.keys.contains(key)
+}
+
+// the value of a key of an object; null if there is none (or this is not an object)
+fn Json.get(str key) -> Json {
+    if self.kind != Kind.Object {
+        return new_null()
+    }
+    i := self.keys.find(key)
+    if i < 0 {
+        return new_null()
+    }
+    return self.items[i]
+}
+
+// the element of a list; null if there is none
+fn Json.at(int i) -> Json {
+    if self.kind != Kind.List || i < 0 || i >= self.items.len {
+        return new_null()
+    }
+    return self.items[i]
+}
+
+// the value if it is of that kind, else what was given
+fn Json.str_or(str fallback) -> str {
+    if self.kind == Kind.Text {
+        return self.text
+    }
+    return fallback
+}
+
+fn Json.float_or(float fallback) -> float {
+    if self.kind == Kind.Number {
+        return self.num
+    }
+    return fallback
+}
+
+fn Json.int_or(int fallback) -> int {
+    if self.kind == Kind.Number {
+        return int(self.num)
+    }
+    return fallback
+}
+
+fn Json.bool_or(bool fallback) -> bool {
+    if self.kind == Kind.Bool {
+        return self.flag
+    }
+    return fallback
+}
+
+// the keys of an object, in the order they were written
+fn Json.names() -> []str {
+    return self.keys
+}
+
+// ---------- building ----------
+
+// add to the end of a list
+fn Json.push(Json v) {
+    self.items.push(v)
+}
+
+// give a key a value in an object; a key that is already there is replaced
+fn Json.set(str key, Json v) {
+    i := self.keys.find(key)
+    if i >= 0 {
+        self.items[i] = v
+        return
+    }
+    self.keys.push(key)
+    self.items.push(v)
+}
+
+// ---------- writing ----------
+
+fn quote(str s) -> str {
+    []str parts = ["\""]
+    for c in s {
+        n := int(c)
+        if c == '"' {
+            parts.push("\\\"")
+        } else if c == '\\' {
+            parts.push("\\\\")
+        } else if c == '\n' {
+            parts.push("\\n")
+        } else if c == '\r' {
+            parts.push("\\r")
+        } else if c == '\t' {
+            parts.push("\\t")
+        } else if n < 32 {
+            parts.push("\\u00" + hexdigit(n / 16) + hexdigit(n % 16))
+        } else {
+            parts.push(str(c))
+        }
+    }
+    parts.push("\"")
+    return parts.join("")
+}
+
+fn hexdigit(int n) -> str {
+    digits := "0123456789abcdef"
+    return str(digits[n])
+}
+
+fn number_text(float n) -> str {
+    if n == float(int(n)) && n > -1000000000000000.0 && n < 1000000000000000.0 {
+        return str(int(n))
+    }
+    return str(n)
+}
+
+struct Writer {
+    []str out
+}
+
+fn write(Json j, str indent, str pad, ptr[Writer] w) {
+    nl := ""
+    inner := ""
+    sep := ","
+    colon := ":"
+    if indent.len > 0 {
+        nl = "\n"
+        inner = pad + indent
+        colon = ": "
+    }
+    match j.kind {
+        Null -> w.out.push("null")
+        Bool -> {
+            if j.flag {
+                w.out.push("true")
+            } else {
+                w.out.push("false")
+            }
+        }
+        Number -> w.out.push(number_text(j.num))
+        Text -> w.out.push(quote(j.text))
+        List -> {
+            if j.items.len == 0 {
+                w.out.push("[]")
+                return
+            }
+            w.out.push("[" + nl)
+            for i, item in j.items {
+                if i > 0 {
+                    w.out.push(sep + nl)
+                }
+                w.out.push(inner)
+                write(item, indent, inner, w)
+            }
+            w.out.push(nl + pad + "]")
+        }
+        Object -> {
+            if j.items.len == 0 {
+                w.out.push("{}")
+                return
+            }
+            w.out.push("{" + nl)
+            for i, item in j.items {
+                if i > 0 {
+                    w.out.push(sep + nl)
+                }
+                w.out.push(inner + quote(j.keys[i]) + colon)
+                write(item, indent, inner, w)
+            }
+            w.out.push(nl + pad + "}")
+        }
+    }
+}
+
+// the value as text on one line
+fn stringify(Json j) -> str {
+    w := Writer()
+    write(j, "", "", addr(w))
+    return w.out.join("")
+}
+
+// the value as text over several lines, indented by two spaces
+fn pretty(Json j) -> str {
+    w := Writer()
+    write(j, "  ", "", addr(w))
+    return w.out.join("")
+}
+
+// ---------- reading ----------
+
+struct Reader {
+    str src
+    int i
+}
+
+// the line and column of a position, for a message
+fn where(ptr[Reader] r) -> str {
+    line := 1
+    col := 1
+    for k in 0..r.i {
+        if k < r.src.len && r.src[k] == '\n' {
+            line += 1
+            col = 1
+        } else {
+            col += 1
+        }
+    }
+    return "line " + str(line) + ", column " + str(col)
+}
+
+fn peek(ptr[Reader] r) -> char {
+    if r.i < r.src.len {
+        return r.src[r.i]
+    }
+    return char(0)
+}
+
+fn skip_space(ptr[Reader] r) {
+    while r.i < r.src.len && (r.src[r.i] == ' ' || r.src[r.i] == '\n' || r.src[r.i] == '\t' || r.src[r.i] == '\r') {
+        r.i += 1
+    }
+}
+
+fn unexpected(ptr[Reader] r, str wanted) -> str {
+    if r.i >= r.src.len {
+        return "json: the text ends where " + wanted + " should be (" + where(r) + ")"
+    }
+    return "json: found '" + str(r.src[r.i]) + "' where " + wanted + " should be (" + where(r) + ")"
+}
+
+// does `word` come next?
+fn comes(ptr[Reader] r, str word) -> bool {
+    return r.src.len - r.i >= word.len && r.src.sub(r.i, r.i + word.len) == word
+}
+
+fn expect_word(ptr[Reader] r, str word) -> ! {
+    if !comes(r, word) {
+        return error(unexpected(r, "'" + word + "'"))
+    }
+    r.i += word.len
+}
+
+fn hex_value(char c) -> int {
+    if c >= '0' && c <= '9' {
+        return int(c) - int('0')
+    }
+    if c >= 'a' && c <= 'f' {
+        return int(c) - int('a') + 10
+    }
+    if c >= 'A' && c <= 'F' {
+        return int(c) - int('A') + 10
+    }
+    return -1
+}
+
+// a code point as UTF-8
+fn utf8(int cp) -> str {
+    []u8 b
+    if cp < 128 {
+        b.push(u8(cp))
+    } else if cp < 2048 {
+        b.push(u8(192 + cp / 64))
+        b.push(u8(128 + cp % 64))
+    } else if cp < 65536 {
+        b.push(u8(224 + cp / 4096))
+        b.push(u8(128 + (cp / 64) % 64))
+        b.push(u8(128 + cp % 64))
+    } else {
+        b.push(u8(240 + cp / 262144))
+        b.push(u8(128 + (cp / 4096) % 64))
+        b.push(u8(128 + (cp / 64) % 64))
+        b.push(u8(128 + cp % 64))
+    }
+    return str(b)
+}
+
+fn read_hex4(ptr[Reader] r) -> int! {
+    n := 0
+    for k in 0..4 {
+        if r.i >= r.src.len || hex_value(r.src[r.i]) < 0 {
+            return error(unexpected(r, "a hexadecimal digit"))
+        }
+        n = n * 16 + hex_value(r.src[r.i])
+        r.i += 1
+    }
+    return n
+}
+
+fn read_string(ptr[Reader] r) -> str! {
+    r.i += 1                    // the opening quote
+    []str parts
+    start := r.i
+    while true {
+        if r.i >= r.src.len {
+            return error("json: a text is never closed (" + where(r) + ")")
+        }
+        c := r.src[r.i]
+        if c == '"' {
+            parts.push(r.src.sub(start, r.i))
+            r.i += 1
+            return parts.join("")
+        }
+        if int(c) < 32 {
+            return error("json: a line break or control character inside a text (" + where(r) + ")")
+        }
+        if c != '\\' {
+            r.i += 1
+            continue
+        }
+        parts.push(r.src.sub(start, r.i))
+        r.i += 1
+        e := peek(r)
+        r.i += 1
+        if e == 'n' {
+            parts.push("\n")
+        } else if e == 't' {
+            parts.push("\t")
+        } else if e == 'r' {
+            parts.push("\r")
+        } else if e == 'b' {
+            parts.push(utf8(8))
+        } else if e == 'f' {
+            parts.push(utf8(12))
+        } else if e == '"' || e == '\\' || e == '/' {
+            parts.push(str(e))
+        } else if e == 'u' {
+            cp := try read_hex4(r)
+            // a pair of 😀 stands for one character above U+FFFF
+            if cp >= 55296 && cp < 56320 && comes(r, "\\u") {
+                r.i += 2
+                low := try read_hex4(r)
+                cp = 65536 + (cp - 55296) * 1024 + (low - 56320)
+            }
+            parts.push(utf8(cp))
+        } else {
+            return error("json: unknown escape \\" + str(e) + " in a text (" + where(r) + ")")
+        }
+        start = r.i
+    }
+}
+
+fn read_number(ptr[Reader] r) -> Json! {
+    start := r.i
+    if peek(r) == '-' {
+        r.i += 1
+    }
+    while r.i < r.src.len && ((r.src[r.i] >= '0' && r.src[r.i] <= '9') || r.src[r.i] == '.' || r.src[r.i] == 'e' || r.src[r.i] == 'E' || r.src[r.i] == '+' || r.src[r.i] == '-') {
+        r.i += 1
+    }
+    n := float(r.src.sub(start, r.i)) or {
+        r.i = start
+        return error(unexpected(r, "a number"))
+    }
+    return new_number(n)
+}
+
+fn read_value(ptr[Reader] r) -> Json! {
+    skip_space(r)
+    c := peek(r)
+    if r.i >= r.src.len {
+        return error(unexpected(r, "a value"))
+    }
+    if c == '{' {
+        obj := new_object()
+        r.i += 1
+        skip_space(r)
+        if peek(r) == '}' {
+            r.i += 1
+            return obj
+        }
+        while true {
+            skip_space(r)
+            if peek(r) != '"' {
+                return error(unexpected(r, "a key in quotes"))
+            }
+            key := try read_string(r)
+            skip_space(r)
+            if peek(r) != ':' {
+                return error(unexpected(r, "':'"))
+            }
+            r.i += 1
+            v := try read_value(r)
+            obj.set(key, v)
+            skip_space(r)
+            if peek(r) == ',' {
+                r.i += 1
+                continue
+            }
+            if peek(r) == '}' {
+                r.i += 1
+                return obj
+            }
+            return error(unexpected(r, "',' or '}'"))
+        }
+    }
+    if c == '[' {
+        list := new_list()
+        r.i += 1
+        skip_space(r)
+        if peek(r) == ']' {
+            r.i += 1
+            return list
+        }
+        while true {
+            v := try read_value(r)
+            list.push(v)
+            skip_space(r)
+            if peek(r) == ',' {
+                r.i += 1
+                continue
+            }
+            if peek(r) == ']' {
+                r.i += 1
+                return list
+            }
+            return error(unexpected(r, "',' or ']'"))
+        }
+    }
+    if c == '"' {
+        s := try read_string(r)
+        return new_text(s)
+    }
+    if c == 't' {
+        try expect_word(r, "true")
+        return new_bool(true)
+    }
+    if c == 'f' {
+        try expect_word(r, "false")
+        return new_bool(false)
+    }
+    if c == 'n' {
+        try expect_word(r, "null")
+        return new_null()
+    }
+    if c == '-' || (c >= '0' && c <= '9') {
+        return try read_number(r)
+    }
+    return error(unexpected(r, "a value"))
+}
+
+// the JSON in `text`; an error with the line and column where it went wrong
+fn parse(str text) -> Json! {
+    r := Reader(src: text)
+    v := try read_value(addr(r))
+    skip_space(addr(r))
+    if r.i < r.src.len {
+        return error(unexpected(addr(r), "the end of the text"))
+    }
+    return v
+}

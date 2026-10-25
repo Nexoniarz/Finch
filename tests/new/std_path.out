@@ -1,0 +1,6 @@
+a/b.txt a/b x /abs
+a.tar.gz b . /
+/tmp/x . / a
+.gz   a.tar
+a/c/d /a ../../a . .
+["a", "b", "c"] true false

@@ -1,0 +1,26 @@
+Finch small 5 3.25
+true true true true false
+2 2 ["name", "tags", "stars", "pi", "ok", "none", "nested"]
+{"name":"Finch","tags":["fast","small"],"stars":5,"pi":3.25,"ok":true,"none":null,"nested":{"deep":[1,[2,3]]}}
+{"greeting":"replaced","values":[1,2.5,false,null],"empty":{}}
+{
+  "greeting": "replaced",
+  "values": [
+    1,
+    2.5,
+    false,
+    null
+  ],
+  "empty": {}
+}
+true
+café 😀 /
+0 -125
+json: found '}' where a value should be (line 1, column 7)
+json: the text ends where ',' or ']' should be (line 1, column 6)
+json: found '1' where ':' should be (line 1, column 6)
+json: found 't' where 'true' should be (line 1, column 1)
+json: found 'x' where the end of the text should be (line 1, column 5)
+json: a text is never closed (line 1, column 6)
+json: the text ends where a value should be (line 1, column 1)
+json: found 'o' where a value should be (line 2, column 3)

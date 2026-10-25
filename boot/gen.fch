@@ -3729,6 +3729,14 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
         } else if k == "bool" {
             z := op(g, "zext i1 " + v.v + " to i32")
             emit(g, "call void @finch_str_from_bool(ptr " + out + ", i32 " + z + ")")
+        } else if k == "ptr" {
+            // a C string, copied
+            store(g, "{ ptr, i64, i64 }", "zeroinitializer", out)
+            emit(g, "call void @finch_str_from_c(ptr " + out + ", ptr " + v.v + ")")
+        } else if k == "array" && (v.ty.elem[0].kind == "u8" || v.ty.elem[0].kind == "char") {
+            // bytes become text
+            store(g, "{ ptr, i64, i64 }", "zeroinitializer", out)
+            emit(g, "call void @finch_str_from_bytes(ptr " + out + ", ptr " + spill(g, v) + ")")
         } else if k == "bool" || k == "char" || k == "array" || k == "map" || k == "struct" || k == "enum" {
             store(g, "{ ptr, i64, i64 }", "zeroinitializer", out)
             emitFormat(g, out, v.v, v.ty, false)
@@ -4430,6 +4438,7 @@ fn runtimeDecls() -> str {
         "declare i32 @printf(ptr, ...)",
         "declare i32 @fflush(ptr)",
         "declare void @finch_str_from_c(ptr, ptr)",
+        "declare void @finch_str_from_bytes(ptr, ptr)",
         "declare void @exit(i32) noreturn",
         "declare void @free(ptr)",
     ]

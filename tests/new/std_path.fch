@@ -1,0 +1,10 @@
+import path
+
+fn main() {
+    print(path.join("a", "b.txt"), path.join("a/", "b"), path.join("", "x"), path.join("a", "/abs"))
+    print(path.base("/tmp/x/a.tar.gz"), path.base("a/b/"), path.base(""), path.base("/"))
+    print(path.dir("/tmp/x/a.txt"), path.dir("b.txt"), path.dir("/b"), path.dir("a/b/"))
+    print(path.ext("a.tar.gz"), path.ext("noext"), path.ext(".bashrc"), path.stem("/x/a.tar.gz"))
+    print(path.clean("a//b/../c/./d"), path.clean("/../a"), path.clean("../../a"), path.clean(""), path.clean("a/.."))
+    print(path.parts("/a//b/c/"), path.is_abs("/a"), path.is_abs("a"))
+}

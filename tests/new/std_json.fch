@@ -1,0 +1,35 @@
+import json
+
+fn main() -> ! {
+    doc := try json.parse("{\"name\": \"Finch\", \"tags\": [\"fast\", \"small\"], \"stars\": 5, \"pi\": 3.25, \"ok\": true, \"none\": null, \"nested\": {\"deep\": [1, [2, 3]]}}")
+    print(doc.get("name").str_or(""), doc.get("tags").at(1).str_or(""), doc.get("stars").int_or(0), doc.get("pi").float_or(0.0))
+    print(doc.get("ok").bool_or(false), doc.get("none").is_null(), doc.get("missing").is_null(), doc.has("name"), doc.has("nope"))
+    print(doc.get("nested").get("deep").at(1).at(0).int_or(-1), doc.get("tags").len(), doc.names())
+    print(json.stringify(doc))
+
+    out := json.new_object()
+    out.set("greeting", json.new_text("hi \"there\"\n"))
+    list := json.new_list()
+    list.push(json.new_number(1))
+    list.push(json.new_number(2.5))
+    list.push(json.new_bool(false))
+    list.push(json.new_null())
+    out.set("values", list)
+    out.set("greeting", json.new_text("replaced"))
+    out.set("empty", json.new_object())
+    print(json.stringify(out))
+    print(json.pretty(out))
+
+    again := try json.parse(json.pretty(out))
+    print(json.stringify(again) == json.stringify(out))
+    print((try json.parse("\"caf\\u00e9 \\ud83d\\ude00 \\/\"")).str_or(""))
+    print((try json.parse("  [ ]  ")).len(), (try json.parse("-12.5e1")).float_or(0.0))
+
+    for bad in ["{\"a\": }", "[1, 2", "{\"a\" 1}", "tru", "[1] x", "\"open", "", "[1,\n  oops]"] {
+        json.parse(bad) or {
+            print(err)
+            continue
+        }
+        print("parsed?!", bad)
+    }
+}

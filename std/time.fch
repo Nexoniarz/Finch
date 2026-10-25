@@ -1,0 +1,88 @@
+// Time: the clock, sleeping, and dates.
+//
+//   import time
+//   start := time.millis()          milliseconds from a clock that only goes forward (to measure with)
+//   time.sleep(250)                 wait a quarter of a second
+//   time.now()                      seconds since 1970-01-01 00:00 UTC
+//   d := time.date(time.now())      the parts: d.year, d.month, d.day, d.hour, d.minute, d.second
+//   time.format(time.now(), "%Y-%m-%d %H:%M")      as text, in the computer's time zone
+import "time.h"
+
+struct Date {
+    int year
+    int month       // 1 to 12
+    int day         // 1 to 31
+    int hour
+    int minute
+    int second
+    int weekday     // 0 is Sunday
+    int yearday     // 1 to 366
+}
+
+// seconds since 1970-01-01 00:00 UTC
+fn now() -> int {
+    return int(time(null))
+}
+
+// milliseconds on a clock that only goes forward: for measuring how long something took
+fn millis() -> int {
+    timespec ts
+    clock_gettime(CLOCK_MONOTONIC, addr(ts))
+    return int(ts.tv_sec) * 1000 + int(ts.tv_nsec) / 1000000
+}
+
+fn sleep(int ms) {
+    timespec ts
+    ts.tv_sec = ms / 1000
+    ts.tv_nsec = (ms % 1000) * 1000000
+    nanosleep(addr(ts), null)
+}
+
+fn parts(tm t) -> Date {
+    return Date(year: int(t.tm_year) + 1900, month: int(t.tm_mon) + 1, day: int(t.tm_mday), hour: int(t.tm_hour),
+                minute: int(t.tm_min), second: int(t.tm_sec), weekday: int(t.tm_wday), yearday: int(t.tm_yday) + 1)
+}
+
+// the date and time of a moment, in UTC
+fn date(int unix) -> Date {
+    tm t
+    i64 stamp = unix
+    gmtime_r(addr(stamp), addr(t))
+    return parts(t)
+}
+
+// the date and time of a moment, in the computer's time zone
+fn local(int unix) -> Date {
+    tm t
+    i64 stamp = unix
+    localtime_r(addr(stamp), addr(t))
+    return parts(t)
+}
+
+// a moment as text, in the computer's time zone: %Y year, %m month, %d day, %H hour, %M minute, %S second
+// (the rest of C's strftime works too: %A weekday name, %B month name, ...)
+fn format(int unix, str pattern) -> str {
+    tm t
+    i64 stamp = unix
+    localtime_r(addr(stamp), addr(t))
+    []char buf
+    for i in 0..256 {
+        buf.push(char(0))
+    }
+    strftime(buf.ptr, 256, pattern, addr(t))
+    return str(buf.ptr)
+}
+
+// the number of days in a month (month is 1 to 12)
+fn days_in_month(int year, int month) -> int {
+    if month == 2 {
+        if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+            return 29
+        }
+        return 28
+    }
+    if month == 4 || month == 6 || month == 9 || month == 11 {
+        return 30
+    }
+    return 31
+}

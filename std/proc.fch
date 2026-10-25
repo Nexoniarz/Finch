@@ -1,0 +1,48 @@
+// Programs: run a command, read what it printed, look at the environment.
+//
+//   import proc
+//   code := proc.run("make")                  the exit code; what the command prints goes to the screen
+//   text := try proc.output("git describe")   what the command printed; an error if it failed
+//   proc.env("HOME", "/")                     an environment variable, or the second value if it is not set
+import "stdlib.h"
+import "unistd.h"
+import "time.h"
+
+// run a command; its output goes to the screen. Gives its exit code.
+fn run(str command) -> int {
+    return shell(command)
+}
+
+// run a command and give what it printed. Fails, with its output as the message, if it exits with an error.
+fn output(str command) -> str! {
+    tmp := "/tmp/finch_out_" + str(getpid()) + "_" + str(int(time(null)))
+    code := shell("(" + command + ") > '" + tmp + "' 2>&1")
+    text := read_file(tmp) or ""
+    delete_file(tmp)
+    if code != 0 {
+        return error("'" + command + "' exited with code " + str(code) + ": " + text.trim())
+    }
+    return text
+}
+
+fn env(str name, str fallback) -> str {
+    v := getenv(name)
+    if v.len == 0 {
+        return fallback
+    }
+    return v
+}
+
+fn pid() -> int {
+    return int(getpid())
+}
+
+// the folder the program is running in
+fn cwd() -> str {
+    []char buf
+    for i in 0..4096 {
+        buf.push(char(0))
+    }
+    getcwd(buf.ptr, 4096)
+    return str(buf.ptr)
+}

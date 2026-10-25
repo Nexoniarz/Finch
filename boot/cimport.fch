@@ -193,7 +193,7 @@ fn visitField(CXCursor field, ptr data) -> i32 {
     } else if ft.kind == CXType_Record && clang_getCursorKind(clang_getTypeDeclaration(ft)) == CXCursor_UnionDecl {
         f.hidden = true     // unions are kept as opaque bytes
     } else {
-        m := mapType(c.imp, ft, false)
+        m := mapType(c.imp, ft, false, false)
         if m.ok {
             f.ty = m.ty
         } else {
@@ -242,7 +242,9 @@ fn sized(int size, bool signed) -> Mapped {
 
 // C type -> Finch type. Not ok (with a reason) if Finch can't express it.
 // `signature`: a char * is a str (a function's parameters and result); anywhere else it stays a ptr[char].
-fn mapType(ptr[Importer] imp, CXType type, bool signature) -> Mapped {
+// A parameter that is a plain `char *` (not const) is a buffer C writes into, and stays a ptr[char];
+// only `const char *` is text going in. A result that is a char * is always text coming out.
+fn mapType(ptr[Importer] imp, CXType type, bool signature, bool param) -> Mapped {
     t := clang_getCanonicalType(type)
     size := int(clang_Type_getSizeOf(t))
     k := t.kind
@@ -273,12 +275,14 @@ fn mapType(ptr[Importer] imp, CXType type, bool signature) -> Mapped {
     if k == CXType_Pointer {
         pointee := clang_getCanonicalType(clang_getPointeeType(t))
         if (pointee.kind == CXType_Char_S || pointee.kind == CXType_Char_U) && signature {
-            return ok(ast.simple("str"))        // char* in a signature is a C string
+            if !param || clang_isConstQualifiedType(pointee) != 0 {
+                return ok(ast.simple("str"))    // a C string
+            }
         }
         if pointee.kind == CXType_Void || pointee.kind == CXType_FunctionProto || pointee.kind == CXType_FunctionNoProto {
             return ok(ast.simple("ptr"))        // an opaque `ptr` you can pass around
         }
-        inner := mapType(imp, pointee, false)
+        inner := mapType(imp, pointee, false, false)
         if !inner.ok || inner.ty.kind == "void" || inner.ty.kind == "fixed" {
             return ok(ast.simple("ptr"))
         }
@@ -295,7 +299,7 @@ fn mapType(ptr[Importer] imp, CXType type, bool signature) -> Mapped {
         return ok(ast.Type(kind: "named", name: name, module: "C"))
     }
     if k == CXType_ConstantArray {
-        inner := mapType(imp, clang_getArrayElementType(t), false)
+        inner := mapType(imp, clang_getArrayElementType(t), false, false)
         if !inner.ok {
             return inner
         }
@@ -447,7 +451,7 @@ fn visit(ptr[Importer] imp, CXCursor c) {
             imp.out.fns[name] = f
             return
         }
-        r := mapType(imp, clang_getResultType(ft), true)
+        r := mapType(imp, clang_getResultType(ft), true, false)
         if r.ok {
             f.ret = r.ty
         } else {
@@ -458,7 +462,7 @@ fn visit(ptr[Importer] imp, CXCursor c) {
             if f.unsupported.len > 0 {
                 break
             }
-            p := mapType(imp, clang_getArgType(ft, u32(k)), true)
+            p := mapType(imp, clang_getArgType(ft, u32(k)), true, true)
             if p.ok {
                 f.params.push(p.ty)
             } else {
@@ -471,7 +475,7 @@ fn visit(ptr[Importer] imp, CXCursor c) {
         if clang_Cursor_getStorageClass(c) != CX_SC_Extern || imp.out.globals.has(name) {
             return
         }
-        g := mapType(imp, clang_getCursorType(c), false)
+        g := mapType(imp, clang_getCursorType(c), false, false)
         if g.ok {
             imp.out.globals[name] = g.ty
         }

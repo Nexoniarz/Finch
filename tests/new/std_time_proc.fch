@@ -1,0 +1,19 @@
+import time
+import proc
+
+fn main() -> ! {
+    d := time.date(86400 * 365 + 3661)
+    print(d.year, d.month, d.day, d.hour, d.minute, d.second, d.weekday, d.yearday)
+    print(time.days_in_month(2024, 2), time.days_in_month(2023, 2), time.days_in_month(1900, 2), time.days_in_month(2000, 2), time.days_in_month(2024, 4))
+    a := time.millis()
+    time.sleep(30)
+    waited := time.millis() - a
+    print(waited >= 25 && waited < 500)
+    print(time.now() > 1700000000, time.format(0, "%Y") == "1970" || time.format(0, "%Y") == "1969")
+
+    print((try proc.output("echo hello; echo world")).trim())
+    print(proc.run("exit 3"))
+    bad := proc.output("echo oops; exit 2") or err
+    print(bad)
+    print(proc.env("FINCH_SURELY_NOT_SET", "fallback"), proc.pid() > 0, proc.cwd().len > 0)
+}

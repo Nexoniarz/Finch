@@ -38,6 +38,21 @@ struct Loader {
     []ast.Program progs
     []str files
     []str loaded
+    str std             // the standard library's folder, or ""
+}
+
+// import json: the file next to the one that imports it, else the standard library's.
+// A program's own json.fch wins over the library's.
+fn findModule(ptr[Loader] l, str from, str name) -> str {
+    local := dirOf(from) + "/" + name + ".fch"
+    if file_exists(local) || l.std.len == 0 {
+        return local
+    }
+    shared := l.std + "/" + name + ".fch"
+    if file_exists(shared) {
+        return shared
+    }
+    return local
 }
 
 fn load(ptr[Loader] l, str path, str module) {
@@ -60,7 +75,7 @@ fn load(ptr[Loader] l, str path, str module) {
     for name in imports {
         if !l.loaded.contains(name) {
             l.loaded.push(name)
-            load(l, dirOf(path) + "/" + name + ".fch", name)
+            load(l, findModule(l, path, name), name)
         }
     }
 }
@@ -149,6 +164,11 @@ fn main([]str args) -> int {
     }
 
     loader := Loader()
+    for cand in [dirOf(args[0]) + "/../std", dirOf(args[0]) + "/std", "std"] {
+        if loader.std.len == 0 && file_exists(cand + "/path.fch") {
+            loader.std = cand
+        }
+    }
     load(addr(loader), file, "")
 
     // C headers, from every file; their folders are searched first for "local.h"
