@@ -1,0 +1,75 @@
+// Time, for Windows. The same functions as time.fch (that file is for Linux and macOS).
+import "time.h"
+import "finch_win.h"
+
+struct Date {
+    int year
+    int month       // 1 to 12
+    int day         // 1 to 31
+    int hour
+    int minute
+    int second
+    int weekday     // 0 is Sunday
+    int yearday     // 1 to 366
+}
+
+fn now() -> int {
+    return int(time(null))
+}
+
+// milliseconds on a clock that only goes forward (the performance counter: GetTickCount64 ticks every 15 ms)
+fn millis() -> int {
+    i64 count = 0
+    i64 freq = 1
+    QueryPerformanceFrequency(addr(freq))
+    QueryPerformanceCounter(addr(count))
+    return int(count / freq) * 1000 + int(count % freq) * 1000 / int(freq)
+}
+
+fn sleep(int ms) {
+    Sleep(u32(ms))
+}
+
+fn parts(tm t) -> Date {
+    return Date(year: int(t.tm_year) + 1900, month: int(t.tm_mon) + 1, day: int(t.tm_mday), hour: int(t.tm_hour),
+                minute: int(t.tm_min), second: int(t.tm_sec), weekday: int(t.tm_wday), yearday: int(t.tm_yday) + 1)
+}
+
+fn date(int unix) -> Date {
+    tm t
+    i64 stamp = unix
+    _gmtime64_s(addr(t), addr(stamp))
+    return parts(t)
+}
+
+fn local(int unix) -> Date {
+    tm t
+    i64 stamp = unix
+    _localtime64_s(addr(t), addr(stamp))
+    return parts(t)
+}
+
+fn format(int unix, str pattern) -> str {
+    tm t
+    i64 stamp = unix
+    _localtime64_s(addr(t), addr(stamp))
+    []char buf
+    for i in 0..256 {
+        buf.push(char(0))
+    }
+    strftime(buf.ptr, 256, pattern, addr(t))
+    return str(buf.ptr)
+}
+
+fn days_in_month(int year, int month) -> int {
+    if month == 2 {
+        if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+            return 29
+        }
+        return 28
+    }
+    if month == 4 || month == 6 || month == 9 || month == 11 {
+        return 30
+    }
+    return 31
+}

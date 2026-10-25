@@ -1,0 +1,90 @@
+// The system a program is built for, and what depends on it: the C compiler that links, the file
+// name of the program, how it is run here, and (through the flags) the C calling convention.
+// The same as src/target.cpp.
+import "stdlib.h"
+
+struct Target {
+    str triple          // "" = the system the compiler runs on
+    bool windows        // Microsoft x64 calling convention, .exe
+    bool msvc
+    bool darwin         // macOS
+    bool arm64          // AAPCS64
+    bool cross          // another system than the one the compiler runs on
+    str exe             // ".exe" or ""
+    str cc              // the C compiler that links (the IR is always compiled by clang)
+    str runner          // how to run a program for it here: "", "wine ", "qemu-aarch64 "
+}
+
+fn firstLine(str text) -> str {
+    parts := text.trim().split("\n")
+    return parts[0].trim()
+}
+
+// what clang calls the system it runs on, like x86_64-pc-linux-gnu
+fn hostTriple() -> str {
+    tmp := "/tmp/finch_triple.txt"
+    shell("clang -dumpmachine > '" + tmp + "' 2> /dev/null")
+    out := read_file(tmp) or ""
+    shell("rm -f '" + tmp + "'")
+    if out.trim().len == 0 {
+        return "x86_64-unknown-linux-gnu"
+    }
+    return firstLine(out)
+}
+
+// "windows", "linux", "macos", "arm64" (ARM64 Linux), or a full LLVM triple; "" = this system
+fn select(str name) -> Target {
+    host := hostTriple()
+    t := name
+    if name.len == 0 {
+        t = host
+    } else if name == "windows" {
+        t = "x86_64-w64-mingw32"
+    } else if name == "linux" {
+        t = "x86_64-unknown-linux-gnu"
+    } else if name == "arm64" || name == "aarch64" || name == "linux-arm64" {
+        t = "aarch64-unknown-linux-gnu"
+    } else if name == "macos" {
+        if host.starts_with("aarch64") || host.starts_with("arm64") {
+            t = "arm64-apple-macosx14.0.0"
+        } else {
+            t = "x86_64-apple-macosx14.0.0"
+        }
+    }
+    tg := Target(triple: t)
+    tg.windows = t.contains("windows") || t.contains("mingw") || t.contains("msvc") || t.contains("win32")
+    tg.msvc = t.contains("msvc")
+    tg.darwin = t.contains("apple") || t.contains("darwin") || t.contains("macos")
+    tg.arm64 = t.starts_with("aarch64") || t.starts_with("arm64")
+    hostArm := host.starts_with("aarch64") || host.starts_with("arm64")
+    hostDarwin := host.contains("apple") || host.contains("darwin")
+    tg.cross = tg.windows || tg.darwin != hostDarwin || tg.arm64 != hostArm
+    tg.exe = ""
+    if tg.windows {
+        tg.exe = ".exe"
+    }
+    // FINCH_CC chooses the C compiler for any target
+    fc := getenv("FINCH_CC")
+    if fc.len > 0 {
+        tg.cc = fc
+    } else if tg.cross && tg.windows {
+        tg.cc = "x86_64-w64-mingw32-gcc"
+    } else if tg.cross && tg.arm64 && !tg.darwin {
+        tg.cc = "aarch64-linux-gnu-gcc"
+    } else if tg.cross {
+        tg.cc = "clang --target=" + t
+    } else {
+        tg.cc = "cc"
+    }
+    if tg.cross && tg.windows {
+        tg.runner = "wine "
+    } else if tg.cross && tg.arm64 && !tg.darwin {
+        tg.runner = "qemu-aarch64 "
+    }
+    return tg
+}
+
+// C's plain `char`: signed on x86 and Apple, not on ARM64 Linux
+fn charIsSigned(Target t) -> bool {
+    return !t.arm64 || t.darwin || t.windows
+}

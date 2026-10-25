@@ -4,7 +4,7 @@
 #   tests/cross.sh arm64     aarch64 Linux, run with qemu-aarch64
 # e.g. nix-shell -p pkgsCross.mingwW64.buildPackages.gcc wine64 --run 'tests/cross.sh windows'
 #      nix-shell -p pkgsCross.aarch64-multiplatform.buildPackages.gcc qemu \
-#                --run 'FINCH_CC=aarch64-unknown-linux-gnu-gcc tests/cross.sh arm64'
+#                --run 'FINCH_CC=aarch64-unknown-linux-gnu-gcc QEMU_LD_PREFIX=<the aarch64 glibc> tests/cross.sh arm64'
 # (On a real Windows/ARM64/macOS machine, use tests/run.sh with that system's finch.)
 set -u
 cd "$(dirname "$0")"
@@ -24,7 +24,7 @@ run_exe() {  # program, stdin -> output without Windows' \r
     $runner "$1" < "$2" 2>&1 | tr -d '\r'
 }
 
-for f in run/*.fch; do
+for f in run/*.fch new/*.fch; do
     grep -q "^fn main" "$f" || continue
     input="${f%.fch}.in"
     [ -f "$input" ] || input=/dev/null
@@ -40,7 +40,7 @@ for f in run/*.fch; do
     fi
 done
 
-for f in fail/*.fch; do
+for f in fail/*.fch new/fail/*.fch; do
     expect=$(head -1 "$f" | sed -n 's|^// expect: ||p')
     exe="$tmp/$(basename "${f%.fch}")$ext"
     if "$FINCH" build "$f" --target "$target" -o "$exe" > "$tmp/out" 2>&1; then

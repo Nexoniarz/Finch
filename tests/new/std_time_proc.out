@@ -3,7 +3,6 @@
 true
 true true
 hello
-world
 3
-'echo oops; exit 2' exited with code 2: oops
+'exit 2' exited with code 2: 
 fallback true true

@@ -5,6 +5,7 @@
 // (so programs behave the same) but never frees them: it is the bootstrap compiler.
 import ast
 import cimport
+import platform
 
 struct Var {
     str name
@@ -21,6 +22,7 @@ struct Options {
     bool shared         // finch build --shared
     bool debug          // -g
     str cwd             // the folder the compiler was started in (for the debug info)
+    platform.Target target
 }
 
 // A generic struct or function, kept as written until something asks for a version of it.
@@ -146,6 +148,7 @@ struct Gen {
     cimport.CImports ci
     bool shared         // building a library (finch build --shared): no main, its export fns are the way in
     bool debug          // -g: debug info (DWARF, as LLVM metadata)
+    platform.Target tg    // the system the program is for
     str cwd
     []str md            // the metadata, numbered by position: !0 = md[0]
     map[str]int mdcache // metadata made already: types by key, locations by line:column
@@ -3164,6 +3167,16 @@ fn ref(ptr[Gen] g, ast.Node e, bool write) -> Ref {
             }
             return Ref(isPlace: false, val: Val(v: str(c.i), ty: T("int"), lit: true))
         }
+        // C's standard streams are macros on some systems; the runtime knows them everywhere
+        if id < 0 && !g.ci.globals.has(e.name) && g.ci.fns.has("fprintf") && (e.name == "stdin" || e.name == "stdout" || e.name == "stderr") {
+            which := "2"
+            if e.name == "stdin" {
+                which = "0"
+            } else if e.name == "stdout" {
+                which = "1"
+            }
+            return Ref(isPlace: false, val: Val(v: op(g, "call ptr @finch_std_stream(i32 " + which + ")"), ty: T("ptr")))
+        }
         if id < 0 && g.ci.globals.has(e.name) {
             gt := resolve(g, g.ci.globals[e.name], e)
             if !g.cdone.contains("g:" + e.name) {
@@ -3589,6 +3602,49 @@ fn leavesOf(ptr[Gen] g, ast.Type t, int base) -> []Leaf {
     return out
 }
 
+// AAPCS64 (ARM64 Linux, Apple): a group of one to four floats or doubles travels in vector registers;
+// anything else up to 16 bytes in general registers; bigger is copied by the caller and passed by address
+fn classifyArm64(ptr[Gen] g, ast.Type t, Abi first, int size, int align) -> Abi {
+    a := first
+    ls := leavesOf(g, t, 0)
+    hfa := ls.len > 0 && ls.len <= 4
+    for l in ls {
+        if !l.isFloat || l.isDouble != ls[0].isDouble {
+            hfa = false
+        }
+    }
+    if hfa {
+        ft := "float"
+        if ls[0].isDouble {
+            ft = "double"
+        }
+        a.kind = "expand"
+        a.parts.push("[" + str(ls.len) + " x " + ft + "]")
+        []str elems
+        for l in ls {
+            elems.push(ft)
+        }
+        a.coerced = "{ " + elems.join(", ") + " }"
+        return a
+    }
+    if size > 16 {
+        a.kind = "indirect"
+        return a
+    }
+    a.kind = "expand"
+    if align >= 16 {
+        a.parts.push("i128")
+        a.coerced = "i128"
+    } else if size <= 8 {
+        a.parts.push("i64")
+        a.coerced = "i" + str(size * 8)
+    } else {
+        a.parts.push("[2 x i64]")
+        a.coerced = "[2 x i64]"
+    }
+    return a
+}
+
 fn classify(ptr[Gen] g, ast.Type t) -> Abi {
     a := Abi(kind: "direct")
     if t.kind != "struct" {
@@ -3599,6 +3655,21 @@ fn classify(ptr[Gen] g, ast.Type t) -> Abi {
     a.align = 8
     if sd.calign > 8 {
         a.align = sd.calign
+    }
+    if g.tg.arm64 {
+        return classifyArm64(g, t, a, size, sd.calign)
+    }
+    if g.tg.windows {
+        // Microsoft x64: 1, 2, 4 or 8 bytes travel as one integer (even if they hold floats);
+        // anything else is copied by the caller and passed by address
+        if size == 1 || size == 2 || size == 4 || size == 8 {
+            a.kind = "expand"
+            a.parts.push("i" + str(size * 8))
+            a.coerced = a.parts[0]
+        } else {
+            a.kind = "indirect"
+        }
+        return a
     }
     if size > 16 || size == 0 {
         a.kind = "memory"
@@ -3663,6 +3734,9 @@ fn makePlan(ptr[Gen] g, ast.Type ret, []ast.Type params) -> Plan {
     if ret.kind != "void" {
         pl.retLL = cLL(g, ret)
     }
+    if pl.ret.kind == "indirect" {
+        pl.ret.kind = "memory"          // returned through a hidden pointer
+    }
     if pl.ret.kind == "memory" {
         pl.sret = true
         pl.retLL = "void"
@@ -3682,7 +3756,8 @@ fn makePlan(ptr[Gen] g, ast.Type ret, []ast.Type params) -> Plan {
                     ns += 1
                 }
             }
-            if ni <= intRegs && ns <= sseRegs {
+            // only System V counts registers here; elsewhere the backend places each part
+            if g.tg.windows || g.tg.arm64 || (ni <= intRegs && ns <= sseRegs) {
                 intRegs -= ni
                 sseRegs -= ns
             } else {
@@ -3754,7 +3829,7 @@ fn exportWrapper(ptr[Gen] g, FnSig sig) -> str {
             params.push("i8 zeroext %e" + str(k))
             args.push("i1 " + op(g, "icmp ne i8 %e" + str(k) + ", 0"))
         } else {
-            params.push(cLL(g, t) + cExt(t) + " %e" + str(k))
+            params.push(cLL(g, t) + cExt(g, t) + " %e" + str(k))
             args.push(llty(g, t) + " %e" + str(k))
         }
     }
@@ -3770,10 +3845,14 @@ fn exportWrapper(ptr[Gen] g, FnSig sig) -> str {
         emit(g, "ret i8 " + op(g, "zext i1 " + op(g, text) + " to i8"))
     } else {
         retLL = llty(g, sig.ret)
-        retExt = cExt(sig.ret)
+        retExt = cExt(g, sig.ret)
         emit(g, "ret " + retLL + " " + op(g, text))
     }
-    endHelper(g, s, "define" + retExt + " " + retLL + " @" + sig.name + "(" + params.join(", ") + ")")
+    dll := ""
+    if g.tg.windows {
+        dll = " dllexport"
+    }
+    endHelper(g, s, "define" + dll + retExt + " " + retLL + " @" + sig.name + "(" + params.join(", ") + ")")
     return sig.name
 }
 
@@ -3814,8 +3893,12 @@ fn cThunk(ptr[Gen] g, int fi, ast.Node at) -> str {
             hdr.push("ptr byval(" + llty(g, t) + ") align " + str(a.align) + " %c" + str(ai))
             args.push(llty(g, t) + " " + load(g, llty(g, t), "%c" + str(ai)))
             ai += 1
+        } else if a.kind == "indirect" {
+            hdr.push("ptr %c" + str(ai))
+            args.push(llty(g, t) + " " + load(g, llty(g, t), "%c" + str(ai)))
+            ai += 1
         } else if a.kind == "expand" {
-            slot := alloca(g, "[16 x i8]")
+            slot := alloca(g, "[32 x i8]")
             for k in 0..a.parts.len {
                 hdr.push(a.parts[k] + " %c" + str(ai))
                 store(g, a.parts[k], "%c" + str(ai), op(g, "getelementptr inbounds i8, ptr " + slot + ", i64 " + str(8 * k)))
@@ -3823,7 +3906,7 @@ fn cThunk(ptr[Gen] g, int fi, ast.Node at) -> str {
             }
             args.push(llty(g, t) + " " + load(g, llty(g, t), slot))
         } else {
-            hdr.push(cLL(g, t) + cExt(t) + " %c" + str(ai))
+            hdr.push(cLL(g, t) + cExt(g, t) + " %c" + str(ai))
             args.push(llty(g, t) + " %c" + str(ai))
             ai += 1
         }
@@ -3837,11 +3920,11 @@ fn cThunk(ptr[Gen] g, int fi, ast.Node at) -> str {
         store(g, llty(g, sig.ret), op(g, text), sretName)
         emit(g, "ret void")
     } else if pl.ret.kind == "expand" {
-        slot := alloca(g, "[16 x i8]")
+        slot := alloca(g, "[32 x i8]")
         store(g, llty(g, sig.ret), op(g, text), slot)
         emit(g, "ret " + pl.ret.coerced + " " + load(g, pl.ret.coerced, slot))
     } else {
-        retExt = cExt(sig.ret)
+        retExt = cExt(g, sig.ret)
         emit(g, "ret " + cLL(g, sig.ret) + " " + op(g, text))
     }
     endHelper(g, s, "define internal" + retExt + " " + pl.retLL + " " + name + "(" + hdr.join(", ") + ")")
@@ -3880,14 +3963,17 @@ fn enumFrom(ptr[Gen] g, ast.Node c, int ei) -> Val {
 // ---------- calling C ----------
 
 // How C extends a number narrower than 32 bits: plain `char` is signed on x86.
-fn cExt(ast.Type t) -> str {
+fn cExt(ptr[Gen] g, ast.Type t) -> str {
     if t.kind == "bool" || isUnsigned(t) {
         if bitsOf(t) < 32 {
             return " zeroext"
         }
     }
-    if (isSigned(t) || t.kind == "char") && bitsOf(t) < 32 {
+    if (isSigned(t) || (t.kind == "char" && platform.charIsSigned(g.tg))) && bitsOf(t) < 32 {
         return " signext"
+    }
+    if t.kind == "char" && bitsOf(t) < 32 {
+        return " zeroext"
     }
     return ""
 }
@@ -3939,8 +4025,13 @@ fn callC(ptr[Gen] g, ast.Node c, cimport.CFunc f) -> Val {
                 spec := "ptr byval(" + llty(g, pt) + ") align " + str(a.align)
                 ptys.push(spec)
                 args.push(spec + " " + slot)
+            } else if a.kind == "indirect" {
+                slot := alloca(g, llty(g, pt))
+                store(g, llty(g, pt), v.v, slot)
+                ptys.push("ptr")
+                args.push("ptr " + slot)
             } else if a.kind == "expand" {
-                slot := alloca(g, "[16 x i8]")
+                slot := alloca(g, "[32 x i8]")
                 store(g, llty(g, pt), v.v, slot)
                 for k in 0..a.parts.len {
                     x := load(g, a.parts[k], op(g, "getelementptr inbounds i8, ptr " + slot + ", i64 " + str(8 * k)))
@@ -3948,11 +4039,11 @@ fn callC(ptr[Gen] g, ast.Node c, cimport.CFunc f) -> Val {
                     args.push(a.parts[k] + " " + x)
                 }
             } else {
-                ptys.push(cLL(g, pt) + cExt(pt))
+                ptys.push(cLL(g, pt) + cExt(g, pt))
                 if pt.kind == "str" {
                     args.push("ptr " + cstr(g, v.v))
                 } else {
-                    args.push(llty(g, pt) + cExt(pt) + " " + v.v)
+                    args.push(llty(g, pt) + cExt(g, pt) + " " + v.v)
                 }
             }
             continue
@@ -3986,7 +4077,7 @@ fn callC(ptr[Gen] g, ast.Node c, cimport.CFunc f) -> Val {
     retLL := pl.retLL
     retExt := ""
     if pl.ret.kind == "direct" {
-        retExt = cExt(ret)
+        retExt = cExt(g, ret)
     }
     tail := ""
     if f.variadic {
@@ -4016,7 +4107,7 @@ fn callC(ptr[Gen] g, ast.Node c, cimport.CFunc f) -> Val {
     }
     r := op(g, text)
     if pl.ret.kind == "expand" {
-        slot := alloca(g, "[16 x i8]")
+        slot := alloca(g, "[32 x i8]")
         store(g, pl.ret.coerced, r, slot)
         return Val(v: load(g, llty(g, ret), slot), ty: ret)
     }
@@ -4796,6 +4887,7 @@ fn runtimeDecls() -> str {
         "declare i32 @fflush(ptr)",
         "declare void @finch_str_from_c(ptr, ptr)",
         "declare void @finch_on_fatal(ptr)",
+        "declare ptr @finch_std_stream(i32)",
         "declare void @finch_str_from_bytes(ptr, ptr)",
         "declare void @exit(i32) noreturn",
         "declare void @free(ptr)",
@@ -4804,7 +4896,11 @@ fn runtimeDecls() -> str {
 }
 
 fn assemble(ptr[Gen] g) -> str {
-    text := "; generated by the Finch compiler written in Finch\n\n" + g.head.join("\n") + "\n\n" + runtimeDecls() + "\n"
+    text := "; generated by the Finch compiler written in Finch\n\n"
+    if g.tg.cross {
+        text = text + "target triple = \"" + g.tg.triple + "\"\n\n"
+    }
+    text = text + g.head.join("\n") + "\n\n" + runtimeDecls() + "\n"
     if g.debug {
         text = text + "declare void @llvm.dbg.declare(metadata, metadata, metadata)\n\n"
     }
@@ -4817,7 +4913,7 @@ fn assemble(ptr[Gen] g) -> str {
 
 fn generate([]ast.Program progs, []str files, cimport.CImports ci, Options opt) -> str {
     shared := opt.shared
-    gen := Gen(progs: progs, files: files, ci: ci, shared: opt.shared, debug: opt.debug, cwd: opt.cwd, dbgScope: -1)
+    gen := Gen(progs: progs, files: files, ci: ci, shared: opt.shared, debug: opt.debug, cwd: opt.cwd, tg: opt.target, dbgScope: -1)
     g := addr(gen)
     if g.debug {
         // !0 the compile unit, !1 and !2 the module flags, then the source files
@@ -4852,7 +4948,11 @@ fn generate([]ast.Program progs, []str files, cimport.CImports ci, Options opt) 
     }
     if shared {
         // finch_module_on_fatal(handler): the host's say on runtime errors (see runtime/finch_rt.c)
-        g.out.push("define void @finch_module_on_fatal(ptr %handler) {\nentry:\n  call void @finch_on_fatal(ptr %handler)\n  ret void\n}\n")
+        dll := ""
+        if g.tg.windows {
+            dll = " dllexport"
+        }
+        g.out.push("define" + dll + " void @finch_module_on_fatal(ptr %handler) {\nentry:\n  call void @finch_on_fatal(ptr %handler)\n  ret void\n}\n")
         return assemble(g)
     }
     // the C entry point calls the Finch main

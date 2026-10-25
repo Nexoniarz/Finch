@@ -10,6 +10,7 @@ import ast
 import parser
 import gen
 import cimport
+import platform
 import "stdlib.h"
 
 fn dirOf(str path) -> str {
@@ -39,6 +40,7 @@ struct Loader {
     []ast.Program progs
     []str files
     []str loaded
+    str os              // "windows", "macos" or "linux": a module may have a version for each (time_windows.fch)
     str std             // the standard library's folder, or ""
     []str paths         // FINCH_PATH: more folders to look for modules in
 }
@@ -46,18 +48,29 @@ struct Loader {
 // import json: the file next to the one that imports it, else the standard library's.
 // A program's own json.fch wins over the library's.
 fn findModule(ptr[Loader] l, str from, str name) -> str {
+    // in each folder, the version for this system first: time_windows.fch, then time.fch
     local := dirOf(from) + "/" + name + ".fch"
+    if file_exists(dirOf(from) + "/" + name + "_" + l.os + ".fch") {
+        return dirOf(from) + "/" + name + "_" + l.os + ".fch"
+    }
     if file_exists(local) {
         return local
     }
     for d in l.paths {
+        if file_exists(d + "/" + name + "_" + l.os + ".fch") {
+            return d + "/" + name + "_" + l.os + ".fch"
+        }
         if file_exists(d + "/" + name + ".fch") {
             return d + "/" + name + ".fch"
         }
     }
-    shared := l.std + "/" + name + ".fch"
-    if file_exists(shared) {
-        return shared
+    if l.std.len > 0 {
+        if file_exists(l.std + "/" + name + "_" + l.os + ".fch") {
+            return l.std + "/" + name + "_" + l.os + ".fch"
+        }
+        if file_exists(l.std + "/" + name + ".fch") {
+            return l.std + "/" + name + ".fch"
+        }
     }
     return local
 }
@@ -112,7 +125,9 @@ fn usage() {
     print("  -O0               no optimization (faster to build)")
     print("  -l <lib>          link a library (the same as  link \"lib\"  in the program)")
     print("  -I <dir>          look for imported C headers there too")
-    print("not in this compiler yet: -g, --target, lsp. They are in the C++ one (branch before-bootstrap).")
+    print("  -g                debug info (for gdb and lldb; use -O0 with it)")
+    print("  --target <name>   build for another system: windows, linux, arm64 (Linux), macos, or an LLVM triple")
+    print("not in this compiler yet: lsp. It is in the C++ one (branch before-bootstrap).")
     exit(1)
 }
 
@@ -137,6 +152,7 @@ fn main([]str args) -> int {
     outGiven := false
     shared := false
     debug := false
+    targetName := ""
     opt := "-O2"
     []str extraLibs
     []str extraDirs
@@ -164,9 +180,9 @@ fn main([]str args) -> int {
             ai += 1
         } else if a == "-g" {
             debug = true
-        } else if a == "--target" {
-            print("error: '--target' is not in the compiler written in Finch yet; the C++ one has it (branch before-bootstrap)")
-            return 1
+        } else if a == "--target" && ai + 1 < args.len {
+            targetName = args[ai + 1]
+            ai += 1
         } else if cmd == "run" {
             progArgs.push(a)
         } else {
@@ -174,14 +190,28 @@ fn main([]str args) -> int {
         }
         ai += 1
     }
+    tg := platform.select(targetName)
     if cmd == "run" {
-        out = "/tmp/finch_run_" + stem(file)
-    }
-    if shared && !outGiven {
-        out = "lib" + out + ".so"
+        out = "/tmp/finch_run_" + stem(file) + tg.exe
+    } else if shared && !outGiven {
+        if tg.windows {
+            out = out + ".dll"
+        } else if tg.darwin {
+            out = "lib" + out + ".dylib"
+        } else {
+            out = "lib" + out + ".so"
+        }
+    } else if !outGiven {
+        out = out + tg.exe
     }
 
     loader := Loader()
+    loader.os = "linux"
+    if tg.windows {
+        loader.os = "windows"
+    } else if tg.darwin {
+        loader.os = "macos"
+    }
     for cand in [dirOf(args[0]) + "/../std", dirOf(args[0]) + "/std", "std"] {
         if loader.std.len == 0 && file_exists(cand + "/path.fch") {
             loader.std = cand
@@ -218,11 +248,15 @@ fn main([]str args) -> int {
             }
         }
     }
-    ci := cimport.importHeaders(headers, dirs) or {
+    triple := ""
+    if tg.cross {
+        triple = tg.triple
+    }
+    ci := cimport.importHeaders(headers, dirs, triple, tg.windows, tg.cc) or {
         print(err)
         return 1
     }
-    ir := gen.generate(loader.progs, loader.files, ci, gen.Options(shared: shared, debug: debug, cwd: getenv("PWD")))
+    ir := gen.generate(loader.progs, loader.files, ci, gen.Options(shared: shared, debug: debug, cwd: getenv("PWD"), target: tg))
     if cmd == "ir" {
         print(ir)
         return 0
@@ -245,19 +279,37 @@ fn main([]str args) -> int {
     }
     llPath := out + ".ll"
     write_file(llPath, ir)
-    sharedFlags := ""
+    // the IR is always compiled by clang (CC may be gcc, which can't read it); FINCH_CC picks the linker for another system
+    clang := getenv("FINCH_CC")
+    if clang.len == 0 || tg.cross {
+        clang = "clang"
+    }
+    extra := ""
     if shared {
-        sharedFlags = " -shared -fPIC"
+        extra = " -fPIC"
     }
     if debug {
-        sharedFlags = sharedFlags + " -g"      // or clang drops the debug info that is in the IR
+        extra = extra + " -g"      // or clang drops the debug info that is in the IR
     }
-    // the compiler of the IR is always a clang (CC may be gcc, which can't read it); FINCH_CC picks another clang
-    cc := getenv("FINCH_CC")
-    if cc.len == 0 {
-        cc = "clang"
+    code := 0
+    if tg.cross {
+        // an object for the target, then the target's own C compiler links it with the runtime
+        obj := out + ".o"
+        code = shell("clang --target=" + tg.triple + " " + opt + extra + " -w -c '" + llPath + "' -o '" + obj + "'")
+        if code == 0 {
+            linkShared := ""
+            if shared {
+                linkShared = " -shared"
+            }
+            code = shell(tg.cc + " '" + obj + "' '" + rt + "' -o '" + out + "' -lm" + linkShared + " " + libs.join(" "))
+        }
+        shell("rm -f '" + obj + "'")
+    } else {
+        if shared {
+            extra = extra + " -shared"
+        }
+        code = shell(clang + " " + opt + extra + " -w '" + llPath + "' '" + rt + "' -o '" + out + "' -lm " + libs.join(" "))
     }
-    code := shell(cc + " " + opt + sharedFlags + " -w '" + llPath + "' '" + rt + "' -o '" + out + "' -lm " + libs.join(" "))
     shell("rm -f '" + llPath + "'")
     if code != 0 {
         print("error: clang failed")
@@ -268,7 +320,7 @@ fn main([]str args) -> int {
         for a in progArgs {
             quoted.push(quote(a))
         }
-        status := shell(quote(out) + " " + quoted.join(" "))
+        status := shell(tg.runner + quote(out) + " " + quoted.join(" "))
         shell("rm -f " + quote(out))
         return status
     }

@@ -99,10 +99,10 @@ fn fixed(ast.Type elem, int count) -> ast.Type {
 // ---------- the system's header folders ----------
 
 // Ask the system C compiler where it looks for headers, so we find the same stdio.h it would.
-fn systemIncludeArgs() -> []str {
+fn systemIncludeArgs(str cc) -> []str {
     []str dirs
     tmp := "/tmp/finch_cc_dirs.txt"
-    shell("cc -E -v -x c /dev/null 2> '" + tmp + "' > /dev/null")
+    shell(cc + " -E -v -x c /dev/null 2> '" + tmp + "' > /dev/null")
     if !file_exists(tmp) {
         return dirs
     }
@@ -504,16 +504,23 @@ fn visit(ptr[Importer] imp, CXCursor c) {
 }
 
 // Read every header in `headers`; `dirs` are searched first for "local.h" headers.
-fn importHeaders([]Header headers, []str dirs) -> CImports! {
+// `target` is the LLVM triple the program is built for ("" = this system): sizes and headers depend on it.
+fn importHeaders([]Header headers, []str dirs, str target, bool windows, str ccFor) -> CImports! {
     imp := Importer()
     if headers.len == 0 {
         return imp.out
     }
     []str args = ["-x", "c", "-std=gnu11"]
+    if target.len > 0 {
+        args.push("--target=" + target)
+    }
+    if windows {
+        args.push("-D_USE_MATH_DEFINES")       // M_PI and friends, as on Linux
+    }
     for d in dirs {
         args.push("-I" + d)
     }
-    for d in systemIncludeArgs() {
+    for d in systemIncludeArgs(ccFor) {
         args.push(d)
     }
     []ptr[char] argv
