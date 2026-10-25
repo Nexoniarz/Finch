@@ -49,7 +49,8 @@ fn main() {
 - **Any C library, directly.** `import "raylib.h"` + `link "raylib"`, and you can call it, structs by value
   and callbacks included. Headers are read by libclang, so there is nothing to declare by hand.
 - **Written in itself, too.** `boot/` is a Finch compiler written in Finch that compiles itself to a
-  byte-identical result.
+  byte-identical result. It handles the whole language except C import and `link` (sized numbers,
+  methods, `defer`, errors as values, maps and `for k, v` all work); `tests/boot.sh` shows what is left.
 
 ## Quick start
 
