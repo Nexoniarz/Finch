@@ -1,0 +1,875 @@
+// The language server: `finch lsp`. An editor talks to it over stdin and stdout (JSON-RPC, as the Language Server
+// Protocol says) and gets errors while it types, hover, go to definition, completion, an outline and signature
+// help.
+//
+// It asks the compiler instead of being one: for every change it runs `finch index` on the text the editor has
+// (see the index records in gen.fch), and answers from what comes back.
+import json
+import docs
+import "stdio.h"
+import "unistd.h"
+import "stdlib.h"
+
+// ---------- what one run of the compiler told ----------
+
+struct Ref {
+    str file
+    int line
+    int col
+    int len
+    str defFile
+    int defLine
+    int defCol
+    str hover
+}
+
+struct VarRec {
+    str name
+    str type
+    str file
+    int line
+    int col
+    str fnFile
+    int fnLine
+    int fnEnd
+}
+
+struct FnRec {
+    str module
+    str name
+    str recv
+    str file
+    int line
+    int col
+    int endLine
+    str signature
+    []str params
+}
+
+struct StructRec {
+    str module
+    str name
+    str file
+    int line
+    int col
+    []str fields
+    []str types
+}
+
+struct EnumRec {
+    str module
+    str name
+    str file
+    int line
+    int col
+    []str variants
+}
+
+struct Diag {
+    bool has
+    str file
+    int line
+    int col
+    str message
+}
+
+struct Analysis {
+    []Ref refs
+    []VarRec vars
+    []FnRec fns
+    []StructRec structs
+    []EnumRec enums
+    []str imports
+    Diag diag
+}
+
+struct Server {
+    str self                        // the compiler's file: what to run for each check
+    str tmp                         // a folder for the copies of the editor's text
+    map[str]str docs                // path -> the text the editor has
+    map[str]Analysis results        // path -> the last check
+    map[str]Analysis good           // path -> the last check that found no error
+    []str diagnosed                 // the files an error was shown for
+    bool stopping
+}
+
+// ---------- paths and text ----------
+
+fn hexval(char c) -> int {
+    if c >= '0' && c <= '9' {
+        return int(c) - int('0')
+    }
+    if c >= 'a' && c <= 'f' {
+        return int(c) - int('a') + 10
+    }
+    if c >= 'A' && c <= 'F' {
+        return int(c) - int('A') + 10
+    }
+    return -1
+}
+
+fn uriToPath(str uri) -> str {
+    s := uri
+    if s.starts_with("file://") {
+        s = s.sub(7, s.len)
+    }
+    []u8 out
+    i := 0
+    while i < s.len {
+        if s[i] == '%' && i + 2 < s.len + 0 && hexval(s[i + 1]) >= 0 && hexval(s[i + 2]) >= 0 {
+            out.push(u8(hexval(s[i + 1]) * 16 + hexval(s[i + 2])))
+            i += 3
+        } else {
+            out.push(u8(s[i]))
+            i += 1
+        }
+    }
+    return str(out)
+}
+
+fn pathToUri(str path) -> str {
+    digits := "0123456789ABCDEF"
+    []str parts = ["file://"]
+    for c in path {
+        n := int(c)
+        if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || "/-_.~".contains(str(c)) {
+            parts.push(str(c))
+        } else {
+            parts.push("%" + str(digits[(n / 16) % 16]) + str(digits[n % 16]))
+        }
+    }
+    return parts.join("")
+}
+
+// "\n" written as two characters, back to a line break
+fn unesc(str s) -> str {
+    []str parts
+    i := 0
+    while i < s.len {
+        if s[i] == '\\' && i + 1 < s.len {
+            if s[i + 1] == 'n' {
+                parts.push("\n")
+            } else {
+                parts.push(str(s[i + 1]))
+            }
+            i += 2
+        } else {
+            parts.push(str(s[i]))
+            i += 1
+        }
+    }
+    return parts.join("")
+}
+
+fn lineOf(str text, int line) -> str {
+    lines := text.split("\n")
+    if line >= 1 && line <= lines.len {
+        return lines[line - 1]
+    }
+    return ""
+}
+
+// ---------- the protocol ----------
+
+fn readLine() -> str {
+    []u8 bytes
+    while true {
+        c := getchar()
+        if c < 0 {
+            return ""
+        }
+        if c == 10 {
+            break
+        }
+        bytes.push(u8(c))
+    }
+    line := str(bytes)
+    if line.ends_with("\r") {
+        line = line.sub(0, line.len - 1)
+    }
+    return line
+}
+
+// the next message; an error at the end of the input
+fn readMessage() -> json.Json! {
+    length := 0
+    while true {
+        header := readLine()
+        if header.len == 0 {
+            if length > 0 {
+                break
+            }
+            if feof(stdin) != 0 {
+                return error("the editor closed the connection")
+            }
+            continue
+        }
+        if header.starts_with("Content-Length:") {
+            length = int(header.sub(15, header.len).trim()) or 0
+        }
+    }
+    []u8 body
+    for i in 0..length {
+        c := getchar()
+        if c < 0 {
+            return error("the message was cut short")
+        }
+        body.push(u8(c))
+    }
+    return try json.parse(str(body))
+}
+
+fn send(json.Json v) {
+    body := json.stringify(v)
+    head := "Content-Length: " + str(body.len) + "\r\n\r\n"
+    text := head + body
+    fwrite(text.ptr, 1, u64(text.len), stdout)
+    fflush(stdout)
+}
+
+fn reply(json.Json id, json.Json result) {
+    m := json.new_object()
+    m.set("jsonrpc", json.new_text("2.0"))
+    m.set("id", id)
+    m.set("result", result)
+    send(m)
+}
+
+fn notify(str method, json.Json params) {
+    m := json.new_object()
+    m.set("jsonrpc", json.new_text("2.0"))
+    m.set("method", json.new_text(method))
+    m.set("params", params)
+    send(m)
+}
+
+fn num(int n) -> json.Json {
+    return json.new_number(float(n))
+}
+
+fn position(int line, int col) -> json.Json {
+    p := json.new_object()
+    p.set("line", num(line))
+    p.set("character", num(col))
+    return p
+}
+
+fn range(int line, int col, int endCol) -> json.Json {
+    r := json.new_object()
+    r.set("start", position(line, col))
+    r.set("end", position(line, endCol))
+    return r
+}
+
+// ---------- asking the compiler ----------
+
+fn splitTabs(str line) -> []str {
+    return line.split("\t")
+}
+
+fn intOf(str s) -> int {
+    return int(s) or 0
+}
+
+// "path:line:col: error: message" -> a diagnostic
+fn parseDiag(str line) -> Diag {
+    at := line.find(": error: ")
+    if at < 0 {
+        return Diag()
+    }
+    where := line.sub(0, at)
+    message := line.sub(at + 9, line.len)
+    // the last two colon-separated numbers are the line and column
+    parts := where.split(":")
+    if parts.len < 3 {
+        return Diag()
+    }
+    col := intOf(parts[parts.len - 1])
+    ln := intOf(parts[parts.len - 2])
+    []str pathParts
+    for i in 0..parts.len - 2 {
+        pathParts.push(parts[i])
+    }
+    return Diag(has: true, file: pathParts.join(":"), line: ln, col: col, message: message)
+}
+
+fn parseOutput(str output) -> Analysis {
+    a := Analysis()
+    for line in output.split("\n") {
+        if line.starts_with("@") {
+            f := splitTabs(line)
+            tag := f[0]
+            if tag == "@R" && f.len >= 9 {
+                a.refs.push(Ref(file: f[1], line: intOf(f[2]), col: intOf(f[3]), len: intOf(f[4]), defFile: f[5], defLine: intOf(f[6]), defCol: intOf(f[7]), hover: unesc(f[8])))
+            } else if tag == "@V" && f.len >= 9 {
+                a.vars.push(VarRec(name: f[1], type: f[2], file: f[3], line: intOf(f[4]), col: intOf(f[5]), fnFile: f[6], fnLine: intOf(f[7]), fnEnd: intOf(f[8])))
+            } else if tag == "@F" && f.len >= 10 {
+                a.fns.push(FnRec(module: f[1], name: f[2], recv: f[3], file: f[4], line: intOf(f[5]), col: intOf(f[6]), endLine: intOf(f[7]), signature: unesc(f[8]), params: f[9].split("|")))
+            } else if tag == "@S" && f.len >= 6 {
+                a.structs.push(StructRec(module: f[1], name: f[2], file: f[3], line: intOf(f[4]), col: intOf(f[5])))
+            } else if tag == "@SF" && f.len >= 5 && a.structs.len > 0 {
+                k := a.structs.len - 1
+                a.structs[k].fields.push(f[3])
+                a.structs[k].types.push(f[4])
+            } else if tag == "@E" && f.len >= 7 {
+                a.enums.push(EnumRec(module: f[1], name: f[2], file: f[3], line: intOf(f[4]), col: intOf(f[5]), variants: f[6].split(",")))
+            } else if tag == "@I" && f.len >= 2 {
+                a.imports.push(f[1])
+            }
+        } else if !a.diag.has {
+            a.diag = parseDiag(line)
+        }
+    }
+    return a
+}
+
+fn Server.analyse(str path) {
+    // the editor's text, as files the compiler can read: it asks for the file by its real name
+    shell("mkdir -p '" + self.tmp + "'")
+    overlays := ""
+    n := 0
+    for p in self.docs.keys() {
+        copy := self.tmp + "/doc" + str(n) + ".fch"
+        write_file(copy, self.docs[p])
+        overlays = overlays + " --overlay '" + p + "=" + copy + "'"
+        n += 1
+    }
+    out := self.tmp + "/out.txt"
+    shell("'" + self.self + "' index '" + path + "'" + overlays + " > '" + out + "' 2>&1")
+    a := parseOutput(read_file(out) or "")
+    if !a.diag.has {
+        self.good[path] = a
+    } else if self.good.has(path) {
+        // half-typed code doesn't compile: completion and signatures keep using what the last good version knew
+        g := self.good[path]
+        a.fns = g.fns
+        a.structs = g.structs
+        a.enums = g.enums
+        a.vars = g.vars
+        if a.imports.len == 0 {
+            a.imports = g.imports
+        }
+    }
+    self.results[path] = a
+    self.publish(path, a)
+}
+
+fn Server.publish(str path, Analysis a) {
+    // the files to say something about: the one checked, and any that had an error that is gone
+    []str files = [path]
+    for d in self.diagnosed {
+        if !files.contains(d) {
+            files.push(d)
+        }
+    }
+    []str now
+    for f in files {
+        list := json.new_list()
+        if a.diag.has && a.diag.file == f {
+            line := a.diag.line - 1
+            if line < 0 {
+                line = 0
+            }
+            col := a.diag.col - 1
+            if col < 0 {
+                col = 0
+            }
+            d := json.new_object()
+            d.set("range", range(line, col, col + 1))
+            d.set("severity", num(1))
+            d.set("source", json.new_text("finch"))
+            d.set("message", json.new_text(a.diag.message))
+            list.push(d)
+            now.push(f)
+        }
+        p := json.new_object()
+        p.set("uri", json.new_text(pathToUri(f)))
+        p.set("diagnostics", list)
+        notify("textDocument/publishDiagnostics", p)
+    }
+    self.diagnosed = now
+}
+
+// ---------- the questions ----------
+
+fn refAt(Analysis a, str path, int line, int col) -> int {
+    for i in 0..a.refs.len {
+        r := a.refs[i]
+        if r.line == line && col >= r.col && col <= r.col + r.len && r.file == path {
+            return i
+        }
+    }
+    return -1
+}
+
+fn hoverAt(Analysis a, str path, int line, int col) -> json.Json {
+    i := refAt(a, path, line, col)
+    if i < 0 {
+        return json.new_null()
+    }
+    contents := json.new_object()
+    contents.set("kind", json.new_text("markdown"))
+    contents.set("value", json.new_text(a.refs[i].hover))
+    out := json.new_object()
+    out.set("contents", contents)
+    return out
+}
+
+fn definitionAt(Analysis a, str path, int line, int col) -> json.Json {
+    i := refAt(a, path, line, col)
+    if i < 0 || a.refs[i].defFile.len == 0 {
+        return json.new_null()
+    }
+    r := a.refs[i]
+    out := json.new_object()
+    out.set("uri", json.new_text(pathToUri(r.defFile)))
+    out.set("range", range(r.defLine - 1, r.defCol - 1, r.defCol - 1))
+    return out
+}
+
+fn symbolsOf(Analysis a, str path) -> json.Json {
+    list := json.new_list()
+    for f in a.fns {
+        if f.file != path {
+            continue
+        }
+        kind := 12                      // Function
+        name := f.name
+        if f.recv.len > 0 {
+            kind = 6                    // Method
+            name = f.recv + "." + f.name
+        }
+        list.push(symbol(name, kind, f.line, f.col, f.endLine))
+    }
+    for s in a.structs {
+        if s.file == path {
+            list.push(symbol(s.name, 23, s.line, s.col, s.line + s.fields.len + 1))
+        }
+    }
+    for e in a.enums {
+        if e.file == path {
+            list.push(symbol(e.name, 10, e.line, e.col, e.line + e.variants.len + 1))
+        }
+    }
+    return list
+}
+
+fn symbol(str name, int kind, int line, int col, int endLine) -> json.Json {
+    s := json.new_object()
+    s.set("name", json.new_text(name))
+    s.set("kind", num(kind))
+    full := json.new_object()
+    full.set("start", position(line - 1, 0))
+    full.set("end", position(endLine, 0))
+    s.set("range", full)
+    s.set("selectionRange", range(line - 1, col - 1, col - 1))
+    return s
+}
+
+// ---------- completion ----------
+
+fn item(str label, int kind, str detail, str text) -> json.Json {
+    o := json.new_object()
+    o.set("label", json.new_text(label))
+    o.set("kind", num(kind))
+    if detail.len > 0 {
+        o.set("detail", json.new_text(detail))
+    }
+    if text.len > 0 {
+        d := json.new_object()
+        d.set("kind", json.new_text("markdown"))
+        d.set("value", json.new_text(text))
+        o.set("documentation", d)
+    }
+    return o
+}
+
+fn isWordChar(char c) -> bool {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+fn methodItems(ptr[json.Json] items, []docs.Doc list) {
+    for d in list {
+        kind := 2                       // Method
+        if d.signature.starts_with(".") {
+            kind = 5                    // Field
+        }
+        items.push(item(d.name, kind, d.signature, d.text))
+    }
+}
+
+// the variable called `name` that is in scope at `line` (the innermost one declared before it)
+fn varNamed(Analysis a, str path, str name, int line) -> VarRec {
+    found := VarRec()
+    for v in a.vars {
+        if v.name == name && v.line <= line && line <= v.fnEnd + 1 && v.fnFile == path {
+            found = v
+        }
+    }
+    return found
+}
+
+fn completionAt(Analysis a, str text, str path, int line, int col) -> json.Json {
+    items := json.new_list()
+    lineText := lineOf(text, line)
+    end := col - 1
+    if end > lineText.len {
+        end = lineText.len
+    }
+    before := lineText.sub(0, end)
+    // the word being typed, and whether a dot comes right before it
+    wordStart := before.len
+    while wordStart > 0 && isWordChar(before[wordStart - 1]) {
+        wordStart -= 1
+    }
+    afterDot := wordStart > 0 && before[wordStart - 1] == '.'
+    if afterDot {
+        s := wordStart - 1
+        while s > 0 && (isWordChar(before[s - 1]) || before[s - 1] == '[' || before[s - 1] == ']') {
+            s -= 1
+        }
+        owner := before.sub(s, wordStart - 1)
+        element := false
+        br := owner.find("[")
+        if br >= 0 {
+            owner = owner.sub(0, br)
+            element = true
+        }
+        // a module: its functions, structs and enums
+        if a.imports.contains(owner) {
+            for f in a.fns {
+                if f.module == owner && f.recv.len == 0 {
+                    items.push(item(f.name, 3, f.signature, ""))
+                }
+            }
+            for st in a.structs {
+                if st.module == owner {
+                    items.push(item(st.name, 22, "struct " + st.name, ""))
+                }
+            }
+            for en in a.enums {
+                if en.module == owner {
+                    items.push(item(en.name, 13, "enum " + en.name, ""))
+                }
+            }
+            return completionList(items)
+        }
+        // an enum: its variants
+        for en in a.enums {
+            if en.name == owner && varNamed(a, path, owner, line).name.len == 0 {
+                for v in en.variants {
+                    items.push(item(v, 20, en.name + "." + v, ""))
+                }
+                return completionList(items)
+            }
+        }
+        // a variable: by its type
+        type := varNamed(a, path, owner, line).type
+        if element && type.starts_with("[]") {
+            type = type.sub(2, type.len)
+        } else if element && type == "str" {
+            type = "char"
+        }
+        if type.starts_with("ptr[") && type.ends_with("]") {
+            type = type.sub(4, type.len - 1)
+        }
+        if type.starts_with("[]") {
+            methodItems(addr(items), docs.arrayMethods())
+        } else if type == "str" {
+            methodItems(addr(items), docs.strMethods())
+        } else if type.starts_with("map[") {
+            methodItems(addr(items), docs.mapMethods())
+        } else {
+            base := type
+            for st in a.structs {
+                if st.name == base {
+                    for k in 0..st.fields.len {
+                        items.push(item(st.fields[k], 5, st.types[k], ""))
+                    }
+                }
+            }
+            for f in a.fns {
+                if f.recv == base {
+                    items.push(item(f.name, 2, f.signature, ""))
+                }
+            }
+        }
+        return completionList(items)
+    }
+    // not after a dot: what is in scope
+    seen := Names()
+    for v in a.vars {
+        if v.line <= line && line <= v.fnEnd + 1 && v.fnFile == path && seen.add(v.name) {
+            items.push(item(v.name, 6, v.type, ""))
+        }
+    }
+    for f in a.fns {
+        if f.recv.len == 0 && f.module == "" && seen.add(f.name) {
+            items.push(item(f.name, 3, f.signature, ""))
+        }
+    }
+    for st in a.structs {
+        if st.module == "" && seen.add(st.name) {
+            items.push(item(st.name, 22, "struct " + st.name, ""))
+        }
+    }
+    for en in a.enums {
+        if en.module == "" && seen.add(en.name) {
+            items.push(item(en.name, 13, "enum " + en.name, ""))
+        }
+    }
+    for m in a.imports {
+        if seen.add(m) {
+            items.push(item(m, 9, "module", ""))
+        }
+    }
+    for d in docs.builtins() {
+        if seen.add(d.name) {
+            items.push(item(d.name, 3, d.signature, d.text))
+        }
+    }
+    for k in docs.keywords() {
+        if seen.add(k) {
+            items.push(item(k, 14, "", ""))
+        }
+    }
+    for t in docs.typeNames() {
+        if seen.add(t) {
+            items.push(item(t, 25, "", ""))
+        }
+    }
+    return completionList(items)
+}
+
+struct Names {
+    []str items
+}
+
+fn Names.add(str x) -> bool {
+    if self.items.contains(x) {
+        return false
+    }
+    self.items.push(x)
+    return true
+}
+
+fn completionList(json.Json items) -> json.Json {
+    o := json.new_object()
+    o.set("isIncomplete", json.new_bool(false))
+    o.set("items", items)
+    return o
+}
+
+// ---------- signature help ----------
+
+fn signatureAt(Analysis a, str text, str path, int line, int col) -> json.Json {
+    lineText := lineOf(text, line)
+    end := col - 1
+    if end > lineText.len {
+        end = lineText.len
+    }
+    before := lineText.sub(0, end)
+    // back to the `(` that is still open, counting the commas at its own level
+    depth := 0
+    commas := 0
+    open := -1
+    i := before.len - 1
+    while i >= 0 {
+        c := before[i]
+        if c == ')' || c == ']' {
+            depth += 1
+        } else if c == '(' || c == '[' {
+            if depth == 0 {
+                if c == '(' {
+                    open = i
+                    break
+                }
+            } else {
+                depth -= 1
+            }
+        } else if c == ',' && depth == 0 {
+            commas += 1
+        }
+        i -= 1
+    }
+    if open < 0 {
+        return json.new_null()
+    }
+    nameEnd := open
+    nameStart := nameEnd
+    while nameStart > 0 && isWordChar(before[nameStart - 1]) {
+        nameStart -= 1
+    }
+    name := before.sub(nameStart, nameEnd)
+    if name.len == 0 {
+        return json.new_null()
+    }
+    recv := ""
+    if nameStart > 0 && before[nameStart - 1] == '.' {
+        // a method: its struct from the type of what comes before the dot
+        s := nameStart - 1
+        while s > 0 && isWordChar(before[s - 1]) {
+            s -= 1
+        }
+        owner := before.sub(s, nameStart - 1)
+        type := varNamed(a, path, owner, line).type
+        if type.starts_with("ptr[") && type.ends_with("]") {
+            type = type.sub(4, type.len - 1)
+        }
+        recv = type
+    }
+    for f in a.fns {
+        if f.name == name && f.recv == recv {
+            sig := json.new_object()
+            sig.set("label", json.new_text(f.signature))
+            params := json.new_list()
+            for p in f.params {
+                if p.len > 0 {
+                    one := json.new_object()
+                    one.set("label", json.new_text(p))
+                    params.push(one)
+                }
+            }
+            sig.set("parameters", params)
+            sigs := json.new_list()
+            sigs.push(sig)
+            out := json.new_object()
+            out.set("signatures", sigs)
+            out.set("activeSignature", num(0))
+            out.set("activeParameter", num(commas))
+            return out
+        }
+    }
+    d := docs.find(docs.builtins(), name)
+    if d.name.len > 0 {
+        sig := json.new_object()
+        sig.set("label", json.new_text(d.signature))
+        sig.set("documentation", json.new_text(d.text))
+        sigs := json.new_list()
+        sigs.push(sig)
+        out := json.new_object()
+        out.set("signatures", sigs)
+        out.set("activeSignature", num(0))
+        out.set("activeParameter", num(commas))
+        return out
+    }
+    return json.new_null()
+}
+
+// ---------- the messages ----------
+
+fn textOf(json.Json params) -> str {
+    return params.get("textDocument").get("text").str_or("")
+}
+
+fn pathOf(json.Json params) -> str {
+    return uriToPath(params.get("textDocument").get("uri").str_or(""))
+}
+
+fn Server.answer(json.Json msg) {
+    method := msg.get("method").str_or("")
+    params := msg.get("params")
+    id := msg.get("id")
+    match method {
+        "initialize" -> {
+            caps := json.new_object()
+            caps.set("textDocumentSync", num(1))
+            caps.set("hoverProvider", json.new_bool(true))
+            caps.set("definitionProvider", json.new_bool(true))
+            caps.set("documentSymbolProvider", json.new_bool(true))
+            comp := json.new_object()
+            dot := json.new_list()
+            dot.push(json.new_text("."))
+            comp.set("triggerCharacters", dot)
+            caps.set("completionProvider", comp)
+            sigp := json.new_object()
+            trig := json.new_list()
+            trig.push(json.new_text("("))
+            trig.push(json.new_text(","))
+            sigp.set("triggerCharacters", trig)
+            caps.set("signatureHelpProvider", sigp)
+            result := json.new_object()
+            result.set("capabilities", caps)
+            info := json.new_object()
+            info.set("name", json.new_text("finch"))
+            result.set("serverInfo", info)
+            reply(id, result)
+        }
+        "shutdown" -> {
+            self.stopping = true
+            reply(id, json.new_null())
+        }
+        "exit" -> {
+            exit(0)
+        }
+        "textDocument/didOpen" -> {
+            path := pathOf(params)
+            self.docs[path] = textOf(params)
+            self.analyse(path)
+        }
+        "textDocument/didChange" -> {
+            path := pathOf(params)
+            changes := params.get("contentChanges")
+            if changes.len() > 0 {
+                self.docs[path] = changes.at(changes.len() - 1).get("text").str_or("")
+                self.analyse(path)
+            }
+        }
+        "textDocument/didSave" -> {
+            path := pathOf(params)
+            if self.docs.has(path) {
+                self.analyse(path)
+            }
+        }
+        "textDocument/didClose" -> {
+            path := pathOf(params)
+            self.docs.remove(path)
+            self.results.remove(path)
+            self.good.remove(path)
+            empty := json.new_object()
+            empty.set("uri", json.new_text(pathToUri(path)))
+            empty.set("diagnostics", json.new_list())
+            notify("textDocument/publishDiagnostics", empty)
+        }
+        "textDocument/hover", "textDocument/definition", "textDocument/completion", "textDocument/documentSymbol", "textDocument/signatureHelp" -> {
+            path := pathOf(params)
+            line := params.get("position").get("line").int_or(0) + 1
+            col := params.get("position").get("character").int_or(0) + 1
+            if !self.results.has(path) {
+                reply(id, json.new_null())
+                return
+            }
+            a := self.results[path]
+            text := ""
+            if self.docs.has(path) {
+                text = self.docs[path]
+            }
+            match method {
+                "textDocument/hover" -> reply(id, hoverAt(a, path, line, col))
+                "textDocument/definition" -> reply(id, definitionAt(a, path, line, col))
+                "textDocument/completion" -> reply(id, completionAt(a, text, path, line, col))
+                "textDocument/documentSymbol" -> reply(id, symbolsOf(a, path))
+                else -> reply(id, signatureAt(a, text, path, line, col))
+            }
+        }
+        else -> {
+            // a request we don't know gets an answer so the editor does not wait; notifications get none
+            if id.kind != json.Kind.Null {
+                reply(id, json.new_null())
+            }
+        }
+    }
+}
+
+// finch lsp
+fn run(str self) -> int {
+    s := Server(self: self, tmp: "/tmp/finch_lsp_" + str(int(getpid())))
+    while true {
+        msg := readMessage() or {
+            break
+        }
+        s.answer(msg)
+    }
+    shell("rm -rf '" + s.tmp + "'")
+    return 0
+}

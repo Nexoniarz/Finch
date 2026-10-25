@@ -78,5 +78,16 @@ else
     head -5 "$tmp/shared.out"
 fi
 
+# the language server, talked to the way an editor does
+if command -v python3 > /dev/null 2>&1; then
+    if FINCH="$FINCH" python3 lsp_test.py > "$tmp/lsp.out" 2>&1; then
+        pass=$((pass + 1))
+    else
+        failed=$((failed + 1))
+        echo "FAIL lsp_test.py"
+        grep FAIL "$tmp/lsp.out" | head -5
+    fi
+fi
+
 echo "$pass passed, $failed failed"
 [ $failed -eq 0 ]

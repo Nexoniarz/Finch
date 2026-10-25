@@ -4,6 +4,7 @@
 // C runtime the main compiler uses. This compiler copies values like the main one
 // (so programs behave the same) but never frees them: it is the bootstrap compiler.
 import ast
+import docs
 import cimport
 import platform
 
@@ -13,6 +14,9 @@ struct Var {
     str slot
     bool readonly
     int order       // how many variables were declared before this one (for defer)
+    str dpath       // where it was declared, for the language server
+    int dline
+    int dcol
 }
 
 // A scope's variables, and the defers that run when it ends, newest first.
@@ -20,6 +24,7 @@ struct Var {
 // What the driver asks for besides the program itself.
 struct Options {
     bool shared         // finch build --shared
+    bool index          // finch index: say what every name in the program is, for the language server
     bool debug          // -g
     str cwd             // the folder the compiler was started in (for the debug info)
     platform.Target target
@@ -147,6 +152,8 @@ struct Gen {
     int nvars       // variables declared so far in this function
     cimport.CImports ci
     bool shared         // building a library (finch build --shared): no main, its export fns are the way in
+    bool index          // the language server's index is being made: see note...
+    []str idx           // its lines
     bool debug          // -g: debug info (DWARF, as LLVM metadata)
     platform.Target tg    // the system the program is for
     str cwd
@@ -168,7 +175,119 @@ struct Gen {
 
 // ---------- basics ----------
 
+// ---------- the language server's index ----------
+//
+// `finch index file.fch` runs the compiler up to the end of type checking and prints what it learned instead of
+// the program, one record per line, fields separated by tabs:
+//   @R file line col len defFile defLine defCol hover     a name in the source, what it is, where it was made
+//   @V name type file line col fnFile fnLine fnEnd        a variable (for completion), in the function that spans those lines
+//   @F module name recv file line col endLine signature   a function or method
+//   @S module name file line col   and   @SF module struct field type
+//   @E module name file line col variants                 an enum
+//   @I module                                              a module the file imports
+// Text in a record has its newlines written \n.
+
+fn esc(str s) -> str {
+    return s.replace("\\", "\\\\").replace("\n", "\\n").replace("\t", " ")
+}
+
+fn noteRef(ptr[Gen] g, ast.Node at, int col, int len, str hover, str defPath, int defLine, int defCol) {
+    if !g.index {
+        return
+    }
+    g.idx.push("@R\t" + g.files[at.file] + "\t" + str(at.line) + "\t" + str(col) + "\t" + str(len) + "\t" + defPath + "\t" + str(defLine) + "\t" + str(defCol) + "\t" + esc(hover))
+}
+
+// fn add(int a, int b) -> int      fn Counter.add(int n)      fn parse(str s) -> int!
+fn sigText(FnSig sig) -> str {
+    []str ps
+    for k in 0..sig.params.len {
+        ps.push(ast.show(sig.params[k]) + " " + sig.pnames[k])
+    }
+    name := sig.name
+    if sig.recv.len > 0 {
+        name = sig.recv + "." + sig.name
+    }
+    text := "fn " + name + "(" + ps.join(", ") + ")"
+    if sig.fallible {
+        if sig.ret.kind == "void" {
+            text = text + " -> !"
+        } else {
+            text = text + " -> " + ast.show(sig.ret) + "!"
+        }
+    } else if sig.ret.kind != "void" {
+        text = text + " -> " + ast.show(sig.ret)
+    }
+    return text
+}
+
+// a call of a Finch function or method: the name in the source, and the function it is
+fn noteCall(ptr[Gen] g, ast.Node c, FnSig sig) {
+    if !g.index {
+        return
+    }
+    col := c.col
+    if c.kind == "method" {
+        col = c.col + 1
+    }
+    f := g.progs[sig.prog].fns[sig.index]
+    shownName := sig.name
+    if sig.targs.len > 0 && sig.recv.len == 0 {
+        shownName = f.name
+    }
+    noteRef(g, c, col, shownName.len, "```finch\n" + sigText(sig) + "\n```", g.files[f.file], f.line, f.col + 3)
+}
+
+// what is known about every function, struct and enum, for completion and the outline
+fn indexAll(ptr[Gen] g, []str mainImports) {
+    for im in mainImports {
+        g.idx.push("@I\t" + im)
+    }
+    for sg in g.sigs {
+        f := g.progs[sg.prog].fns[sg.index]
+        if sg.targs.len > 0 {
+            continue
+        }
+        []str ps
+        for k in 0..sg.params.len {
+            ps.push(ast.show(sg.params[k]) + " " + sg.pnames[k])
+        }
+        g.idx.push("@F\t" + sg.module + "\t" + sg.name + "\t" + sg.recv + "\t" + g.files[f.file] + "\t" + str(f.line) + "\t" + str(f.col) + "\t" + str(f.endLine) + "\t" + esc(sigText(sg)) + "\t" + ps.join("|"))
+    }
+    for tp in g.templates {
+        if tp.isStruct {
+            continue
+        }
+        f := g.progs[tp.prog].fns[tp.index]
+        g.idx.push("@F\t" + tp.module + "\t" + tp.name + "\t" + tp.recv + "\t" + g.files[f.file] + "\t" + str(f.line) + "\t" + str(f.col) + "\t" + str(f.endLine) + "\t" + esc("fn " + tp.name + "[" + tp.tparams.join(", ") + "](...)") + "\t")
+    }
+    for sd in g.structs {
+        if sd.isC || sd.base.len > 0 {
+            continue
+        }
+        node := g.progs[sd.prog].structs[sd.index]
+        g.idx.push("@S\t" + sd.module + "\t" + sd.name + "\t" + g.files[node.file] + "\t" + str(node.line) + "\t" + str(node.col))
+        for k in 0..sd.fnames.len {
+            g.idx.push("@SF\t" + sd.module + "\t" + sd.name + "\t" + sd.fnames[k] + "\t" + ast.show(sd.ftypes[k]))
+        }
+    }
+    for pi in 0..g.progs.len {
+        for en in g.progs[pi].enums {
+            vs := ""
+            []str names
+            for v in en.kids {
+                names.push(v.name)
+            }
+            vs = names.join(",")
+            g.idx.push("@E\t" + g.progs[pi].module + "\t" + en.name + "\t" + g.files[en.file] + "\t" + str(en.line) + "\t" + str(en.col) + "\t" + vs)
+        }
+    }
+}
+
 fn fail(ptr[Gen] g, ast.Node n, str msg) {
+    if g.index && g.idx.len > 0 {
+        print(g.idx.join("\n"))        // what was learned before the error
+    }
     print(g.files[n.file] + ":" + str(n.line) + ":" + str(n.col) + ": error: " + msg + g.instNote)
     exit(1)
 }
@@ -1081,9 +1200,14 @@ fn addVar(ptr[Gen] g, ast.Node at, str name, ast.Type t, str init, bool readonly
     }
     slot := alloca(g, llty(g, t))
     store(g, llty(g, t), init, slot)
-    g.scopes[g.scopes.len - 1].vars.push(Var(name: name, ty: t, slot: slot, readonly: readonly, order: g.nvars))
+    g.scopes[g.scopes.len - 1].vars.push(Var(name: name, ty: t, slot: slot, readonly: readonly, order: g.nvars, dpath: g.files[at.file], dline: at.line, dcol: at.col))
     g.nvars += 1
     dbgVariable(g, at, name, t, slot)
+    if g.index && name != "err" && !name.starts_with("$") {
+        fnode := g.progs[g.cur.prog].fns[g.cur.index]
+        g.idx.push("@V\t" + name + "\t" + ast.show(t) + "\t" + g.files[at.file] + "\t" + str(at.line) + "\t" + str(at.col) + "\t" + g.files[fnode.file] + "\t" + str(fnode.line) + "\t" + str(fnode.endLine))
+        noteRef(g, at, at.col, name.len, "```finch\n" + ast.show(t) + " " + name + "\n```", "", 0, 0)
+    }
     return slot
 }
 
@@ -1468,6 +1592,7 @@ fn genericCall(ptr[Gen] g, ast.Node c, int ti, int first, str shown) -> Val {
     }
     si := instFn(g, ti, b.types, T("void"), c)
     sig := g.sigs[si]
+    noteCall(g, c, sig)
     []str out
     for k in 0..nparams {
         v := coerce(g, vals[k], sig.params[k], c.kids[first + k], "argument '" + sig.pnames[k] + "'")
@@ -3215,6 +3340,7 @@ fn ref(ptr[Gen] g, ast.Node e, bool write) -> Ref {
             fail(g, e, "there is no variable named '" + e.name + "'")
         }
         v := varAt(g, id)
+        noteRef(g, e, e.col, e.name.len, "```finch\n" + ast.show(v.ty) + " " + e.name + "\n```", v.dpath, v.dline, v.dcol)
         return Ref(isPlace: true, pl: Place(addr: v.slot, ty: v.ty))
     }
     if e.kind == "member" {
@@ -3263,6 +3389,7 @@ fn enumValue(ptr[Gen] g, ast.Node m, int ei) -> Val {
     if k < 0 {
         fail(g, m, "the enum " + ed.name + " has no variant '" + m.name + "' (it has: " + ed.variants.join(", ") + ")")
     }
+    noteRef(g, m, m.col + 1, m.name.len, "```finch\n" + ed.name + "." + m.name + " = " + str(ed.values[k]) + "\n```", "", 0, 0)
     return Val(v: str(ed.values[k]), ty: ast.Type(kind: "enum", name: ed.name, module: ed.module))
 }
 
@@ -3357,6 +3484,7 @@ fn member(ptr[Gen] g, ast.Node m, bool write) -> Ref {
         fail(g, m, "the struct " + ast.show(t) + " has no field '" + m.name + "' (it has: " + sd.fnames.join(", ") + ")")
     }
     ft := sd.ftypes[k]
+    noteRef(g, m, m.col + 1, m.name.len, "```finch\n" + ast.show(ft) + " " + m.name + "\n```", "", 0, 0)
     if obj.isPlace {
         fp := op(g, "getelementptr inbounds " + llty(g, t) + ", ptr " + obj.pl.addr + ", i32 0, i32 " + str(sd.lidx[k]))
         return Ref(isPlace: true, pl: Place(addr: fp, ty: ft))
@@ -4009,6 +4137,16 @@ fn cLL(ptr[Gen] g, ast.Type t) -> str {
 }
 
 fn callC(ptr[Gen] g, ast.Node c, cimport.CFunc f) -> Val {
+    if g.index {
+        []str ps
+        for p in f.params {
+            ps.push(ast.show(p))
+        }
+        if f.variadic {
+            ps.push("...")
+        }
+        noteRef(g, c, c.col, f.name.len, "C function from `" + f.header + "`\n```c\n" + ast.show(f.ret) + " " + f.name + "(" + ps.join(", ") + ")\n```", "", 0, 0)
+    }
     if f.unsupported.len > 0 {
         fail(g, c, "the C function '" + f.name + "' can't be used from Finch yet: it " + f.unsupported)
     }
@@ -4163,6 +4301,12 @@ fn headerHint(str name) -> str {
 
 fn call(ptr[Gen] g, ast.Node c) -> Val {
     n := c.name
+    if g.index && isBuiltin(n) {
+        d := docs.find(docs.builtins(), n)
+        if d.name.len > 0 {
+            noteRef(g, c, c.col, n.len, docs.hover(d), "", 0, 0)
+        }
+    }
     if n == "error" {
         fail(g, c, "error(...) makes an error to return from a function that can fail: return error(\"...\")")
     }
@@ -4351,6 +4495,11 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     }
     si := findStruct(g, g.module, n)
     if si >= 0 {
+        sd := g.structs[si]
+        if g.index && !sd.isC {
+            node := g.progs[sd.prog].structs[sd.index]
+            noteRef(g, c, c.col, n.len, "```finch\nstruct " + sd.name + " { " + sd.fnames.join(", ") + " }\n```", g.files[node.file], node.line, node.col)
+        }
         return construct(g, si, c.kids, c.names, c)
     }
     ei := findEnum(g, g.module, n)
@@ -4376,6 +4525,7 @@ fn callFn(ptr[Gen] g, int fi, ast.Node c, int first, str shown, str selfAddr, st
     if sig.module.len == 0 && sig.name == "main" {
         fail(g, c, "main can't be called, it is where the program starts")
     }
+    noteCall(g, c, sig)
     checkArgs(g, c, first, sig.params.len, shown)
     []str args
     if sig.recv.len > 0 {
@@ -4482,6 +4632,17 @@ fn construct(ptr[Gen] g, int si, []ast.Node args, []str names, ast.Node at) -> V
 
 // ---------- methods ----------
 
+// a method of an array, text or map: hover from the built-in docs
+fn noteMethod(ptr[Gen] g, ast.Node m, []docs.Doc list) {
+    if !g.index {
+        return
+    }
+    d := docs.find(list, m.name)
+    if d.name.len > 0 {
+        noteRef(g, m, m.col + 1, m.name.len, docs.hover(d), "", 0, 0)
+    }
+}
+
 fn method(ptr[Gen] g, ast.Node m) -> Val {
     objNode := m.kids[0]
     if objNode.kind == "var" && lookup(g, objNode.name) < 0 {
@@ -4527,6 +4688,7 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
             }
             a = spill(g, r.val)
         }
+        noteMethod(g, m, docs.arrayMethods())
         return arrayMethod(g, m, a, t)
     }
     if t.kind == "str" {
@@ -4534,6 +4696,7 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
         if r.isPlace {
             sv = Val(v: load(g, "{ ptr, i64, i64 }", r.pl.addr), ty: t)
         }
+        noteMethod(g, m, docs.strMethods())
         return strMethod(g, m, spill(g, sv))
     }
     if t.kind == "map" {
@@ -4546,6 +4709,7 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
             }
             mp = spill(g, r.val)
         }
+        noteMethod(g, m, docs.mapMethods())
         return mapMethod(g, m, mp, t)
     }
     st := t
@@ -4958,7 +5122,7 @@ fn assemble(ptr[Gen] g) -> str {
 
 fn generate([]ast.Program progs, []str files, cimport.CImports ci, Options opt) -> str {
     shared := opt.shared
-    gen := Gen(progs: progs, files: files, ci: ci, shared: opt.shared, debug: opt.debug, cwd: opt.cwd, tg: opt.target, dbgScope: -1)
+    gen := Gen(progs: progs, files: files, ci: ci, shared: opt.shared, debug: opt.debug, index: opt.index, cwd: opt.cwd, tg: opt.target, dbgScope: -1)
     g := addr(gen)
     if g.debug {
         // !0 the compile unit, !1 and !2 the module flags, then the source files
@@ -4985,6 +5149,11 @@ fn generate([]ast.Program progs, []str files, cimport.CImports ci, Options opt) 
     while di < g.sigs.len {
         define(g, di)
         di += 1
+    }
+    if g.index {
+        mainImports := g.progs[0].imports
+        indexAll(g, mainImports)
+        return g.idx.join("\n")
     }
     for sg in g.sigs {
         if sg.exported {

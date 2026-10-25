@@ -6,6 +6,7 @@ pkgs.mkShell {
     llvmPackages.clang
     llvmPackages.libclang   # reads C headers for `import "stdio.h"`
     pkg-config              # finds the right flags for `link "..."`
+    python3                 # tests/lsp_test.py
 
     # for the graphics examples (window, opengl, raylib, vulkan)
     glfw

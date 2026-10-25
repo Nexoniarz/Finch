@@ -108,6 +108,7 @@ struct Node {
     int line
     int col
     int file
+    int endLine   // block, fn: the line of the closing }
 }
 
 struct Program {

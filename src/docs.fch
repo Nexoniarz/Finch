@@ -1,0 +1,109 @@
+// One description of every built-in function and method, shared by the compiler (the index the language
+// server asks for) and the language server (hover, completion, signature help).
+
+struct Doc {
+    str name
+    str signature
+    str text
+}
+
+fn doc(str name, str signature, str text) -> Doc {
+    return Doc(name: name, signature: signature, text: text)
+}
+
+fn builtins() -> []Doc {
+    return [
+        doc("print", "print(a, b, ...)", "Prints the values separated by spaces, then a new line. Works with every type."),
+        doc("input", "input(str question = \"\") -> str", "Shows the question and reads one line typed by the user, without the newline."),
+        doc("read_file", "read_file(str path) -> str", "The whole file as text. Stops the program if it can't be read, unless handled: read_file(p) or { ... }, try read_file(p)."),
+        doc("write_file", "write_file(str path, str text) -> bool", "Writes (replaces) the file. true if it worked; with or / try, the reason it didn't."),
+        doc("file_exists", "file_exists(str path) -> bool", "Is there a file at this path?"),
+        doc("delete_file", "delete_file(str path) -> bool", "Deletes the file. true if it worked; with or / try, the reason it didn't."),
+        doc("error", "error(str message)", "The failure a fallible function returns: return error(\"...\"). The caller handles it with or / try."),
+        doc("shell", "shell(str command) -> int", "Runs a command in the system's shell and gives back its exit code."),
+        doc("exit", "exit(int code)", "Ends the program right away with this exit code."),
+        doc("addr", "addr(x) -> ptr[T]", "A pointer to a variable, field or element. addr(function) gives C a callback."),
+        doc("new", "new(value) -> ptr[T]", "Puts a copy of the value on the heap. Give it back with free(...)."),
+        doc("free", "free(ptr p)", "Gives back memory from new(...) (or from C), freeing what the value owns."),
+        doc("str", "str(x) -> str", "Turns a number, bool, char, []u8 or C char pointer into text."),
+        doc("int", "int(x) -> int", "Converts to a whole number: cuts off fractions, parses text (stops the program if it isn't a number, unless handled: int(s) or 0)."),
+        doc("float", "float(x) -> float", "Converts to a decimal number; parses text (int(s) or 0.0 handles bad text)."),
+        doc("char", "char(int n) -> char", "The character with this code."),
+        doc("bool", "bool(int n) -> bool", "true for any number but 0."),
+        doc("ptr", "ptr(x) -> ptr", "An untyped pointer: from a typed pointer, or from a number (an address or offset for C).")
+    ]
+}
+
+fn arrayMethods() -> []Doc {
+    return [
+        doc("len", ".len -> int", "The number of elements."),
+        doc("ptr", ".ptr -> ptr[T]", "The address of the first element, for C."),
+        doc("push", "push(T x)", "Adds x at the end."),
+        doc("pop", "pop() -> T", "Removes the last element and gives it back."),
+        doc("insert", "insert(int i, T x)", "Puts x at position i, moving the rest."),
+        doc("remove", "remove(int i) -> T", "Removes position i and gives it back."),
+        doc("clear", "clear()", "Removes everything."),
+        doc("resize", "resize(int n)", "Makes the array n long; new elements are zero."),
+        doc("find", "find(T x) -> int", "The index of x, or -1."),
+        doc("contains", "contains(T x) -> bool", "Is x in the array?"),
+        doc("sort", "sort()", "Sorts in place (numbers, chars, str)."),
+        doc("reverse", "reverse()", "Reverses in place."),
+        doc("slice", "slice(int start, int end) -> []T", "A new array with the elements start to end-1."),
+        doc("join", "join(str sep) -> str", "For []str: one text with sep between the parts.")
+    ]
+}
+
+fn strMethods() -> []Doc {
+    return [
+        doc("len", ".len -> int", "The number of bytes."),
+        doc("ptr", ".ptr -> ptr[char]", "The address of the text, for C (valid while the str lives)."),
+        doc("sub", "sub(int start, int end) -> str", "The part from start to end-1."),
+        doc("find", "find(str t) -> int", "Where t starts, or -1."),
+        doc("contains", "contains(str t) -> bool", "Does the text contain t?"),
+        doc("starts_with", "starts_with(str t) -> bool", "Does the text start with t?"),
+        doc("ends_with", "ends_with(str t) -> bool", "Does the text end with t?"),
+        doc("split", "split(str sep) -> []str", "The parts between each sep; split(\"\") gives single characters."),
+        doc("trim", "trim() -> str", "Without spaces and newlines at both ends."),
+        doc("upper", "upper() -> str", "With a-z changed to A-Z."),
+        doc("lower", "lower() -> str", "With A-Z changed to a-z."),
+        doc("replace", "replace(str from, str to) -> str", "Every from replaced by to."),
+        doc("repeat", "repeat(int n) -> str", "The text n times."),
+        doc("bytes", "bytes() -> []u8", "The bytes of the text.")
+    ]
+}
+
+fn mapMethods() -> []Doc {
+    return [
+        doc("len", ".len -> int", "The number of keys."),
+        doc("has", "has(K key) -> bool", "Is the key in the map?"),
+        doc("get", "get(K key, V default) -> V", "The value for key, or default if the key isn't there."),
+        doc("remove", "remove(K key) -> bool", "Removes the key and its value; true if it was there."),
+        doc("clear", "clear()", "Removes everything."),
+        doc("keys", "keys() -> []K", "The keys, in the order they were added."),
+        doc("values", "values() -> []V", "The values, in the order their keys were added.")
+    ]
+}
+
+fn keywords() -> []str {
+    return ["fn", "return", "if", "else", "while", "for", "in", "break", "continue", "true", "false", "null", "import",
+            "link", "struct", "enum", "match", "export", "defer", "or", "try", "self"]
+}
+
+fn typeNames() -> []str {
+    return ["int", "float", "bool", "char", "str", "ptr", "map", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"]
+}
+
+// the entry called `name`, or an empty Doc
+fn find([]Doc list, str name) -> Doc {
+    for d in list {
+        if d.name == name {
+            return d
+        }
+    }
+    return Doc()
+}
+
+// the text of a hover for a documented built-in
+fn hover(Doc d) -> str {
+    return "```finch\n" + d.signature + "\n```\n" + d.text
+}
