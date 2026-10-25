@@ -4,6 +4,7 @@
 set -e
 cd "$(dirname "$0")/shared"
 FINCH=${FINCH:-../../build/finch}
+export FINCH_RT=${FINCH_RT:-$PWD/../../runtime/finch_rt.c}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 "$FINCH" build mod.fch --shared -o "$tmp/libmod.so"

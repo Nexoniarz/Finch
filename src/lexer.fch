@@ -195,7 +195,20 @@ fn lex(str src, str path) -> []Token {
         } else {
             op := operator(lx)
             if op.len == 0 {
-                fail(lx, t.line, t.col, "unexpected character '" + str(c) + "'")
+                // show the whole UTF-8 character, not just its first byte
+                n := 1
+                if (int(c) & 0xE0) == 0xC0 {
+                    n = 2
+                } else if (int(c) & 0xF0) == 0xE0 {
+                    n = 3
+                } else if (int(c) & 0xF8) == 0xF0 {
+                    n = 4
+                }
+                hint := ""
+                if int(c) >= 0x80 {
+                    hint = " (names use only a-z, A-Z, 0-9 and _; other letters only go inside \"text\")"
+                }
+                fail(lx, t.line, t.col, "unexpected character '" + lx.src.sub(lx.i, lx.i + n) + "'" + hint)
             }
             for k in 0..op.len {
                 advance(lx)

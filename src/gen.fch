@@ -362,7 +362,15 @@ fn resolve(ptr[Gen] g, ast.Type t, ast.Node at) -> ast.Type {
         return ast.arrayOf(resolve(g, t.elem[0], at))
     }
     if t.kind == "map" {
-        return ast.mapOf(resolve(g, t.elem[0], at), resolve(g, t.elem[1], at))
+        key := resolve(g, t.elem[0], at)
+        if !isInt(key) && key.kind != "char" && key.kind != "bool" && key.kind != "str" && key.kind != "enum" {
+            fail(g, at, "a map key must be a whole number, a char, a bool or a str, not " + ast.show(key))
+        }
+        value := resolve(g, t.elem[1], at)
+        if value.kind == "void" {
+            fail(g, at, "a map value can't have the type 'nothing'")
+        }
+        return ast.mapOf(key, value)
     }
     if t.kind == "fixed" {
         out := ast.Type(kind: "fixed", count: t.count)
@@ -2917,6 +2925,18 @@ fn badOperands(ptr[Gen] g, str o, Val l, Val r, ast.Node at) {
     if o == "+" && (l.ty.kind == "str" || r.ty.kind == "str") {
         msg = msg + " (turn the other side into text first: str(...))"
     }
+    if (o == "&" || o == "|") && l.ty.kind == "bool" {
+        if o == "&" {
+            msg = msg + " (for true/false use '&&')"
+        } else {
+            msg = msg + " (for true/false use '||')"
+        }
+    } else if o == "&" || o == "|" || o == "^" || o == "<<" || o == ">>" {
+        msg = msg + " (bit operators work on whole numbers only)"
+    }
+    if (l.ty.kind == "struct" || l.ty.kind == "array") && (o == "==" || o == "!=") {
+        msg = msg + " (compare the parts one by one)"
+    }
     fail(g, at, msg)
 }
 
@@ -3015,6 +3035,9 @@ fn arith(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
 fn compare(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
     eq := o == "==" || o == "!="
     if l.ty.kind == "ptr" || r.ty.kind == "ptr" || l.ty.kind == "null" || r.ty.kind == "null" {
+        if l.ty.kind == "str" || r.ty.kind == "str" {
+            fail(g, at, "a str is never null; to check for empty text use s.len == 0")
+        }
         if !eq {
             badOperands(g, o, l, r, at)
         }
@@ -4125,6 +4148,19 @@ fn runtimeDeclares(str name) -> bool {
     return ["printf", "fflush", "exit", "free", "qsort"].contains(name)
 }
 
+// Help people who forgot an import.
+fn headerHint(str name) -> str {
+    names := ["printf", "puts", "putchar", "scanf", "fopen", "getchar", "sqrt", "pow", "sin", "cos", "floor", "fabs", "malloc", "rand", "srand",
+              "abs", "atoi", "strlen", "strcpy", "memcpy", "time", "sleep", "usleep"]
+    headers := ["stdio.h", "stdio.h", "stdio.h", "stdio.h", "stdio.h", "stdio.h", "math.h", "math.h", "math.h", "math.h", "math.h", "math.h",
+                "stdlib.h", "stdlib.h", "stdlib.h", "stdlib.h", "stdlib.h", "string.h", "string.h", "string.h", "time.h", "unistd.h", "unistd.h"]
+    k := names.find(name)
+    if k < 0 {
+        return ""
+    }
+    return " (it's from C: add  import \"" + headers[k] + "\"  at the top)"
+}
+
 fn call(ptr[Gen] g, ast.Node c) -> Val {
     n := c.name
     if n == "error" {
@@ -4285,7 +4321,7 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
         checkArgs(g, c, 0, 1, n)
         v := expr(g, c.kids[0])
         if v.ty.kind != "ptr" {
-            fail(g, c.kids[0], "free(...) is only for pointers from new(...)")
+            fail(g, c.kids[0], "free(...) is only for pointers from new(...) or C; arrays, str and structs are freed by Finch at the end of their block")
         }
         emit(g, "call void @free(ptr " + v.v + ")")
         return Val(ty: T("void"))
@@ -4331,7 +4367,7 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     if lookup(g, n) >= 0 {
         fail(g, c, "'" + n + "' is a variable, not a function")
     }
-    fail(g, c, "there is no function named '" + n + "'")
+    fail(g, c, "there is no function named '" + n + "'" + headerHint(n))
     return Val()
 }
 
@@ -4541,7 +4577,16 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
             }
         }
         if fi < 0 {
-            fail(g, m, "the " + st.kind + " " + ast.show(st) + " has no method '" + m.name + "'")
+            []str have
+            for sg in g.sigs {
+                if sg.recv == st.name && sg.recvmod == st.module {
+                    have.push(sg.name)
+                }
+            }
+            if have.len == 0 {
+                fail(g, m, "the " + st.kind + " " + ast.show(st) + " has no methods; add one with  fn " + st.name + "." + m.name + "(...) { ... }")
+            }
+            fail(g, m, "the " + st.kind + " " + ast.show(st) + " has no method '" + m.name + "' (it has: " + have.join(", ") + ")")
         }
         // a method that changes self can't be called on a temporary or a read-only value
         if g.sigs[fi].mutself && (t.kind == "struct" || t.kind == "enum") {

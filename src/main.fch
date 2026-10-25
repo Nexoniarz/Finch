@@ -11,6 +11,7 @@ import parser
 import gen
 import cimport
 import platform
+import linker
 import "stdlib.h"
 
 fn dirOf(str path) -> str {
@@ -100,20 +101,6 @@ fn load(ptr[Loader] l, str path, str module) {
     }
 }
 
-// -lname, or whatever pkg-config says the library needs
-fn libFlags(str name) -> str {
-    tmp := "/tmp/finch_pkg_flags.txt"
-    code := shell("pkg-config --libs '" + name + "' > '" + tmp + "' 2> /dev/null")
-    if code == 0 && file_exists(tmp) {
-        flags := read_file(tmp).trim()
-        shell("rm -f '" + tmp + "'")
-        if flags.len > 0 {
-            return flags
-        }
-    }
-    return "-l" + name
-}
-
 fn usage() {
     print("Finch -- the compiler is written in Finch")
     print("usage:")
@@ -129,10 +116,6 @@ fn usage() {
     print("  --target <name>   build for another system: windows, linux, arm64 (Linux), macos, or an LLVM triple")
     print("not in this compiler yet: lsp. It is in the C++ one (branch before-bootstrap).")
     exit(1)
-}
-
-fn quote(str a) -> str {
-    return "'" + a.replace("'", "'\\''") + "'"
 }
 
 fn main([]str args) -> int {
@@ -171,10 +154,10 @@ fn main([]str args) -> int {
         } else if a == "-O0" {
             opt = "-O0"
         } else if a == "-l" && ai + 1 < args.len {
-            extraLibs.push(libFlags(args[ai + 1]))
+            extraLibs.push(args[ai + 1])
             ai += 1
         } else if a.starts_with("-l") && a.len > 2 {
-            extraLibs.push(libFlags(a.sub(2, a.len)))
+            extraLibs.push(a.sub(2, a.len))
         } else if a == "-I" && ai + 1 < args.len {
             extraDirs.push(args[ai + 1])
             ai += 1
@@ -228,7 +211,7 @@ fn main([]str args) -> int {
     []cimport.Header headers
     []str seen
     []str dirs = extraDirs
-    []str libs = extraLibs
+    []str links = extraLibs
     for prog in loader.progs {
         d := dirOf(prog.path)
         if !dirs.contains(d) {
@@ -241,10 +224,10 @@ fn main([]str args) -> int {
             }
         }
         for l in prog.links {
-            if l.ends_with(".c") {
-                libs.push("'" + d + "/" + l + "'")
+            if l.ends_with(".c") || l.ends_with(".o") || l.ends_with(".a") {
+                links.push(d + "/" + l)             // the program's own C code, next to the .fch file
             } else {
-                libs.push(libFlags(l))
+                links.push(l)
             }
         }
     }
@@ -277,13 +260,6 @@ fn main([]str args) -> int {
         print("error: can't find the Finch runtime (runtime/finch_rt.c)")
         return 1
     }
-    llPath := out + ".ll"
-    write_file(llPath, ir)
-    // the IR is always compiled by clang (CC may be gcc, which can't read it); FINCH_CC picks the linker for another system
-    clang := getenv("FINCH_CC")
-    if clang.len == 0 || tg.cross {
-        clang = "clang"
-    }
     extra := ""
     if shared {
         extra = " -fPIC"
@@ -291,37 +267,16 @@ fn main([]str args) -> int {
     if debug {
         extra = extra + " -g"      // or clang drops the debug info that is in the IR
     }
-    code := 0
-    if tg.cross {
-        // an object for the target, then the target's own C compiler links it with the runtime
-        obj := out + ".o"
-        code = shell("clang --target=" + tg.triple + " " + opt + extra + " -w -c '" + llPath + "' -o '" + obj + "'")
-        if code == 0 {
-            linkShared := ""
-            if shared {
-                linkShared = " -shared"
-            }
-            code = shell(tg.cc + " '" + obj + "' '" + rt + "' -o '" + out + "' -lm" + linkShared + " " + libs.join(" "))
-        }
-        shell("rm -f '" + obj + "'")
-    } else {
-        if shared {
-            extra = extra + " -shared"
-        }
-        code = shell(clang + " " + opt + extra + " -w '" + llPath + "' '" + rt + "' -o '" + out + "' -lm " + libs.join(" "))
-    }
-    shell("rm -f '" + llPath + "'")
-    if code != 0 {
-        print("error: clang failed")
+    if linker.build(linker.Build(out: out, ir: ir, rt: rt, opt: opt, extra: extra, shared: shared, links: links), tg, ci) != 0 {
         return 1
     }
     if cmd == "run" {
         []str quoted
         for a in progArgs {
-            quoted.push(quote(a))
+            quoted.push(linker.quote(a))
         }
-        status := shell(tg.runner + quote(out) + " " + quoted.join(" "))
-        shell("rm -f " + quote(out))
+        status := shell(tg.runner + linker.quote(out) + " " + quoted.join(" "))
+        shell("rm -f " + linker.quote(out))
         return status
     }
     return 0

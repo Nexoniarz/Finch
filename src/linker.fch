@@ -1,0 +1,304 @@
+// From LLVM IR to a program: compile the IR, add the runtime (compiled once and kept), link the C libraries
+// and C files the program asks for, and turn the linker's complaints into something a person can act on.
+import platform
+import cimport
+import "stdlib.h"
+import "unistd.h"
+
+// 32-bit FNV-1a, as hex: names the cached runtime object after what it was built from
+fn fingerprint(str text) -> str {
+    u32 h = 2166136261
+    for c in text {
+        h = (h ^ u32(c)) * 16777619
+    }
+    digits := "0123456789abcdef"
+    []str parts
+    for k in 0..8 {
+        parts.push(str(digits[int((h >> u32(28 - 4 * k)) & 15)]))
+    }
+    return parts.join("")
+}
+
+fn quote(str a) -> str {
+    return "'" + a.replace("'", "'\\''") + "'"
+}
+
+// where files that are made once and kept go: ~/.cache/finch
+fn cacheDir() -> str {
+    x := getenv("XDG_CACHE_HOME")
+    if x.len > 0 {
+        return x + "/finch"
+    }
+    h := getenv("HOME")
+    if h.len > 0 {
+        return h + "/.cache/finch"
+    }
+    return "/tmp/finch-cache"
+}
+
+// "-lname", or whatever pkg-config says the library needs
+fn libFlags(str name, platform.Target tg) -> str {
+    if name.ends_with(".framework") {
+        return "-framework " + quote(name.sub(0, name.len - 10))         // macOS: link "Cocoa.framework"
+    }
+    if !tg.cross {
+        tmp := "/tmp/finch_pkg_flags.txt"
+        code := shell("pkg-config --libs " + quote(name) + " > '" + tmp + "' 2> /dev/null")
+        if code == 0 && file_exists(tmp) {
+            flags := (read_file(tmp) or "").trim()
+            shell("rm -f '" + tmp + "'")
+            if flags.len > 0 {
+                return flags
+            }
+        }
+    }
+    return quote("-l" + name)
+}
+
+// "GLFW/glfw3.h" -> "glfw": a decent first guess for the library's name
+fn guessLib(str header) -> str {
+    name := header
+    slash := name.find("/")
+    while slash >= 0 {
+        name = name.sub(slash + 1, name.len)
+        slash = name.find("/")
+    }
+    dot := name.len
+    for i in 0..name.len {
+        if name[i] == '.' {
+            dot = i
+        }
+    }
+    name = name.sub(0, dot)
+    while name.len > 0 && name[name.len - 1] >= '0' && name[name.len - 1] <= '9' {
+        name = name.sub(0, name.len - 1)
+    }
+    return name.lower()
+}
+
+struct Names {
+    []str items
+}
+
+fn Names.add(str x) {
+    if x.len > 0 && !self.items.contains(x) {
+        self.items.push(x)
+    }
+}
+
+// the text after `marker` up to the next one of `stops`
+fn between(str line, str marker, str stops) -> str {
+    a := line.find(marker)
+    if a < 0 {
+        return ""
+    }
+    rest := line.sub(a + marker.len, line.len)
+    n := 0
+    while n < rest.len && !stops.contains(str(rest[n])) {
+        n += 1
+    }
+    return rest.sub(0, n)
+}
+
+// The linker speaks in riddles; say what is missing and what to write.
+fn linkFailed(str output, cimport.CImports ci, platform.Target tg) -> int {
+    missing := Names()
+    libs := Names()
+    for line in output.split("\n") {
+        l := line.trim()
+        if l.contains("undefined reference to `") {
+            missing.add(between(l, "undefined reference to `", "'"))
+        } else if l.contains("undefined symbol: ") {
+            missing.add(between(l, "undefined symbol: ", " \n"))
+        } else if l.contains("unresolved external symbol ") {
+            missing.add(between(l, "unresolved external symbol ", " \n\r"))
+        } else if l.contains("cannot find -l") {
+            libs.add(between(l, "cannot find -l", ": \n\r"))
+        } else if l.contains("library not found for -l") {
+            libs.add(between(l, "library not found for -l", ": \n\r"))
+        } else if l.contains("ld: library '") {
+            libs.add(between(l, "ld: library '", "'"))
+        } else if l.contains("framework '") && l.contains("not found") {
+            libs.add(between(l, "framework '", "'") + ".framework")
+        } else if l.starts_with("\"") && l.contains("\", referenced from:") {
+            // Apple ld: "_name", referenced from:
+            name := l.sub(1, l.find("\", referenced from:"))
+            if tg.darwin && name.starts_with("_") {
+                name = name.sub(1, name.len)
+            }
+            missing.add(name)
+        }
+    }
+    if missing.items.len == 0 && libs.items.len == 0 {
+        print(output + "error: linking failed")
+        return 1
+    }
+    for lib in libs.items {
+        print("error: the library '" + lib + "' wasn't found. Is it installed? (on Nix: add it to shell.nix)")
+    }
+    // the missing functions, grouped by the header they came from
+    []str headers
+    []Names byHeader
+    for name in missing.items {
+        header := ""
+        if ci.fns.has(name) {
+            header = ci.fns[name].header
+        }
+        k := headers.find(header)
+        if k < 0 {
+            headers.push(header)
+            byHeader.push(Names())
+            k = headers.len - 1
+        }
+        byHeader[k].add(name)
+    }
+    for k in 0..headers.len {
+        names := byHeader[k].items
+        []str shown
+        for i in 0..names.len {
+            if i < 3 {
+                shown.push(names[i])
+            }
+        }
+        list := shown.join(", ")
+        if names.len > 3 {
+            list = list + " and " + str(names.len - 3) + " more"
+        }
+        if headers[k].len == 0 {
+            print("error: no code found for " + list)
+            continue
+        }
+        verb := "come"
+        if names.len == 1 {
+            verb = "comes"
+        }
+        print("error: " + list + " " + verb + " from \"" + headers[k] + "\", but its library isn't linked")
+        print("  the header only says the functions exist; their code lives in a library.")
+        print("  add this at the top of your file (with the library's real name):")
+        print("")
+        print("      link \"" + guessLib(headers[k]) + "\"")
+        print("")
+    }
+    return 1
+}
+
+// The runtime, compiled once per system and compiler and kept in the cache folder.
+fn runtimeObject(str rt, platform.Target tg, str cc) -> str! {
+    source := try read_file(rt)
+    dir := cacheDir()
+    obj := dir + "/rt-" + fingerprint(source + cc + tg.triple + "2.5") + ".o"
+    if file_exists(obj) {
+        return obj
+    }
+    shell("mkdir -p " + quote(dir))
+    part := obj + ".part" + str(int(getpid()))
+    pic := " -fPIC"
+    if tg.windows {
+        pic = ""
+    }
+    log := part + ".log"
+    code := shell(cc + " -O2" + pic + " -c " + quote(rt) + " -o " + quote(part) + " > " + quote(log) + " 2>&1")
+    if code != 0 {
+        text := read_file(log) or ""
+        shell("rm -f " + quote(part) + " " + quote(log))
+        return error(text + "error: couldn't build the Finch runtime with '" + cc + "' (is a C compiler installed?)")
+    }
+    shell("rm -f " + quote(log) + " && mv " + quote(part) + " " + quote(obj))
+    return obj
+}
+
+struct Build {
+    str out             // the program
+    str ir              // its LLVM IR, as text
+    str rt              // the runtime's source file
+    str opt             // -O2 or -O0
+    str extra           // -g, -fPIC ...
+    bool shared
+    []str links         // what the program asked to link: a library name, a .c file (with its folder), a .o or .a
+}
+
+// IR -> program. 0 if it worked.
+fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
+    clang := getenv("FINCH_CLANG")
+    if clang.len == 0 {
+        clang = "clang"
+    }
+    // the C compiler of the runtime and the linker: the target's own when building for another system
+    cc := clang
+    if tg.cross {
+        cc = tg.cc
+    } else if getenv("FINCH_CC").len > 0 {
+        cc = getenv("FINCH_CC")
+    }
+    rtobj := runtimeObject(b.rt, tg, cc) or {
+        print(err)
+        return 1
+    }
+    ll := b.out + ".ll"
+    obj := b.out + ".o"
+    write_file(ll, b.ir)
+    target := ""
+    if tg.cross {
+        target = " --target=" + tg.triple
+    }
+    log := b.out + ".log"
+    code := shell(clang + target + " " + b.opt + b.extra + " -w -c " + quote(ll) + " -o " + quote(obj) + " > " + quote(log) + " 2>&1")
+    shell("rm -f " + quote(ll))
+    if code != 0 {
+        print(read_file(log) or "")
+        print("error: clang couldn't compile the program's IR")
+        shell("rm -f " + quote(obj) + " " + quote(log))
+        return 1
+    }
+    cmd := cc + " " + quote(obj) + " " + quote(rtobj) + " -o " + quote(b.out)
+    if !tg.msvc {
+        cmd = cmd + " -lm"
+    }
+    if b.shared {
+        if tg.darwin {
+            cmd = cmd + " -dynamiclib"
+        } else {
+            cmd = cmd + " -shared"
+        }
+    }
+    []str temps
+    for l in b.links {
+        if l.ends_with(".c") {
+            // the program's own C file, built along with it
+            o := b.out + "." + str(temps.len) + ".o"
+            pic := " -fPIC"
+            if tg.windows {
+                pic = ""
+            }
+            c := shell(cc + " -O2" + pic + " -c " + quote(l) + " -o " + quote(o) + " > " + quote(log) + " 2>&1")
+            if c != 0 {
+                print((read_file(log) or "") + "error: couldn't compile " + l)
+                shell("rm -f " + quote(obj) + " " + quote(log) + " " + quote(o))
+                return 1
+            }
+            temps.push(o)
+            cmd = cmd + " " + quote(o)
+        } else if l.ends_with(".o") || l.ends_with(".a") {
+            cmd = cmd + " " + quote(l)
+        } else {
+            cmd = cmd + " " + libFlags(l, tg)
+        }
+    }
+    status := shell(cmd + " > " + quote(log) + " 2>&1")
+    output := read_file(log) or ""
+    shell("rm -f " + quote(obj) + " " + quote(log))
+    for t in temps {
+        shell("rm -f " + quote(t))
+    }
+    if status == 127 {
+        print("error: no C compiler found to link with ('" + cc + "'; install one, or set FINCH_CC)")
+        return 1
+    }
+    if status != 0 {
+        return linkFailed(output, ci, tg)
+    }
+    if output.len > 0 {
+        print(output)           // warnings, if any
+    }
+    return 0
+}

@@ -239,8 +239,13 @@ fn parseProgram(ptr[Parser] p) -> ast.Program {
                 prog.imports.push(next(p).text)
             }
         } else if at(p, "link") {
-            next(p)
-            prog.links.push(expect(p, "string", "a library or C file name, like  link \"glfw\"").text)
+            lt := next(p)
+            lib := expect(p, "string", "a library name in quotes, like link \"glfw\"").text
+            ownCode := lib.ends_with(".c") || lib.ends_with(".o") || lib.ends_with(".a")      // your own C code, next to the .fch file
+            if !ownCode && (lib.starts_with("lib") || lib.contains(".so") || lib.contains("/")) {
+                fail(p, lt, "write just the library's name: for libglfw.so that's  link \"glfw\"")
+            }
+            prog.links.push(lib)
         } else if at(p, "struct") {
             prog.structs.push(parseStruct(p))
         } else if at(p, "enum") {
@@ -377,6 +382,9 @@ fn parseStruct(ptr[Parser] p) -> ast.Node {
 fn parseFn(ptr[Parser] p) -> ast.Node {
     f := node(p, "fn")
     f.exported = accept(p, "export")
+    if at(p, "ident") && isTypeName(cur(p).text) {
+        fail(p, cur(p), "functions start with 'fn', like: fn add(int a, int b) -> int { ... }")
+    }
     expect(p, "fn", "'fn', 'struct' or 'import'")
     f.name = expect(p, "ident", "a function name").text
     if at(p, "[") {

@@ -3,16 +3,19 @@
 #   tests/run/*.fch   must compile and print exactly what is in the matching .out file
 #                    (files without `fn main` are modules or helpers and are skipped;
 #                     a matching .in file is fed to the program as its input)
-#   tests/fail/*.fch  must fail; the first line is "// expect: <text that must appear in the error>"
+#   tests/fail/*.fch and tests/new/fail/*.fch   must fail; the first line is "// expect: <text that must appear in the error>"
+#   the same programs built with -g -O0, and a library loaded by a C program (tests/shared.sh)
 #   MEMCHECK=1 tests/run.sh   also runs every program under valgrind: no leaks, no bad memory access
 set -u
 cd "$(dirname "$0")"
 FINCH=${FINCH:-../build/finch}
+FINCH="$(cd "$(dirname "$FINCH")" && pwd)/$(basename "$FINCH")"       # tests/shared.sh runs from another folder
+export FINCH_RT=${FINCH_RT:-$PWD/../runtime/finch_rt.c}
 pass=0; failed=0
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-for f in run/*.fch; do
+for f in run/*.fch new/*.fch; do
     grep -q "^fn main" "$f" || continue
     want="${f%.fch}.out"
     input="${f%.fch}.in"
@@ -38,7 +41,7 @@ for f in run/*.fch; do
     pass=$((pass + 1))
 done
 
-for f in fail/*.fch; do
+for f in fail/*.fch new/fail/*.fch; do
     expect=$(head -1 "$f" | sed -n 's|^// expect: ||p')
     got=$("$FINCH" run "$f" < /dev/null 2>&1)
     status=$?
@@ -51,6 +54,29 @@ for f in fail/*.fch; do
         echo "$got" | head -5
     fi
 done
+
+# the same programs with debug info (-g -O0): the metadata has to be valid for every kind of thing a program has
+for f in new/enums.fch new/generics.fch new/std_json.fch run/basics.fch run/methods_basic.fch run/maps.fch run/errors.fch \
+         run/defer.fch run/c_structs.fch run/memory.fch; do
+    input="${f%.fch}.in"
+    [ -f "$input" ] || input=/dev/null
+    if "$FINCH" build "$f" -g -O0 -o "$tmp/progg" > "$tmp/err" 2>&1 && [ "$("$tmp/progg" < "$input" 2>&1)" == "$(cat "${f%.fch}.out")" ]; then
+        pass=$((pass + 1))
+    else
+        failed=$((failed + 1))
+        echo "FAIL (-g) $f"
+        head -3 "$tmp/err"
+    fi
+done
+
+# a library a C program loads (finch build --shared)
+if FINCH="$FINCH" ./shared.sh > "$tmp/shared.out" 2>&1; then
+    pass=$((pass + 1))
+else
+    failed=$((failed + 1))
+    echo "FAIL shared.sh"
+    head -5 "$tmp/shared.out"
+fi
 
 echo "$pass passed, $failed failed"
 [ $failed -eq 0 ]
