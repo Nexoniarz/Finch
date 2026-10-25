@@ -99,6 +99,12 @@ fn parseType(ptr[Parser] p) -> ast.Type {
         fail(p, cur(p), "unexpected " + describe(cur(p)) + " (expected a type like int, str, []int or a struct name)")
     }
     name := next(p).text
+    if name == "map" && at(p, "[") {
+        next(p)
+        k := parseType(p)
+        expect(p, "]", "']' (a map type looks like map[str]int)")
+        return ast.mapOf(k, parseType(p))
+    }
     if isTypeName(name) {
         if name == "ptr" && accept(p, "[") {
             t := ast.ptrTo(parseType(p))
@@ -133,7 +139,7 @@ fn atDeclaration(ptr[Parser] p) -> bool {
     if n == "ident" {
         return !p.toks[p.i + 1].nl
     }
-    if cur(p).text == "ptr" && n == "[" {
+    if (cur(p).text == "ptr" || cur(p).text == "map") && n == "[" {
         return true
     }
     return n == "." && peekKind(p, 2) == "ident" && peekKind(p, 3) == "ident" && !p.toks[p.i + 3].nl
@@ -263,9 +269,15 @@ fn parseStatement(ptr[Parser] p) -> ast.Node {
         s := node(p, "for")
         next(p)
         s.name = expect(p, "ident", "a loop variable name").text
+        if accept(p, ",") {
+            s.text = expect(p, "ident", "a second loop variable name").text
+        }
         expect(p, "in", "'in'")
         s.kids.push(parseExpr(p))
         if accept(p, "..") {
+            if s.text.len > 0 {
+                fail(p, cur(p), "a range of numbers has one loop variable: for i in 0..n")
+            }
             s.kids.push(parseExpr(p))
         } else {
             s.kind = "each"
@@ -516,8 +528,19 @@ fn parsePrimary(ptr[Parser] p) -> ast.Node {
         next(p)
         e.kind = "array"
         p.depth += 1
+        if at(p, ":") && peekKind(p, 1) == "]" {       // [:], an empty map
+            next(p)
+            e.kind = "map"
+        }
         while !at(p, "]") {
             e.kids.push(parseExpr(p))
+            if e.kids.len == 1 && at(p, ":") {          // ["a": 1, ...]
+                e.kind = "map"
+            }
+            if e.kind == "map" {
+                expect(p, ":", "':' (a map entry looks like \"key\": value)")
+                e.kids.push(parseExpr(p))
+            }
             if !accept(p, ",") {
                 break
             }

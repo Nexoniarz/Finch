@@ -280,6 +280,9 @@ fn resolve(ptr[Gen] g, ast.Type t, ast.Node at) -> ast.Type {
     if t.kind == "array" {
         return ast.arrayOf(resolve(g, t.elem[0], at))
     }
+    if t.kind == "map" {
+        return ast.mapOf(resolve(g, t.elem[0], at), resolve(g, t.elem[1], at))
+    }
     if t.kind == "ptr" {
         if t.elem.len == 0 {
             return t
@@ -325,6 +328,9 @@ fn llty(ptr[Gen] g, ast.Type t) -> str {
     }
     if k == "str" || k == "array" {
         return "{ ptr, i64, i64 }"
+    }
+    if k == "map" {
+        return "{ ptr, i64, i64, i64, ptr, i64, i64 }"      // entries, len, used, cap, index, icap, adds
     }
     if k == "ptr" || k == "null" {
         return "ptr"
@@ -375,7 +381,7 @@ fn sizeOf(ptr[Gen] g, ast.Type t) -> str {
 }
 
 fn owning(ptr[Gen] g, ast.Type t) -> bool {
-    if t.kind == "str" || t.kind == "array" {
+    if t.kind == "str" || t.kind == "array" || t.kind == "map" {
         return true
     }
     if t.kind == "struct" {
@@ -387,6 +393,9 @@ fn owning(ptr[Gen] g, ast.Type t) -> bool {
 fn typeKey(ast.Type t) -> str {
     if t.kind == "array" {
         return "arr_" + typeKey(t.elem[0])
+    }
+    if t.kind == "map" {
+        return "map_" + typeKey(t.elem[0]) + "_" + typeKey(t.elem[1])
     }
     if t.kind == "struct" {
         return "S_" + modName(t.module) + "_" + t.name
@@ -506,7 +515,7 @@ fn loopEnd(ptr[Gen] g, []str l) {
 fn copyAt(ptr[Gen] g, str dst, str src, ast.Type t) {
     if t.kind == "str" {
         emit(g, "call void @finch_str_copy(ptr " + dst + ", ptr " + src + ")")
-    } else if t.kind == "array" || (t.kind == "struct" && owning(g, t)) {
+    } else if t.kind == "array" || t.kind == "map" || (t.kind == "struct" && owning(g, t)) {
         emit(g, "call void " + copyFn(g, t) + "(ptr " + dst + ", ptr " + src + ")")
     } else {
         store(g, llty(g, t), load(g, llty(g, t), src), dst)
@@ -531,6 +540,24 @@ fn copyFn(ptr[Gen] g, ast.Type t) -> str {
             dp := op(g, "getelementptr inbounds " + llty(g, et) + ", ptr " + d + ", i64 " + l[3])
             spp := op(g, "getelementptr inbounds " + llty(g, et) + ", ptr " + sp + ", i64 " + l[3])
             copyAt(g, dp, spp, et)
+            loopEnd(g, l)
+        }
+    } else if t.kind == "map" {
+        emit(g, "call void @finch_map_clone_raw(ptr %dst, ptr %src, i64 " + entrySize(g, t) + ")")
+        if owning(g, t.elem[0]) || owning(g, t.elem[1]) {
+            // the slots were copied byte for byte: now give the copy its own keys and values
+            used := load(g, "i64", op(g, "getelementptr inbounds " + llty(g, t) + ", ptr %src, i32 0, i32 2"))
+            l := loopStart(g, used)
+            from := entryAt(g, "%src", t, l[3])
+            to := entryAt(g, "%dst", t, l[3])
+            live := newLabel(g, "entry.live")
+            next := newLabel(g, "entry.next")
+            condBr(g, op(g, "icmp ne i64 " + load(g, "i64", op(g, "getelementptr inbounds " + entryTy(g, t) + ", ptr " + from + ", i32 0, i32 0")) + ", 0"), live, next)
+            label(g, live)
+            copyAt(g, entryField(g, to, t, 1), entryField(g, from, t, 1), t.elem[0])
+            copyAt(g, entryField(g, to, t, 2), entryField(g, from, t, 2), t.elem[1])
+            br(g, next)
+            label(g, next)
             loopEnd(g, l)
         }
     } else {
@@ -696,6 +723,33 @@ fn formatFn(ptr[Gen] g, ast.Type t) -> str {
         emitFormat(g, "%buf", load(g, llty(g, et), ep), et, true)
         loopEnd(g, l)
         bufText(g, "%buf", "]")
+    } else if t.kind == "map" {
+        // {"a": 1, "b": 2}
+        first := alloca(g, "i1")
+        store(g, "i1", "true", first)
+        bufText(g, "%buf", "{")
+        used := load(g, "i64", op(g, "getelementptr inbounds " + llty(g, t) + ", ptr %a, i32 0, i32 2"))
+        l := loopStart(g, used)
+        e := entryAt(g, "%a", t, l[3])
+        live := newLabel(g, "entry.live")
+        next := newLabel(g, "entry.next")
+        condBr(g, op(g, "icmp ne i64 " + load(g, "i64", entryField(g, e, t, 0)) + ", 0"), live, next)
+        label(g, live)
+        sep := newLabel(g, "sep")
+        item := newLabel(g, "item")
+        condBr(g, load(g, "i1", first), item, sep)
+        label(g, sep)
+        bufText(g, "%buf", ", ")
+        br(g, item)
+        label(g, item)
+        store(g, "i1", "false", first)
+        emitFormat(g, "%buf", load(g, llty(g, t.elem[0]), entryField(g, e, t, 1)), t.elem[0], true)
+        bufText(g, "%buf", ": ")
+        emitFormat(g, "%buf", load(g, llty(g, t.elem[1]), entryField(g, e, t, 2)), t.elem[1], true)
+        br(g, next)
+        label(g, next)
+        loopEnd(g, l)
+        bufText(g, "%buf", "}")
     } else {
         sd := g.structs[findStruct(g, t.module, t.name)]
         st := llty(g, t)
@@ -1336,6 +1390,69 @@ fn forStmt(ptr[Gen] g, ast.Node s) {
     popScope(g)
 }
 
+// for key in map / for key, value in map: in the order the keys were added
+fn eachMap(ptr[Gen] g, ast.Node s, str mp, ast.Type t, bool live) {
+    kt := t.elem[0]
+    vt := t.elem[1]
+    changes := live && mutates(g, rootVar(s.kids[0]), s.kids[1])
+    iv := alloca(g, "i64")
+    store(g, "i64", "0", iv)
+    adds := ""
+    if live {
+        adds = load(g, "i64", op(g, "getelementptr inbounds " + llty(g, t) + ", ptr " + mp + ", i32 0, i32 6"))
+    }
+    cond := newLabel(g, "map.cond")
+    check := newLabel(g, "map.check")
+    body := newLabel(g, "map.body")
+    step := newLabel(g, "map.step")
+    end := newLabel(g, "map.end")
+    br(g, cond)
+    label(g, cond)
+    // adding keys inside the loop could reorder the entries: that stops the program (removing is fine)
+    if live && changes {
+        changed := newLabel(g, "map.changed")
+        same := newLabel(g, "map.same")
+        now := load(g, "i64", op(g, "getelementptr inbounds " + llty(g, t) + ", ptr " + mp + ", i32 0, i32 6"))
+        condBr(g, op(g, "icmp ne i64 " + now + ", " + adds), changed, same)
+        label(g, changed)
+        emit(g, "call void @finch_map_changed(ptr " + strGlobal(g, g.files[s.file]) + ", i64 " + str(s.line) + ")")
+        emit(g, "unreachable")
+        g.term = true
+        label(g, same)
+    }
+    i := load(g, "i64", iv)
+    used := load(g, "i64", op(g, "getelementptr inbounds " + llty(g, t) + ", ptr " + mp + ", i32 0, i32 2"))
+    condBr(g, op(g, "icmp slt i64 " + i + ", " + used), check, end)
+    label(g, check)
+    entry := entryAt(g, mp, t, i)
+    hash := load(g, "i64", entryField(g, entry, t, 0))
+    condBr(g, op(g, "icmp eq i64 " + hash + ", 0"), step, body)      // a removed entry
+    label(g, body)
+    g.loops.push(Loop(cont: step, brk: end, depth: g.scopes.len))
+    pushScope(g)
+    kv := load(g, llty(g, kt), entryField(g, entry, t, 1))
+    if changes {
+        kv = copyValue(g, kv, kt)
+    }
+    addVar(g, s, s.name, kt, kv, true)
+    if s.text.len > 0 {
+        vv := load(g, llty(g, vt), entryField(g, entry, t, 2))
+        if changes {
+            vv = copyValue(g, vv, vt)
+        }
+        addVar(g, s, s.text, vt, vv, true)
+    }
+    block(g, s.kids[1], true)
+    popScope(g)
+    g.loops.pop()
+    br(g, step)
+    label(g, step)
+    i2 := load(g, "i64", iv)
+    store(g, "i64", op(g, "add i64 " + i2 + ", 1"), iv)
+    br(g, cond)
+    label(g, end)
+}
+
 fn eachStmt(ptr[Gen] g, ast.Node s) {
     pushScope(g)
     r := ref(g, s.kids[0], false)
@@ -1348,8 +1465,13 @@ fn eachStmt(ptr[Gen] g, ast.Node s) {
         lt = r.val.ty
         listAddr = spill(g, r.val)
     }
+    if lt.kind == "map" {
+        eachMap(g, s, listAddr, lt, r.isPlace)
+        popScope(g)
+        return
+    }
     if lt.kind != "array" && lt.kind != "str" {
-        fail(g, s.kids[0], "for ... in needs an array or a str, but this is " + ast.show(lt) + " (for a range of numbers write 0..n)")
+        fail(g, s.kids[0], "for ... in needs an array, a str or a map, but this is " + ast.show(lt) + " (for a range of numbers write 0..n)")
     }
     et := T("char")
     if lt.kind == "array" {
@@ -1377,7 +1499,12 @@ fn eachStmt(ptr[Gen] g, ast.Node s) {
     }
     g.loops.push(Loop(cont: step, brk: end, depth: g.scopes.len))
     pushScope(g)
-    addVar(g, s, s.name, et, elem, true)
+    elemVar := s.name
+    if s.text.len > 0 {                  // for i, x in list
+        addVar(g, s, s.name, T("int"), i, true)
+        elemVar = s.text
+    }
+    addVar(g, s, elemVar, et, elem, true)
     block(g, s.kids[1], true)
     popScope(g)
     g.loops.pop()
@@ -1451,6 +1578,259 @@ fn returnStmt(ptr[Gen] g, ast.Node s) {
 }
 
 // ---------- expressions ----------
+
+// ---------- maps ----------
+//
+// map[K]V is { entries, len, used, cap, index, icap, adds } (see runtime/finch_rt.c). The runtime finds and
+// places entries; the compiler stores, copies and drops the keys and values in them. An entry is
+// { i64 hash, K key, V value }; hash 0 marks a removed entry.
+
+fn entryTy(ptr[Gen] g, ast.Type t) -> str {
+    return "{ i64, " + llty(g, t.elem[0]) + ", " + llty(g, t.elem[1]) + " }"
+}
+
+fn entrySize(ptr[Gen] g, ast.Type t) -> str {
+    return "ptrtoint (ptr getelementptr (" + entryTy(g, t) + ", ptr null, i32 1) to i64)"
+}
+
+// the address of entry number `i` of the map at `mp`
+fn entryAt(ptr[Gen] g, str mp, ast.Type t, str i) -> str {
+    entries := load(g, "ptr", op(g, "getelementptr inbounds " + llty(g, t) + ", ptr " + mp + ", i32 0, i32 0"))
+    return op(g, "getelementptr inbounds " + entryTy(g, t) + ", ptr " + entries + ", i64 " + i)
+}
+
+// field 0 hash, 1 key, 2 value
+fn entryField(ptr[Gen] g, str entry, ast.Type t, int f) -> str {
+    return op(g, "getelementptr inbounds " + entryTy(g, t) + ", ptr " + entry + ", i32 0, i32 " + str(f))
+}
+
+fn mapArgs(ptr[Gen] g, str mp, str keyAddr, ast.Type t) -> str {
+    kstr := "0"
+    if t.elem[0].kind == "str" {
+        kstr = "1"
+    }
+    return "ptr " + mp + ", ptr " + keyAddr + ", i64 " + entrySize(g, t) + ", i64 " + sizeOf(g, t.elem[0]) + ", i32 " + kstr
+}
+
+fn mapFind(ptr[Gen] g, str mp, str keyAddr, ast.Type t) -> str {
+    return op(g, "call i64 @finch_map_find(" + mapArgs(g, mp, keyAddr, t) + ")")
+}
+
+fn defaultVal(ptr[Gen] g, ast.Type t, ast.Node at) -> str {
+    if t.kind == "struct" && hasDefaults(g, t) {
+        []ast.Node noArgs
+        []str noNames
+        return construct(g, findStruct(g, t.module, t.name), noArgs, noNames, at).v
+    }
+    return zeroOf(t)
+}
+
+// The entry for `key`, added if it is missing: the key is copied in, and the value is its
+// type's default when `fill` (m[k] += 1 starts from 0).
+fn mapSlot(ptr[Gen] g, str mp, ast.Type t, Val key, bool fill, ast.Node at) -> str {
+    keyAddr := spill(g, key)
+    added := alloca(g, "i32")
+    store(g, "i32", "0", added)
+    i := op(g, "call i64 @finch_map_slot(" + mapArgs(g, mp, keyAddr, t) + ", ptr " + added + ")")
+    entry := entryAt(g, mp, t, i)
+    fresh := newLabel(g, "map.new")
+    have := newLabel(g, "map.have")
+    condBr(g, op(g, "icmp ne i32 " + load(g, "i32", added) + ", 0"), fresh, have)
+    label(g, fresh)
+    copyAt(g, entryField(g, entry, t, 1), keyAddr, t.elem[0])
+    if fill {
+        store(g, llty(g, t.elem[1]), own(g, Val(v: defaultVal(g, t.elem[1], at), ty: t.elem[1], fresh: true)), entryField(g, entry, t, 2))
+    }
+    br(g, have)
+    label(g, have)
+    return entry
+}
+
+// m[key]: reading a missing key stops the program; writing (m[k] = v, m[k] += 1, m[k].push(x)) adds it
+fn mapIndex(ptr[Gen] g, ast.Node e, Ref obj, ast.Type t, bool write) -> Ref {
+    kt := t.elem[0]
+    vt := t.elem[1]
+    key := coerce(g, exprWant(g, e.kids[1], kt), kt, e.kids[1], "the key")
+    if write {
+        if !obj.isPlace {
+            fail(g, e, "this is a temporary map, it can't be changed")
+        }
+        entry := mapSlot(g, obj.pl.addr, t, key, true, e)
+        return Ref(isPlace: true, pl: Place(addr: entryField(g, entry, t, 2), ty: vt))
+    }
+    mp := ""
+    if obj.isPlace {
+        mp = obj.pl.addr
+    } else {
+        mp = spill(g, obj.val)
+    }
+    keyAddr := spill(g, key)
+    i := mapFind(g, mp, keyAddr, t)
+    missing := newLabel(g, "map.missing")
+    found := newLabel(g, "map.found")
+    condBr(g, op(g, "icmp slt i64 " + i + ", 0"), missing, found)
+    label(g, missing)
+    text := alloca(g, "{ ptr, i64, i64 }")
+    store(g, "{ ptr, i64, i64 }", "zeroinitializer", text)
+    emitFormat(g, text, key.v, kt, true)
+    emit(g, "call void @finch_map_missing(ptr " + strGlobal(g, g.files[e.file]) + ", i64 " + str(e.line) + ", ptr " + text + ")")
+    emit(g, "unreachable")
+    g.term = true
+    label(g, found)
+    va := entryField(g, entryAt(g, mp, t, i), t, 2)
+    if obj.isPlace {
+        return Ref(isPlace: true, pl: Place(addr: va, ty: vt))
+    }
+    v := load(g, llty(g, vt), va)
+    out := Val(v: v, ty: vt)
+    if owning(g, vt) && obj.val.fresh {
+        out = Val(v: copyValue(g, v, vt), ty: vt, fresh: true)
+    }
+    return Ref(isPlace: false, val: out)
+}
+
+// ["a": 1, "b": 2], or [:] where the type is known
+fn mapLit(ptr[Gen] g, ast.Node e, ast.Type want) -> Val {
+    t := want
+    first := false
+    k0 := Val()
+    v0 := Val()
+    if want.kind != "map" {
+        if e.kids.len == 0 {
+            fail(g, e, "an empty [:] needs a type, like: map[str]int m = [:]")
+        }
+        // number values written in the code are all floats if any of them has a dot
+        allNum := true
+        anyFloat := false
+        for i in 0..e.kids.len / 2 {
+            y := e.kids[2 * i + 1]
+            if y.kind == "unary" && y.name == "-" {
+                y = y.kids[0]
+            }
+            if y.kind == "float" {
+                anyFloat = true
+            } else if y.kind != "int" {
+                allNum = false
+            }
+        }
+        k0 = expr(g, e.kids[0])
+        v0 = expr(g, e.kids[1])
+        if k0.ty.kind == "void" || k0.ty.kind == "null" {
+            fail(g, e.kids[0], "a map key needs a value with a type")
+        }
+        if v0.ty.kind == "void" || v0.ty.kind == "null" {
+            fail(g, e.kids[1], "a map value needs a value with a type")
+        }
+        vt := v0.ty
+        if allNum && anyFloat {
+            vt = T("float")
+        }
+        t = ast.mapOf(k0.ty, vt)
+        first = true
+    }
+    mp := alloca(g, llty(g, t))
+    store(g, llty(g, t), "zeroinitializer", mp)
+    for i in 0..e.kids.len / 2 {
+        k := k0
+        v := v0
+        if !(i == 0 && first) {
+            k = exprWant(g, e.kids[2 * i], t.elem[0])
+            v = exprWant(g, e.kids[2 * i + 1], t.elem[1])
+        }
+        k = coerce(g, k, t.elem[0], e.kids[2 * i], "every key of this map")
+        v = coerce(g, v, t.elem[1], e.kids[2 * i + 1], "every value of this map")
+        vv := own(g, v)
+        entry := mapSlot(g, mp, t, k, false, e)
+        store(g, llty(g, t.elem[1]), vv, entryField(g, entry, t, 2))
+    }
+    return Val(v: load(g, llty(g, t), mp), ty: t, fresh: true)
+}
+
+fn mapMethod(ptr[Gen] g, ast.Node m, str mp, ast.Type t) -> Val {
+    n := m.name
+    kt := t.elem[0]
+    vt := t.elem[1]
+    if n == "has" || n == "get" || n == "remove" {
+        if n == "get" {
+            checkArgs(g, m, 1, 2, n)
+        } else {
+            checkArgs(g, m, 1, 1, n)
+        }
+        key := coerce(g, exprWant(g, m.kids[1], kt), kt, m.kids[1], "the key")
+        i := mapFind(g, mp, spill(g, key), t)
+        was := op(g, "icmp sge i64 " + i + ", 0")
+        if n == "has" {
+            return Val(v: was, ty: T("bool"))
+        }
+        if n == "remove" {
+            hit := newLabel(g, "remove.hit")
+            end := newLabel(g, "remove.end")
+            condBr(g, was, hit, end)
+            label(g, hit)
+            emit(g, "call void @finch_map_remove_at(ptr " + mp + ", i64 " + i + ", i64 " + entrySize(g, t) + ")")
+            br(g, end)
+            label(g, end)
+            return Val(v: was, ty: T("bool"))
+        }
+        // get(key, default): the default is only computed when the key is missing
+        found := newLabel(g, "get.found")
+        missing := newLabel(g, "get.missing")
+        fend := newLabel(g, "get.fend")
+        mend := newLabel(g, "get.mend")
+        end := newLabel(g, "get.end")
+        condBr(g, was, found, missing)
+        label(g, found)
+        v := copyValue(g, load(g, llty(g, vt), entryField(g, entryAt(g, mp, t, i), t, 2)), vt)
+        br(g, fend)
+        label(g, fend)
+        br(g, end)
+        label(g, missing)
+        d := own(g, coerce(g, exprWant(g, m.kids[2], vt), vt, m.kids[2], "the default"))
+        br(g, mend)
+        label(g, mend)
+        br(g, end)
+        label(g, end)
+        return Val(v: op(g, "phi " + llty(g, vt) + " [ " + v + ", %" + fend + " ], [ " + d + ", %" + mend + " ]"), ty: vt, fresh: owning(g, vt))
+    }
+    if n == "clear" {
+        checkArgs(g, m, 1, 0, n)
+        emit(g, "call void @finch_map_clear(ptr " + mp + ")")
+        return Val(ty: T("void"))
+    }
+    if n == "keys" || n == "values" {
+        checkArgs(g, m, 1, 0, n)
+        field := 1
+        et := kt
+        if n == "values" {
+            field = 2
+            et = vt
+        }
+        at := ast.arrayOf(et)
+        out := alloca(g, "{ ptr, i64, i64 }")
+        store(g, "{ ptr, i64, i64 }", "zeroinitializer", out)
+        len := load(g, "i64", op(g, "getelementptr inbounds " + llty(g, t) + ", ptr " + mp + ", i32 0, i32 1"))
+        emit(g, "call void @finch_arr_make(ptr " + out + ", i64 " + len + ", i64 " + sizeOf(g, et) + ")")
+        data := load(g, "ptr", out)
+        j := alloca(g, "i64")
+        store(g, "i64", "0", j)
+        used := load(g, "i64", op(g, "getelementptr inbounds " + llty(g, t) + ", ptr " + mp + ", i32 0, i32 2"))
+        l := loopStart(g, used)
+        entry := entryAt(g, mp, t, l[3])
+        live := newLabel(g, "entry.live")
+        next := newLabel(g, "entry.next")
+        condBr(g, op(g, "icmp ne i64 " + load(g, "i64", entryField(g, entry, t, 0)) + ", 0"), live, next)
+        label(g, live)
+        jv := load(g, "i64", j)
+        copyAt(g, op(g, "getelementptr inbounds " + llty(g, et) + ", ptr " + data + ", i64 " + jv), entryField(g, entry, t, field), et)
+        store(g, "i64", op(g, "add i64 " + jv + ", 1"), j)
+        br(g, next)
+        label(g, next)
+        loopEnd(g, l)
+        return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: at, fresh: true)
+    }
+    fail(g, m, "a map has no method '" + n + "' (it has: has, get, remove, clear, keys, values)")
+    return Val()
+}
 
 // ---------- errors as values ----------
 
@@ -1558,6 +1938,9 @@ fn exprWant(ptr[Gen] g, ast.Node e, ast.Type want) -> Val {
     if e.kind == "array" {
         return arrayLit(g, e, want)
     }
+    if e.kind == "map" {
+        return mapLit(g, e, want)
+    }
     return expr(g, e)
 }
 
@@ -1623,6 +2006,9 @@ fn expr(ptr[Gen] g, ast.Node e) -> Val {
     }
     if k == "array" {
         return arrayLit(g, e, T("void"))
+    }
+    if k == "map" {
+        return mapLit(g, e, T("void"))
     }
     fail(g, e, "unknown expression " + k)
     return Val()
@@ -1947,18 +2333,18 @@ fn member(ptr[Gen] g, ast.Node m, bool write) -> Ref {
         obj = Ref(isPlace: true, pl: Place(addr: pv, ty: target))
         t = target
     }
-    if t.kind == "array" || t.kind == "str" {
+    if t.kind == "array" || t.kind == "str" || t.kind == "map" {
         if m.name != "len" {
-            fail(g, m, "an array or str has .len, not '." + m.name + "'")
+            fail(g, m, "an array, map or str has .len, not '." + m.name + "'")
         }
         if write {
             fail(g, m, ".len can't be changed directly (use push or pop)")
         }
         if obj.isPlace {
-            lp := op(g, "getelementptr inbounds { ptr, i64, i64 }, ptr " + obj.pl.addr + ", i32 0, i32 1")
+            lp := op(g, "getelementptr inbounds " + llty(g, t) + ", ptr " + obj.pl.addr + ", i32 0, i32 1")
             return Ref(isPlace: false, val: Val(v: load(g, "i64", lp), ty: T("int")))
         }
-        return Ref(isPlace: false, val: Val(v: op(g, "extractvalue { ptr, i64, i64 } " + obj.val.v + ", 1"), ty: T("int")))
+        return Ref(isPlace: false, val: Val(v: op(g, "extractvalue " + llty(g, t) + " " + obj.val.v + ", 1"), ty: T("int")))
     }
     if t.kind != "struct" {
         fail(g, m, ast.show(t) + " has no fields (no '." + m.name + "')")
@@ -1986,6 +2372,9 @@ fn index(ptr[Gen] g, ast.Node e, bool write) -> Ref {
     t := obj.val.ty
     if obj.isPlace {
         t = obj.pl.ty
+    }
+    if t.kind == "map" {
+        return mapIndex(g, e, obj, t, write)
     }
     i := coerce(g, expr(g, e.kids[1]), T("int"), e.kids[1], "an index").v
     if t.kind == "ptr" {
@@ -2182,7 +2571,7 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
         } else if k == "bool" {
             z := op(g, "zext i1 " + v.v + " to i32")
             emit(g, "call void @finch_str_from_bool(ptr " + out + ", i32 " + z + ")")
-        } else if k == "bool" || k == "char" || k == "array" || k == "struct" {
+        } else if k == "bool" || k == "char" || k == "array" || k == "map" || k == "struct" {
             store(g, "{ ptr, i64, i64 }", "zeroinitializer", out)
             emitFormat(g, out, v.v, v.ty, false)
         } else {
@@ -2444,6 +2833,18 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
             sv = Val(v: load(g, "{ ptr, i64, i64 }", r.pl.addr), ty: t)
         }
         return strMethod(g, m, spill(g, sv))
+    }
+    if t.kind == "map" {
+        mp := ""
+        if r.isPlace {
+            mp = r.pl.addr
+        } else {
+            if changing.contains(m.name) {
+                fail(g, m, m.name + "() would change a temporary map; store it in a variable first")
+            }
+            mp = spill(g, r.val)
+        }
+        return mapMethod(g, m, mp, t)
     }
     st := t
     selfAddr := ""
@@ -2780,6 +3181,13 @@ fn runtimeDecls() -> str {
         "declare void @finch_str_join(ptr, ptr, ptr)",
         "declare void @finch_str_repeat(ptr, ptr, i64)",
         "declare void @finch_bytes_from_str(ptr, ptr)",
+        "declare i64 @finch_map_find(ptr, ptr, i64, i64, i32)",
+        "declare i64 @finch_map_slot(ptr, ptr, i64, i64, i32, ptr)",
+        "declare void @finch_map_remove_at(ptr, i64, i64)",
+        "declare void @finch_map_clear(ptr)",
+        "declare void @finch_map_clone_raw(ptr, ptr, i64)",
+        "declare void @finch_map_missing(ptr, i64, ptr) noreturn cold",
+        "declare void @finch_map_changed(ptr, i64) noreturn cold",
         "declare void @finch_arr_reserve(ptr, i64, i64)",
         "declare void @finch_arr_clone_raw(ptr, ptr, i64)",
         "declare void @finch_arr_make(ptr, i64, i64)",

@@ -21,6 +21,14 @@ fn arrayOf(Type t) -> Type {
     return out
 }
 
+// map[K]V: elem holds the key, then the value
+fn mapOf(Type k, Type v) -> Type {
+    out := Type(kind: "map")
+    out.elem.push(k)
+    out.elem.push(v)
+    return out
+}
+
 fn ptrTo(Type t) -> Type {
     out := Type(kind: "ptr")
     out.elem.push(t)
@@ -34,14 +42,16 @@ fn same(Type a, Type b) -> bool {
     if a.kind == "struct" || a.kind == "named" {
         return a.name == b.name && a.module == b.module
     }
-    if a.kind == "array" || a.kind == "ptr" {
+    if a.kind == "array" || a.kind == "ptr" || a.kind == "map" {
         if a.elem.len != b.elem.len {
             return false
         }
-        if a.elem.len == 0 {
-            return true
+        for i in 0..a.elem.len {
+            if !same(a.elem[i], b.elem[i]) {
+                return false
+            }
         }
-        return same(a.elem[0], b.elem[0])
+        return true
     }
     return true
 }
@@ -49,6 +59,9 @@ fn same(Type a, Type b) -> bool {
 fn show(Type t) -> str {
     if t.kind == "array" {
         return "[]" + show(t.elem[0])
+    }
+    if t.kind == "map" {
+        return "map[" + show(t.elem[0]) + "]" + show(t.elem[1])
     }
     if t.kind == "ptr" {
         if t.elem.len == 0 {
