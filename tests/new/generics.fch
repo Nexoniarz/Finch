@@ -1,0 +1,95 @@
+struct Stack[T] {
+    []T items
+}
+
+fn Stack[T].push(T x) {
+    self.items.push(x)
+}
+
+fn Stack[T].pop() -> T {
+    return self.items.pop()
+}
+
+fn Stack[T].size() -> int {
+    return self.items.len
+}
+
+struct Pair[A, B] {
+    A first
+    B second
+}
+
+fn Pair[A, B].swapped() -> Pair[B, A] {
+    return Pair[B, A](self.second, self.first)
+}
+
+struct Point {
+    int x
+    int y
+}
+
+fn max[T](T a, T b) -> T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+fn first[T]([]T items) -> T {
+    return items[0]
+}
+
+fn count[T]([]T items, T wanted) -> int {
+    n := 0
+    for x in items {
+        if x == wanted {
+            n += 1
+        }
+    }
+    return n
+}
+
+fn show[T](T x) -> str {
+    return "<" + str(x) + ">"
+}
+
+fn convert[T](str s) -> T {
+    return T(s)
+}
+
+fn fill[T](int n, T value) -> []T {
+    []T out
+    for i in 0..n {
+        out.push(value)
+    }
+    return out
+}
+
+fn main() {
+    print(max(3, 9), max(2.5, 1.5), max("apple", "pear"), max('a', 'b'))
+    print(max[float](1, 2.5))
+    print(first(["x", "y"]), first([7, 8]), count([1, 2, 1, 3, 1], 1), count(["a", "b"], "b"))
+    print(show(5), show("hi"), show(Point(1, 2)), show([1, 2]))
+    print(fill(3, "ab"), fill(2, 1.5), fill[int](2, 7))
+
+    Stack[int] s
+    s.push(10)
+    s.push(20)
+    print(s.pop(), s.size(), s)
+
+    names := Stack[str]()
+    names.push("ann")
+    names.push("bob")
+    print(names, names.size())
+
+    pts := Stack[Point]()
+    pts.push(Point(1, 2))
+    print(pts.pop().x)
+
+    p := Pair[str, int]("age", 31)
+    q := p.swapped()
+    print(p, q, q.first + 1)
+    nested := Stack[Pair[int, str]]()
+    nested.push(Pair[int, str](1, "one"))
+    print(nested)
+}

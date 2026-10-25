@@ -1,0 +1,10 @@
+9 2.5 pear b
+2.5
+x 7 3 1
+<5> <hi> <Point(x: 1, y: 2)> <[1, 2]>
+["ab", "ab", "ab"] [1.5, 1.5] [7, 7]
+20 1 Stack[int](items: [10])
+Stack[str](items: ["ann", "bob"]) 2
+1
+Pair[str, int](first: "age", second: 31) Pair[int, str](first: 31, second: "age") 32
+Stack[Pair[int, str]](items: [Pair[int, str](first: 1, second: "one")])

@@ -1,0 +1,9 @@
+// expect: 'Stack' is generic, so say which type it holds
+struct Stack[T] {
+    []T items
+}
+
+fn main() {
+    s := Stack()
+    print(s)
+}

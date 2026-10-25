@@ -125,10 +125,80 @@ fn parseType(ptr[Parser] p) -> ast.Type {
         t.module = name
         t.name = next(p).text
     }
+    // Stack[int], Pair[str, int]: the type arguments of a generic struct
+    if at(p, "[") && !cur(p).nl && peekKind(p, 1) != "]" {
+        next(p)
+        while true {
+            t.elem.push(parseType(p))
+            if !accept(p, ",") {
+                break
+            }
+        }
+        expect(p, "]", "']' after the type arguments")
+    }
     return t
 }
 
+// Stack[int] name: a generic type, then a name on the same line. (a[i] by itself is an index.)
+fn genericDeclAhead(ptr[Parser] p) -> bool {
+    if !at(p, "ident") || peekKind(p, 1) != "[" || peekKind(p, 2) == "]" {
+        return false
+    }
+    depth := 0
+    i := p.i + 1
+    while i < p.toks.len {
+        k := p.toks[i].kind
+        if k == "[" {
+            depth += 1
+        } else if k == "]" {
+            depth -= 1
+            if depth == 0 {
+                return i + 1 < p.toks.len && p.toks[i + 1].kind == "ident" && !p.toks[i + 1].nl
+            }
+        } else if k == "eof" || p.toks[i].nl && depth == 0 {
+            return false
+        }
+        i += 1
+    }
+    return false
+}
+
+// The same, when the name was just taken and the parser stands on the `[`.
+fn genericCallAheadFrom(ptr[Parser] p) -> bool {
+    p.i -= 1
+    r := genericCallAhead(p)
+    p.i += 1
+    return r
+}
+
+// Is the `[` after this name followed, once it closes, by `(`? Then it is  max[int](...)  and not an index.
+fn genericCallAhead(ptr[Parser] p) -> bool {
+    if peekKind(p, 1) != "[" || p.toks[p.i + 1].nl || peekKind(p, 2) == "]" {
+        return false
+    }
+    depth := 0
+    i := p.i + 1
+    while i < p.toks.len {
+        k := p.toks[i].kind
+        if k == "[" {
+            depth += 1
+        } else if k == "]" {
+            depth -= 1
+            if depth == 0 {
+                return i + 1 < p.toks.len && p.toks[i + 1].kind == "(" && !p.toks[i + 1].nl
+            }
+        } else if k == "eof" || p.toks[i].nl {
+            return false
+        }
+        i += 1
+    }
+    return false
+}
+
 fn atDeclaration(ptr[Parser] p) -> bool {
+    if genericDeclAhead(p) {
+        return true
+    }
     if at(p, "[") {
         return peekKind(p, 1) == "]"
     }
@@ -262,10 +332,27 @@ fn parseMatch(ptr[Parser] p, bool asExpr) -> ast.Node {
     return m
 }
 
+// [T, U]
+fn parseTParams(ptr[Parser] p) -> []str {
+    []str names
+    expect(p, "[", "'['")
+    while true {
+        names.push(expect(p, "ident", "a type parameter name, like T").text)
+        if !accept(p, ",") {
+            break
+        }
+    }
+    expect(p, "]", "']' after the type parameters")
+    return names
+}
+
 fn parseStruct(ptr[Parser] p) -> ast.Node {
     s := node(p, "struct")
     expect(p, "struct", "'struct'")
     s.name = expect(p, "ident", "a struct name").text
+    if at(p, "[") {
+        s.tparams = parseTParams(p)
+    }
     expect(p, "{", "'{'")
     while !at(p, "}") {
         if at(p, "eof") {
@@ -291,6 +378,9 @@ fn parseFn(ptr[Parser] p) -> ast.Node {
     f := node(p, "fn")
     expect(p, "fn", "'fn', 'struct' or 'import'")
     f.name = expect(p, "ident", "a function name").text
+    if at(p, "[") {
+        f.tparams = parseTParams(p)         // fn max[T](...)   or the struct's, in  fn Stack[T].push(...)
+    }
     if accept(p, ".") {
         f.recv = f.name
         f.name = expect(p, "ident", "a method name").text
@@ -648,6 +738,21 @@ fn parsePrimary(ptr[Parser] p) -> ast.Node {
     if k == "ident" {
         next(p)
         e.name = t.text
+        if at(p, "[") && p.toks[p.i - 1].kind == "ident" && genericCallAheadFrom(p) {
+            // max[int](3, 4), Stack[int]()
+            next(p)
+            e.ty = ast.Type(kind: "targs")
+            while true {
+                e.ty.elem.push(parseType(p))
+                if !accept(p, ",") {
+                    break
+                }
+            }
+            expect(p, "]", "']' after the type arguments")
+            e.kind = "call"
+            parseArgs(p, addr(e))
+            return e
+        }
         if at(p, "(") && !cur(p).nl {
             e.kind = "call"
             parseArgs(p, addr(e))

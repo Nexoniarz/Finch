@@ -16,6 +16,23 @@ struct Var {
 
 // A scope's variables, and the defers that run when it ends, newest first.
 // A defer sees only the variables declared before it: `orders` says how many.
+// A generic struct or function, kept as written until something asks for a version of it.
+struct Template {
+    str module
+    str name
+    str recv            // a method: the generic struct it belongs to
+    []str tparams
+    int prog
+    int index
+    bool isStruct
+    bool mutself
+}
+
+struct Binds {
+    []ast.Type types
+    []bool bound
+}
+
 struct EnumDef {
     str module
     str name
@@ -41,6 +58,9 @@ struct FnSig {
     str recv        // a method of this struct ("" for a function)
     str recvmod     // and the module of that struct: "C" for a struct from a header
     bool recvEnum   // the receiver is an enum
+    []str tnames    // an instance of a generic function: its type parameters and what they stand for
+    []ast.Type targs
+    str shown       // max[int], for messages
     bool fallible   // -> T!: returns { i1 ok, T value, str error }
     bool mutself    // the method changes self
     str ll
@@ -58,6 +78,9 @@ struct StructDef {
     bool isC            // a struct from a C header: module "C", laid out as C laid it out
     []int lidx          // the LLVM element number of each field (C structs have padding between)
     []int offs          // C: the byte offset of each field
+    str base            // an instance of a generic struct: Stack for Stack[int]
+    []str tnames
+    []ast.Type targs
     str unsupported     // C: why it can't be passed by value
     int csize
     int calign
@@ -104,6 +127,10 @@ struct Gen {
     str module
     []FnSig sigs
     []StructDef structs
+    []Template templates
+    []str tnames        // the type parameters in force, and what they stand for
+    []ast.Type targs
+    str instNote        // " (while building max[Pixel])", added to errors found inside a generic
     []EnumDef enums
     []str done
     []str mm        // names of methods that change self, for the mutation analysis
@@ -121,7 +148,7 @@ struct Gen {
 // ---------- basics ----------
 
 fn fail(ptr[Gen] g, ast.Node n, str msg) {
-    print(g.files[n.file] + ":" + str(n.line) + ":" + str(n.col) + ": error: " + msg)
+    print(g.files[n.file] + ":" + str(n.line) + ":" + str(n.col) + ": error: " + msg + g.instNote)
     exit(1)
 }
 
@@ -325,6 +352,25 @@ fn resolve(ptr[Gen] g, ast.Type t, ast.Node at) -> ast.Type {
     if t.kind != "named" {
         return t
     }
+    // T inside a generic
+    if t.module.len == 0 && t.elem.len == 0 && g.tnames.contains(t.name) {
+        return g.targs[g.tnames.find(t.name)]
+    }
+    // Stack[int]
+    if t.elem.len > 0 {
+        []ast.Type args
+        for a in t.elem {
+            args.push(resolve(g, a, at))
+        }
+        gm := g.module
+        if t.module.len > 0 {
+            if !imports(g, t.module) {
+                fail(g, at, "'" + t.module + "' is not imported here (add: import " + t.module + ")")
+            }
+            gm = t.module
+        }
+        return instStruct(g, gm, t.name, args, at)
+    }
     if t.module == "C" {
         if findStruct(g, "C", t.name) < 0 {
             fail(g, at, "there is no C struct named '" + t.name + "'")
@@ -349,6 +395,11 @@ fn resolve(ptr[Gen] g, ast.Type t, ast.Node at) -> ast.Type {
         fail(g, at, "there is no type named '" + ast.show(t) + "'")
     }
     return ast.Type(kind: "struct", name: t.name, module: module)
+}
+
+// Stack[int] and Pair[str, int] as part of an LLVM name
+fn mangle(str name) -> str {
+    return name.replace("[", ".").replace("]", "").replace(",", ".").replace(" ", "")
 }
 
 fn modName(str m) -> str {
@@ -390,7 +441,7 @@ fn llty(ptr[Gen] g, ast.Type t) -> str {
     if k == "void" {
         return "void"
     }
-    return "%S." + modName(t.module) + "." + t.name
+    return "%S." + modName(t.module) + "." + mangle(t.name)
 }
 
 // What a function returns as far as LLVM is concerned: a function that can fail
@@ -453,7 +504,7 @@ fn typeKey(ast.Type t) -> str {
         return "E_" + modName(t.module) + "_" + t.name
     }
     if t.kind == "struct" {
-        return "S_" + modName(t.module) + "_" + t.name
+        return "S_" + modName(t.module) + "_" + mangle(t.name)
     }
     return t.kind
 }
@@ -1084,8 +1135,13 @@ fn declare(ptr[Gen] g) {
         g.module = g.progs[pi].module
         for si in 0..g.progs[pi].structs.len {
             s := g.progs[pi].structs[si]
-            if findStruct(g, g.module, s.name) >= 0 {
+            if findStruct(g, g.module, s.name) >= 0 || findTemplate(g, g.module, s.name, "", true) >= 0 {
                 fail(g, s, "the struct '" + s.name + "' is defined twice")
+            }
+            if s.tparams.len > 0 {
+                // a generic struct: it only becomes a real struct for the types it is used with
+                g.templates.push(Template(module: g.module, name: s.name, tparams: s.tparams, prog: pi, index: si, isStruct: true))
+                continue
             }
             g.structs.push(StructDef(module: g.module, name: s.name, prog: pi, index: si))
         }
@@ -1126,6 +1182,17 @@ fn declare(ptr[Gen] g) {
         g.module = g.progs[pi].module
         for fi in 0..g.progs[pi].fns.len {
             f := g.progs[pi].fns[fi]
+            if f.tparams.len > 0 {
+                // generic: kept as written, and made for the types it is called with
+                if findTemplate(g, g.module, f.name, f.recv, false) >= 0 {
+                    fail(g, f, "function '" + f.name + "' is defined twice")
+                }
+                if f.recv.len > 0 && findTemplate(g, g.module, f.recv, "", true) < 0 {
+                    fail(g, f, "there is no generic struct named '" + f.recv + "' here (a method goes in the same file as its struct)")
+                }
+                g.templates.push(Template(module: g.module, name: f.name, recv: f.recv, tparams: f.tparams, prog: pi, index: fi))
+                continue
+            }
             recvmod := g.module
             recvEnum := false
             if f.recv.len > 0 && findEnum(g, g.module, f.recv) >= 0 {
@@ -1187,6 +1254,17 @@ fn declare(ptr[Gen] g) {
                 }
             }
         }
+        for ti in 0..g.templates.len {
+            tpl := g.templates[ti]
+            if tpl.recv.len > 0 && !tpl.mutself {
+                tf := g.progs[tpl.prog].fns[tpl.index]
+                if mutates(g, "self", tf.kids[tf.kids.len - 1]) {
+                    g.templates[ti].mutself = true
+                    g.mm.push(tpl.name)
+                    changed = true
+                }
+            }
+        }
     }
     // a parameter nobody changes is borrowed rather than copied
     for i in 0..g.sigs.len {
@@ -1197,6 +1275,164 @@ fn declare(ptr[Gen] g) {
             g.sigs[i].borrow.push(owning(g, pt) && !mutates(g, g.sigs[i].pnames[k], body))
         }
     }
+}
+
+fn findTemplate(ptr[Gen] g, str module, str name, str recv, bool isStruct) -> int {
+    for i in 0..g.templates.len {
+        t := g.templates[i]
+        if t.module == module && t.name == name && t.recv == recv && t.isStruct == isStruct {
+            return i
+        }
+    }
+    return -1
+}
+
+fn shownTypes([]ast.Type args) -> str {
+    []str parts
+    for a in args {
+        parts.push(ast.show(a))
+    }
+    return parts.join(", ")
+}
+
+// Stack[int]: the struct with T = int, made the first time it is asked for.
+fn instStruct(ptr[Gen] g, str module, str base, []ast.Type args, ast.Node at) -> ast.Type {
+    ti := findTemplate(g, module, base, "", true)
+    if ti < 0 {
+        fail(g, at, "there is no generic struct named '" + base + "' (a struct written  struct " + base + "[T] { ... }  takes type arguments)")
+    }
+    tpl := g.templates[ti]
+    if args.len != tpl.tparams.len {
+        fail(g, at, base + " takes " + str(tpl.tparams.len) + " type argument(s), like " + base + "[" + tpl.tparams.join(", ") + "], but got " + str(args.len))
+    }
+    name := base + "[" + shownTypes(args) + "]"
+    if findStruct(g, module, name) < 0 {
+        g.structs.push(StructDef(module: module, name: name, prog: tpl.prog, index: tpl.index, base: base, tnames: tpl.tparams, targs: args))
+        resolveStruct(g, g.structs.len - 1)
+    }
+    return ast.Type(kind: "struct", name: name, module: module)
+}
+
+// max[int]: the function with T = int; for a method, `recvType` is the struct instance it belongs to.
+fn instFn(ptr[Gen] g, int ti, []ast.Type args, ast.Type recvType, ast.Node at) -> int {
+    tpl := g.templates[ti]
+    shown := tpl.name + "[" + shownTypes(args) + "]"
+    if tpl.recv.len > 0 {
+        existing := findMethod(g, tpl.module, recvType.name, tpl.name)
+        if existing >= 0 {
+            return existing
+        }
+    } else {
+        existing := findFn(g, tpl.module, shown)
+        if existing >= 0 {
+            return existing
+        }
+    }
+    f := g.progs[tpl.prog].fns[tpl.index]
+    sig := FnSig(module: tpl.module, name: shown, recvmod: tpl.module, fallible: f.fallible, prog: tpl.prog, index: tpl.index, tnames: tpl.tparams, targs: args, mutself: tpl.mutself, shown: shown)
+    sig.ll = "@finch." + modName(tpl.module) + "." + mangle(shown)
+    if tpl.recv.len > 0 {
+        sig.name = tpl.name
+        sig.recv = recvType.name
+        sig.shown = recvType.name + "." + tpl.name
+        sig.ll = "@finch." + modName(tpl.module) + "." + mangle(recvType.name) + "." + tpl.name
+    }
+    savedN := g.tnames
+    savedA := g.targs
+    savedM := g.module
+    savedNote := g.instNote
+    g.tnames = tpl.tparams
+    g.targs = args
+    g.module = tpl.module
+    g.instNote = " (while building " + sig.shown + ")"
+    sig.ret = resolve(g, f.ty, f)
+    body := f.kids[f.kids.len - 1]
+    for k in 0..f.kids.len - 1 {
+        pt := resolve(g, f.kids[k].ty, f.kids[k])
+        sig.params.push(pt)
+        sig.pnames.push(f.kids[k].name)
+        sig.borrow.push(owning(g, pt) && !mutates(g, f.kids[k].name, body))
+    }
+    g.tnames = savedN
+    g.targs = savedA
+    g.module = savedM
+    g.instNote = savedNote
+    g.sigs.push(sig)
+    return g.sigs.len - 1
+}
+
+// What each type parameter stands for, from the types the arguments turned out to have.
+fn bindType(ptr[Gen] g, ast.Type pat, ast.Type actual, []str tparams, ptr[Binds] b) {
+    if pat.kind == "named" && pat.module.len == 0 && pat.elem.len == 0 && tparams.contains(pat.name) {
+        i := tparams.find(pat.name)
+        if !b.bound[i] {
+            b.types[i] = actual
+            b.bound[i] = true
+        }
+        return
+    }
+    if (pat.kind == "array" || pat.kind == "ptr" || pat.kind == "fixed") && pat.elem.len > 0 && actual.kind == pat.kind && actual.elem.len > 0 {
+        bindType(g, pat.elem[0], actual.elem[0], tparams, b)
+        return
+    }
+    if pat.kind == "map" && actual.kind == "map" {
+        bindType(g, pat.elem[0], actual.elem[0], tparams, b)
+        bindType(g, pat.elem[1], actual.elem[1], tparams, b)
+        return
+    }
+    if pat.kind == "named" && pat.elem.len > 0 && actual.kind == "struct" {
+        sd := g.structs[findStruct(g, actual.module, actual.name)]
+        if sd.base == pat.name && sd.targs.len == pat.elem.len {
+            for i in 0..pat.elem.len {
+                bindType(g, pat.elem[i], sd.targs[i], tparams, b)
+            }
+        }
+    }
+}
+
+// max(3, 4), or max[float](3, 4): make the version the arguments ask for, and call it.
+fn genericCall(ptr[Gen] g, ast.Node c, int ti, int first, str shown) -> Val {
+    tpl := g.templates[ti]
+    f := g.progs[tpl.prog].fns[tpl.index]
+    nparams := f.kids.len - 1
+    checkArgs(g, c, first, nparams, shown)
+    []ast.Type args
+    if c.ty.elem.len > 0 {
+        if c.ty.elem.len != tpl.tparams.len {
+            fail(g, c, shown + " takes " + str(tpl.tparams.len) + " type argument(s), but got " + str(c.ty.elem.len))
+        }
+        for a in c.ty.elem {
+            args.push(resolve(g, a, c))
+        }
+        return callFn(g, instFn(g, ti, args, T("void"), c), c, first, shown, "", "")
+    }
+    b := Binds()
+    for i in 0..tpl.tparams.len {
+        b.types.push(T("void"))
+        b.bound.push(false)
+    }
+    []Val vals
+    for k in 0..nparams {
+        v := expr(g, c.kids[first + k])
+        if v.ty.kind == "void" || v.ty.kind == "null" {
+            fail(g, c.kids[first + k], "this has no type to work out " + tpl.tparams.join(", ") + " from")
+        }
+        vals.push(v)
+        bindType(g, f.kids[k].ty, v.ty, tpl.tparams, addr(b))
+    }
+    for i in 0..tpl.tparams.len {
+        if !b.bound[i] {
+            fail(g, c, "can't tell what " + tpl.tparams[i] + " is here; write it out: " + tpl.name + "[int](...)")
+        }
+    }
+    si := instFn(g, ti, b.types, T("void"), c)
+    sig := g.sigs[si]
+    []str out
+    for k in 0..nparams {
+        v := coerce(g, vals[k], sig.params[k], c.kids[first + k], "argument '" + sig.pnames[k] + "'")
+        out.push(llty(g, sig.params[k]) + " " + v.v)
+    }
+    return emitCall(g, sig, c, out, shown)
 }
 
 // A struct from a C header: the fields clang says it has, at the offsets clang says,
@@ -1245,6 +1481,24 @@ fn resolveStruct(ptr[Gen] g, int i) {
         resolveCStruct(g, i)
         return
     }
+    if g.structs[i].base.len == 0 {
+        resolveStructBody(g, i)
+        return
+    }
+    // an instance of a generic struct: its fields are written in terms of T
+    savedN := g.tnames
+    savedA := g.targs
+    savedNote := g.instNote
+    g.tnames = g.structs[i].tnames
+    g.targs = g.structs[i].targs
+    g.instNote = " (while building " + g.structs[i].name + ")"
+    resolveStructBody(g, i)
+    g.tnames = savedN
+    g.targs = savedA
+    g.instNote = savedNote
+}
+
+fn resolveStructBody(ptr[Gen] g, int i) {
     decl := g.progs[g.structs[i].prog].structs[g.structs[i].index]
     if g.structs[i].state == 1 {
         fail(g, decl, "the struct " + decl.name + " contains itself; use ptr[" + decl.name + "] or []" + decl.name + " for that field")
@@ -1270,12 +1524,18 @@ fn resolveStruct(ptr[Gen] g, int i) {
     g.structs[i].owning = owns
     g.module = saved
     g.structs[i].state = 2
-    g.head.push("%S." + modName(g.structs[i].module) + "." + decl.name + " = type { " + fields.join(", ") + " }")
+    g.head.push("%S." + modName(g.structs[i].module) + "." + mangle(g.structs[i].name) + " = type { " + fields.join(", ") + " }")
 }
 
 fn define(ptr[Gen] g, int si) {
     g.cur = g.sigs[si]
     g.module = g.cur.module
+    g.tnames = g.cur.tnames
+    g.targs = g.cur.targs
+    g.instNote = ""
+    if g.cur.targs.len > 0 {
+        g.instNote = " (while building " + g.cur.shown + ")"
+    }
     f := g.progs[g.cur.prog].fns[g.cur.index]
     []str empty
     g.body = empty
@@ -3576,7 +3836,26 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     }
     fi := findFn(g, g.module, n)
     if fi >= 0 {
+        if c.ty.elem.len > 0 {
+            fail(g, c, "'" + n + "' is not generic, so it takes no type arguments")
+        }
         return callFn(g, fi, c, 0, n, "", "")
+    }
+    gti := findTemplate(g, g.module, n, "", false)
+    if gti >= 0 {
+        return genericCall(g, c, gti, 0, n)
+    }
+    if findTemplate(g, g.module, n, "", true) >= 0 {
+        // Stack[int](...): a generic struct made with its type
+        if c.ty.elem.len == 0 {
+            fail(g, c, "'" + n + "' is generic, so say which type it holds: " + n + "[int](...)")
+        }
+        []ast.Type targs
+        for a in c.ty.elem {
+            targs.push(resolve(g, a, c))
+        }
+        gt := instStruct(g, g.module, n, targs, c)
+        return construct(g, findStruct(g, gt.module, gt.name), c.kids, c.names, c)
     }
     si := findStruct(g, g.module, n)
     if si >= 0 {
@@ -3619,6 +3898,11 @@ fn callFn(ptr[Gen] g, int fi, ast.Node c, int first, str shown, str selfAddr, st
         }
         args.push(llty(g, sig.params[k]) + " " + v.v)
     }
+    return emitCall(g, sig, c, args, shown)
+}
+
+// The call itself, once the arguments are values ("i64 5"); the receiver's address, if any, is already first.
+fn emitCall(ptr[Gen] g, FnSig sig, ast.Node c, []str args, str shown) -> Val {
     if sig.fallible && g.ftarget != nodeKey(c) {
         fail(g, c, "'" + shown + "' can fail, so say what happens then:  " + shown + "(...) or <value>,  " + shown + "(...) or { ... },  or  try " + shown + "(...)")
     }
@@ -3683,12 +3967,18 @@ fn construct(ptr[Gen] g, int si, []ast.Node args, []str names, ast.Node at) -> V
             // a default value is evaluated where the struct is defined, without the caller's variables
             savedScopes := g.scopes
             savedModule := g.module
+            savedTN := g.tnames
+            savedTA := g.targs
+            g.tnames = sd.tnames
+            g.targs = sd.targs
             []Scope none
             g.scopes = none
             pushScope(g)
             g.module = sd.module
             fv = coerce(g, exprWant(g, decl.kids[k].kids[0], ft), ft, decl.kids[k].kids[0], "the default of '" + sd.fnames[k] + "'")
             g.module = savedModule
+            g.tnames = savedTN
+            g.targs = savedTA
             g.scopes = savedScopes
         } else {
             continue
@@ -3710,6 +4000,10 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
         fi := findFn(g, mn, m.name)
         if fi >= 0 {
             return callFn(g, fi, m, 1, mn + "." + m.name, "", "")
+        }
+        mti := findTemplate(g, mn, m.name, "", false)
+        if mti >= 0 {
+            return genericCall(g, m, mti, 1, mn + "." + m.name)
         }
         mei := findEnum(g, mn, m.name)
         if mei >= 0 {
@@ -3781,6 +4075,15 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
     }
     if st.kind == "struct" || st.kind == "enum" {
         fi := findMethod(g, st.module, st.name, m.name)
+        if fi < 0 && st.kind == "struct" {
+            sdi := findStruct(g, st.module, st.name)
+            if g.structs[sdi].base.len > 0 {
+                mti := findTemplate(g, st.module, m.name, g.structs[sdi].base, false)
+                if mti >= 0 {
+                    fi = instFn(g, mti, g.structs[sdi].targs, st, m)
+                }
+            }
+        }
         if fi < 0 {
             fail(g, m, "the " + st.kind + " " + ast.show(st) + " has no method '" + m.name + "'")
         }
@@ -4142,8 +4445,11 @@ fn generate([]ast.Program progs, []str files, cimport.CImports ci) -> str {
         print(files[0] + ":1:1: error: there is no main function (add 'fn main() { ... }')")
         exit(1)
     }
-    for i in 0..g.sigs.len {
-        define(g, i)
+    // instantiating a generic adds functions while this goes on, so the end is not fixed
+    di := 0
+    while di < g.sigs.len {
+        define(g, di)
+        di += 1
     }
     // the C entry point calls the Finch main
     m := g.sigs[main]

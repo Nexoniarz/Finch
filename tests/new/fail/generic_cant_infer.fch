@@ -1,0 +1,10 @@
+// expect: can't tell what T is here
+fn make[T]() -> []T {
+    []T out
+    return out
+}
+
+fn main() {
+    x := make()
+    print(x)
+}

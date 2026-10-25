@@ -97,6 +97,7 @@ struct Node {
     str kind
     str name      // identifier, operator, callee, field or method name
     str recv      // fn Point.move(...): "Point"; empty for a plain function
+    []str tparams // fn max[T](...), struct Stack[T], fn Stack[T].push: the type parameters
     str text      // literal text
     Type ty       // declared type (decl, param, field, fn result)
     bool flag     // decl: has a type; or: the right side is a { block }

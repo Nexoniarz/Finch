@@ -1,0 +1,9 @@
+// expect: Stack takes 1 type argument(s)
+struct Stack[T] {
+    []T items
+}
+
+fn main() {
+    Stack[int, str] s
+    print(s)
+}
