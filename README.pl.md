@@ -125,7 +125,7 @@ Wybierz przewodnik dla siebie:
 | [`examples/vulkan.fch`](examples/vulkan.fch) | Vulkan: lista kart graficznych, ich pamięć i kolejki, tworzenie urządzenia |
 | [`examples/raylib.fch`](examples/raylib.fch) | raylib ze strukturami C przez wartość |
 | [`examples/llvm.fch`](examples/llvm.fch) | Finch budujący LLVM IR przez API LLVM-C |
-| [`boot/`](boot/) | kompilator Fincha napisany w Finchu |
+| [`src/`](src/) | kompilator napisany w Finchu (ziarno do jego zbudowania jest w [`bootstrap/`](bootstrap/)) |
 
 ## Plan rozwoju
 

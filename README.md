@@ -125,7 +125,7 @@ Pick the guide that fits you:
 | [`examples/vulkan.fch`](examples/vulkan.fch) | Vulkan: list the GPUs, their memory and queues, create a device |
 | [`examples/raylib.fch`](examples/raylib.fch) | raylib with C structs by value |
 | [`examples/llvm.fch`](examples/llvm.fch) | Finch building LLVM IR through the LLVM-C API |
-| [`boot/`](boot/) | the Finch compiler, written in Finch |
+| [`src/`](src/) | the compiler, written in Finch (the seed to build it is in [`bootstrap/`](bootstrap/)) |
 
 ## Roadmap
 

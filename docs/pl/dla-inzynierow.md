@@ -1,14 +1,12 @@
 # Finch dla inżynierów
 
-**Kompletny opis wnętrza Fincha 2.0.** Jak kod źródłowy staje się tokenami, tokeny drzewem AST,
-a AST kodem LLVM IR, który potem jest optymalizowany, zapisywany i linkowany z małym runtime'em w C.
-Dokładne reguły typów; model własności i to, jak tłumaczy się na kopie i zwolnienia; jak każda
-konstrukcja staje się IR (z prawdziwym wyjściem kompilatora); obsługa nagłówków C, struktur C i ABI
-System V; moduły, informacje dla debuggera i kompilator samohostujący z `boot/`. Każda funkcja
-kompilatora jest opisana razem z tym, czym różni się od sąsiednich.
+**Wnętrze Fincha 2.4, którego kompilator jest napisany w Finchu.** Jak kod źródłowy staje się tokenami, drzewem AST i
+LLVM IR *jako tekstem*, który `clang` kompiluje i linkuje z małym runtime'em w C; jak nagłówki C czyta libclang wywoływany
+z samego Fincha i jak ręcznie odtwarzane są konwencje wywołań C; reguły typów i własności; jak kompilator buduje sam siebie
+z ziarna; oraz serwer języka.
 
-Zakładam, że znasz C/C++ i widziałeś już LLVM IR.
-Język z perspektywy użytkownika opisuje [przewodnik dla techników](dla-technikow.md).
+Zakładam, że czytasz Fincha (zobacz [przewodnik dla techników](dla-technikow.md)) i widziałeś już LLVM IR.
+Pierwsza wersja kompilatora, w C++ na API C++ LLVM, jest w gałęzi `before-bootstrap`; ten przewodnik opisuje wersję w Finchu.
 
 > 🇬🇧 English version: [for-engineers.md](../en/for-engineers.md)
 
@@ -17,297 +15,143 @@ Język z perspektywy użytkownika opisuje [przewodnik dla techników](dla-techni
 ## Spis treści
 
 1. [Architektura](#1-architektura)
-2. [Pliki źródłowe](#2-pliki-źródłowe)
-3. [Lekser](#3-lekser)
-4. [Gramatyka i parser](#4-gramatyka-i-parser)
-5. [AST](#5-ast)
-6. [Wczytywanie: pliki i moduły](#6-wczytywanie-pliki-i-moduły)
-7. [Model semantyczny](#7-model-semantyczny)
-8. [System typów](#8-system-typów)
-9. [Własność i pamięć](#9-własność-i-pamięć)
-10. [Generowanie kodu](#10-generowanie-kodu)
-11. [Kontrole w czasie działania](#11-kontrole-w-czasie-działania)
-12. [Runtime w C](#12-runtime-w-c)
-13. [Współpraca z C: nagłówki, struktury, ABI](#13-współpraca-z-c-nagłówki-struktury-abi)
-14. [Optymalizacja, emisja, linkowanie](#14-optymalizacja-emisja-linkowanie)
-15. [Informacje dla debuggera](#15-informacje-dla-debuggera)
-16. [Diagnostyka](#16-diagnostyka)
-17. [Kompilator samohostujący (boot/)](#17-kompilator-samohostujący-boot)
-18. [System budowania](#18-system-budowania)
-19. [Testy](#19-testy)
-20. [Semantyka a C](#20-semantyka-a-c)
-21. [Spis funkcji](#21-spis-funkcji)
-22. [Rozbudowa kompilatora](#22-rozbudowa-kompilatora)
-23. [Platformy: Windows, macOS, ARM64](#23-platformy-windows-macos-arm64)
-24. [Serwer języka](#24-serwer-języka)
-25. [Integracje z edytorami](#25-integracje-z-edytorami)
-26. [Znane ograniczenia](#26-znane-ograniczenia)
+2. [Drzewo źródeł](#2-drzewo-źródeł)
+3. [Front end: lekser, parser, moduły](#3-front-end-lekser-parser-moduły)
+4. [Generowanie kodu](#4-generowanie-kodu)
+5. [Import C i ABI C](#5-import-c-i-abi-c)
+6. [Sterownik, linkowanie i cele](#6-sterownik-linkowanie-i-cele)
+7. [System typów](#7-system-typów)
+8. [Własność i pamięć](#8-własność-i-pamięć)
+9. [Generyki, enumy i match](#9-generyki-enumy-i-match)
+10. [Bootstrap](#10-bootstrap)
+11. [Serwer języka](#11-serwer-języka)
+12. [Semantyka a C](#12-semantyka-a-c)
+13. [Znane ograniczenia](#13-znane-ograniczenia)
 
 ---
 
 ## 1. Architektura
 
-Finch to jednoprzebiegowy front-end przed LLVM: sprawdzanie typów i generowanie IR to jedno przejście
-po AST, bez własnej reprezentacji pośredniej.
+W kompilatorze nie ma biblioteki LLVM. Pisze LLVM IR jako **tekst**, a optymalizację, generowanie kodu i linkowanie zostawia
+`clangowi`. Dzięki temu jest mały (ok. 8 tys. linii) i może być napisany w samym Finchu.
 
 ```
- main.fch ──► Loader::load() ── lex() ── parse() ──► Program  (+ każdy importowany moduł, rekurencyjnie)
-                                                       │
-                wszystkie `import "x.h"` ──► importHeaders() (libclang) ──► CImports
-                                                       │
- hostMachine() ──► TargetMachine (triple + data layout)│
-                                                       ▼
- generate(progs, cimports, tm, debug) ──► Codegen::run()
-     declareStructs()   wszystkie struktury Fincha i C, ciała typów LLVM, kontrola cykli
-     declareFns()       sygnatura każdej funkcji (+ analiza „pożyczania” parametrów)
-     define()           każde ciało: typy + IRBuilder, zasięgi, zwalnianie, kontrole
-     defineMainWrapper  C-owe `main(argc, argv)`
-     DIBuilder::finalize (z -g) ; verifyModule
-                                                       ▼
- optimize()  PassBuilder default<O2>            (pomijane przy -O0)
- emitObject() legacy PM + addPassesToEmitFile ──► prog.o
- link()      cc prog.o ~/.cache/finch/rt-<hash>.o [twoje .c/.o/.a] -lm [pkg-config/-l…]
-                                                       ▼
- plik wykonywalny   (finch run: uruchamiany z pliku tymczasowego z resztą argumentów, potem usuwany)
+ main.fch ─► loader ── lex ── parse ──► Program   (+ każdy importowany moduł, rekurencyjnie)
+                                          │
+        `import "x.h"` ─► cimport.fch (libclang wołany z Fincha) ─► funkcje, struktury, stałe C
+                                          │
+                                          ▼
+                       gen.fch ─► generate(): struktury, sygnatury, ciała funkcji
+                                  kontrola typów i IR w jednym przejściu; klasyfikacja ABI wywołań C
+                                          │   (tekst IR)
+                                          ▼
+        linker.fch ─► clang -c prog.ll  ─►  clang prog.o rt-<hash>.o [twoje .c/.o/.a] -lm [pkg-config / -l]
+                                          │
+                                          ▼
+                        plik wykonywalny   (finch run: uruchamiany z pliku tymczasowego, potem usuwany)
 ```
 
-Decyzje, które kształtują resztę:
+Decyzje projektowe:
 
-- **Szybka porażka.** Pierwszy błąd wypisuje diagnostykę i kończy proces (`failAt()` w `src/error.h`).
-  Bez odtwarzania po błędach, więc dalsze fazy nigdy nie widzą częściowo poprawnego wejścia.
-- **Jedno przejście.** `Codegen` niesie zasięgi, pętle, bieżącą funkcję i moduł. Każde wyrażenie zwraca
-  wartość IR, typ Fincha i dwie flagi (`Value_`, §8).
-- **Niech LLVM robi robotę.** Zmienne lokalne to `alloca`, które `mem2reg`/SROA zamieniają na rejestry.
-  Węzły φ Finch buduje ręcznie tylko dla `&&`/`||`.
-- **Wartości, nie referencje.** Tablice, teksty i struktury mają semantykę wartości: przypisanie kopiuje,
-  koniec bloku zwalnia. Własność rozstrzyga się w czasie kompilacji, bez liczenia referencji (§9).
-- **Malutki runtime w C** (`runtime/finch_rt.c`, ok. 430 linii) robi to, co w IR byłoby żmudne: operacje na
-  tekstach, wzrost tablic, wejście, pliki, panic. Jest wbudowany w kompilator i trzymany w cache.
+- **Szybko się przerywa.** Pierwszy błąd wypisuje `plik:linia:kol: error: …` z linią źródła i strzałką, i kompilator kończy.
+  Bez odzyskiwania po błędach, więc kolejne fazy nie widzą półpoprawnych danych.
+- **Jedno przejście.** `gen.fch` sprawdza typy i emituje IR jednym przejściem po AST. Wyrażenie daje operand IR, typ Fincha
+  (napis: `int`, `f32`, `str`, `array`, `map`, `struct`, `enum`, `named`…) i flagi.
+- **Niech clang pracuje.** Zmienne lokalne to `alloca`, zamieniane przez `mem2reg`. Optymalizacja to `-O2` clanga (albo `-O0` z `-g`).
+- **Wartości, nie referencje.** Tablice, teksty i struktury mają semantykę wartości; własność ustala się w czasie kompilacji (§8).
+- **Malutki runtime w C** (`runtime/finch_rt.c`, ok. 760 linii) robi to, co w IR jest uciążliwe: teksty, rośnięcie tablic, mapy,
+  wejście, pliki, paniki. Kompilowany raz i trzymany w `~/.cache/finch`.
 
 ---
 
-## 2. Pliki źródłowe
+## 2. Drzewo źródeł
 
-| Plik | Linie | Odpowiedzialność |
+| Plik | Linie | Zadanie |
 |---|---|---|
-| `src/error.h` | 50 | `g_files` (wszystkie źródła), `failAt(file, line, col, msg)`, `fail(line, col, msg)`, `FinchError` |
-| `src/lexer.h/.cpp` | 250 | `Tok`, `Token`, `lex(indeksPliku)`, `tokName()` |
-| `src/ast.h` | 360 | `Type` (z Array, Map, Fixed, Struct, Named), wszystkie węzły `Expr`/`Stmt`, `FnDecl`, `StructDecl`, `Import`, `Link`, `Program` |
-| `src/parser.h/.cpp` | 610 | Parser zstępujący `Parser`, `typeFromName()` |
-| `src/loader.h/.cpp` | 90 | Wczytywanie plików i modułów (`Loader`), `FINCH_PATH` |
-| `src/target.h/.cpp` | 210 | `g_target`: triple, kompilator C, procesy, ścieżki; inicjalizacja backendów |
-| `src/cimport.h/.cpp` | 430 | Import przez libclang: funkcje, struktury C (pola, przesunięcia), stałe, zmienne globalne |
-| `src/codegen.h` | 15 | `generate()` |
-| `src/codegen_impl.h` | 310 | Klasa `Codegen` i jej struktury pomocnicze, wspólne dla plików poniżej |
-| `src/codegen.cpp` | 1460 | Program, deklaracje (funkcje, metody), zasięgi i sprzątanie, instrukcje, wyrażenia, miejsca (`ref`), operatory, błędy jako wartości, analiza modyfikacji |
-| `src/codegen_types.cpp` | 580 | Typy LLVM, rozwiązywanie typów, układ struktur, konwersje, własność (helpery kopiowania/zwalniania), zamiana na tekst, typy dla debuggera |
-| `src/codegen_builtins.cpp` | 890 | Wywołania, metody, konstruktory, funkcje wbudowane, konwersje, metody tablic i tekstów, deklaracje runtime'u, panic |
-| `src/codegen_map.cpp` | 240 | Mapy: indeksowanie, literały, metody, przechodzenie |
-| `src/abi.cpp` | 370 | Konwencje wywołań C (System V x86-64, Microsoft x64, AAPCS64), wywołania C ze strukturami przez wartość, wrappery wywoływalne z C |
-| `src/lsp.cpp`, `src/index.h`, `src/builtins_doc.h` | 700 | Serwer języka (§24) |
-| `src/main.cpp` | 350 | Sterownik: CLI, maszyna docelowa, O2, emisja, cache runtime'u, linkowanie, porady przy błędach linkera, `run` |
-| `runtime/finch_rt.c` | 740 | Biblioteka uruchomieniowa (§12) |
-| `boot/*.fch` | 3100 | Kompilator samohostujący (§17) |
+| `src/lexer.fch` | 220 | Tokeny i pozycje |
+| `src/ast.fch` | 120 | Jedna struktura `Node` z napisem `kind`, dziećmi, nazwami typów, pozycjami (`line`, `endLine`) |
+| `src/parser.fch` | 780 | Zejście rekurencyjne: deklaracje, instrukcje, wyrażenia, generyki (`[T]`), `enum`, `match`, `export`, `link` |
+| `src/gen.fch` | 5200 | Kontrola typów + IR: struktury, funkcje, metody, zakresy i zwolnienia, instrukcje, wyrażenia, wbudowane, mapy, błędy jako wartości, generyki (monomorfizacja), enumy i `match`, metadane `-g`, tryb `index` |
+| `src/cimport.fch` | 560 | libclang: funkcje, struktury (pola, offsety, wypełnienie), enumy, stałe, globalne, makra |
+| `src/platform.fch` | 90 | `Target`: triple, układ danych, kompilator C, znak `char` zależnie od systemu |
+| `src/linker.fch` | 300 | Pamięć podręczna, obiekt runtime'u, biblioteki (`link`, pkg-config), podpowiedzi przy błędach linkera |
+| `src/main.fch` | 310 | Sterownik: CLI, loader z wyszukiwaniem modułów i nakładkami, `build/run/ir/index/lsp` |
+| `src/lsp.fch` | 875 | Serwer języka (§11) |
+| `src/docs.fch` | 110 | Jeden opis wbudowanych funkcji dla podpowiedzi i uzupełniania |
+| `std/*.fch` | 900 | `json`, `path`, `time` (+`_windows`), `proc` (+`_windows`) |
+| `runtime/finch_rt.c` | 760 | Runtime w C |
+| `bootstrap/` | | `build.sh`, `install.sh`, ziarna (§10) |
 
 ---
 
-## 3. Lekser
+## 3. Front end: lekser, parser, moduły
 
-`lex(file)` przechodzi raz przez `g_files[file].text` i zwraca `std::vector<Token>` zakończony `Tok::End`.
+**Lekser.** Koniec linii kończy instrukcję; wcięcia nic nie znaczą. Tokeny niosą plik, linię i kolumnę, z których korzysta każdy błąd.
 
-```cpp
-struct Token { Tok kind; std::string text; int line, col; bool newlineBefore; };
-```
+**Parser.** Zejście rekurencyjne, jedna funkcja na konstrukcję. Typy są parsowane do napisu (`[]str`, `map[str]int`,
+`ptr[char]`, `Stack[int]`); `fn Typ.metoda` deklaruje metodę; `fn nazwa[T]` i `struct Nazwa[T]` to szablony; `enum` i `match`
+mają własne węzły; `export fn` oznacza funkcję widoczną dla C; blok zapamiętuje `endLine` (dla serwera języka). Stara
+kolejność `fn nazwa(...) typ` to błąd składni z podpowiedzią.
 
-- **Nowe linie nie są tokenami.** Każdy token zapamiętuje `newlineBefore`, a o znaczeniu decyduje
-  parser (§4). Dzięki temu obsługa nowych linii nie zaśmieca każdej reguły listowej w gramatyce.
-- **Pozycje:** od 1; `col` liczy znaki (bajty kontynuacji UTF-8 jej nie zwiększają), więc `^` trafia
-  pod `"Błąd"`. Zabłąkany znak spoza ASCII jest pokazywany w całości z podpowiedzią, że nazwy są tylko ASCII.
-- **Identyfikatory / słowa kluczowe:** `[A-Za-z_][A-Za-z0-9_]*`. Słowa kluczowe:
-  `fn return if else while for in break continue true false null import link struct defer or try`.
-  (`self` i `map` to zwykłe identyfikatory ze znaczeniem zależnym od miejsca: w metodzie, przed `[`.)
-  **Nazwy typów nie są słowami kluczowymi**: `int`, `u8`, `ptr`… to `Ident`, rozpoznawane przez parser
-  za pomocą `typeFromName()`, więc `u8(x)` jest zwykłym wywołaniem, a lekser nie zależy od listy typów.
-- **Liczby:** dziesiętne albo `0x` szesnastkowe z separatorami `_`. Bez ósemkowych (`010` to 10).
-  `.` należy do liczby tylko wtedy, gdy po niej jest cyfra, więc `0..10` to `Int DotDot Int`.
-- **Teksty / znaki:** sekwencje `\n \t \r \0 \\ \" \'`. Bez nowej linii w literale.
-- **Operatory:** najdłuższe dopasowanie (`->` przed `-`, `<<`/`<=` przed `<`, `&&` przed `&`, `..` przed `.`,
-  `:=` przed `:`). Samotny `:` to token (argumenty nazwane).
-- **Komentarze:** `//` i niezagnieżdżane `/* */`.
+**Moduły.** `import nazwa` szuka kolejno `nazwa_<os>.fch` obok importującego pliku (`windows`, `linux`, `macos`), `nazwa.fch`,
+katalogów z `FINCH_PATH`, potem biblioteki standardowej `std/`. Każdy moduł jest parsowany raz; jego nazwy są używane jako
+`modul.nazwa`. `import "x.h"` trafia do importera C.
 
 ---
 
-## 4. Gramatyka i parser
+## 4. Generowanie kodu
 
-`Parser` (`src/parser.cpp`) to ręcznie pisany parser zstępujący z jednym tokenem wyprzedzenia, a w
-`atDeclaration()` z maksymalnie trzema.
+`gen.fch` to jedna duża struktura `Gen` i funkcje na niej. Przejścia:
 
-```ebnf
-program     = { import | link | struct | function } ;
-import      = "import" ( STRING | IDENT ) ;                 (* "x.h" = nagłówek C, nazwa = moduł Fincha *)
-link        = "link" STRING ;                               (* "glfw" | "plik.c" | "plik.o" | "lib.a" *)
-struct      = "struct" IDENT "{" { type IDENT [ "=" expr ] NOWA_LINIA } "}" ;
-function    = "fn" IDENT [ "." IDENT ] "(" [ param { "," param } ] ")" [ "->" ( type [ "!" ] | "!" ) ] block ;
-                                                             (* fn Punkt.przesun: metoda; "!": może się nie udać *)
-param       = type IDENT ;
-type        = "[" "]" type | "map" "[" type "]" type | "ptr" [ "[" type "]" ]
-            | TYPENAME | IDENT [ "." IDENT ] ;
+1. `declareStructs`: każda struktura Fincha i C dostaje typ LLVM (struktury C z prawdziwym wypełnieniem); rekurencja przez wartość jest odrzucana.
+2. `declareFns`: sygnatury, z *analizą pożyczania* parametrów (parametr, który nigdzie nie jest zapisywany, jest przekazywany bez kopii).
+3. `define`: każde ciało, sprawdzone i wyemitowane. Zakresy pamiętają, co zwolnić na końcu (`defer` działa pierwszy).
+4. `defineMainWrapper`: C-owe `main(argc, argv)` i `finch_on_fatal` dla osadzających.
+5. Z `-g` metadane DWARF dokładane są w trakcie pisania IR (używaj `-O0`).
 
-block       = "{" { statement TERMINATOR } "}" ;
-statement   = if | while | for | return | "break" | "continue" | "defer" statement | block
-            | type IDENT [ "=" expr ]                        (* deklaracja, zobacz atDeclaration *)
-            | IDENT ":=" expr
-            | target assignop expr                           (* cel: zmienna, pole, element, p.value *)
-            | call | method | try | orelse ;
-for         = "for" IDENT [ "," IDENT ] "in" expr ( ".." expr block | block ) ;   (* zakres | po elementach *)
-assignop    = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
+Generyki są **monomorfizowane**: wywołanie `max(1, 2)` wnioskuje `T`, potem AST szablonu generowane jest ponownie z
+przypisanym `T`, pod zmangowaną nazwą (`max$int`). `match` na enumie jest wyczerpujący (brak wariantu to błąd, `else` łapie
+resztę); na wartości to ciąg porównań. Wartości enuma to `i32`; `Color(n)` jest sprawdzane; wypisywanie używa wygenerowanej tabeli nazw.
 
-expr        = or [ "or" ( block | expr ) ] ;                 (* f(x) or 0,  f(x) or { ... }: najniższy, od prawej *)
-or          = and { "||" and } ;       and = cmp { "&&" cmp } ;
-cmp         = add { ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) add } ;
-add         = mul { ( "+" | "-" | "|" | "^" ) mul } ;
-mul         = unary { ( "*" | "/" | "%" | "<<" | ">>" | "&" ) unary } ;
-unary       = ( "-" | "!" | "~" ) unary | "try" postfix | postfix ;
-postfix     = primary { "." IDENT [ args ] | "[" expr "]" } ;
-primary     = INT | FLOAT | STRING | CHAR | "true" | "false" | "null"
-            | IDENT [ args ] | "(" expr ")" | "[" [ expr { "," expr } [","] ] "]"
-            | "[" ":" "]" | "[" expr ":" expr { "," expr ":" expr } [","] "]" ;   (* mapy *)
-args        = "(" [ arg { "," arg } [","] ] ")" ;  arg = [ IDENT ":" ] expr ;
-```
-
-**Koniec instrukcji.** Po instrukcji `endOfStatement()` wymaga `}`, końca pliku albo tokenu
-z `newlineBefore`. Wewnątrz wyrażeń `sameLine()` (`parenDepth > 0 || !newlineBefore`) decyduje, czy
-operator, `.`, `[` albo `(` wywołania kontynuuje wyrażenie. `parenDepth` rośnie w `( )` i `[ ]`,
-a przy wejściu do `{ }` jest zapamiętywany i zerowany.
-
-**Priorytety są jak w Go**, nie jak w C: `&` wiąże jak `*`, a `|`/`^` jak `+`, wszystkie powyżej porównań,
-więc `x & MASKA == 0` znaczy `(x & MASKA) == 0`.
-
-**Rozpoznawanie instrukcji.** `atDeclaration()` zwraca prawdę dla `[` `]` (typ tablicowy), `TYP IDENT`,
-`ptr [` i `IDENT . IDENT IDENT` (typ z modułu). W pozostałych przypadkach parser **parsuje całe
-wyrażenie, a potem patrzy na następny token**: operator przypisania robi z niego cel (musi być `Var`,
-`Member` albo `Index`), a inaczej musi to być wywołanie funkcji lub metody, w przeciwnym razie
-`this value is computed but never used`.
-
-**Literały struktur to wywołania**: `Punkt(1, 2)` albo `Punkt(x: 1, y: 2)`. Literały w klamrach
-(`Punkt{…}`) byłyby niejednoznaczne z blokami (`if gotowe {`); wywołanie nie potrzebuje specjalnej
-gramatyki, a argumenty nazwane (`IDENT ":"` w `args()`) są akceptowane tylko przez konstruktory na etapie generowania kodu.
+Błędy jako wartości: `-> T!` zwraca parę (wartość, tekst błędu); `try` wraca wcześniej przy błędzie, `or` go obsługuje, `error("…")` go tworzy.
 
 ---
 
-## 5. AST
+## 5. Import C i ABI C
 
-Wszystkie węzły są w `src/ast.h`: małe hierarchie klas z jawnym `kind`, rozgałęziane przez
-`switch` + `static_cast`.
+`cimport.fch` woła **libclang** wprost z Fincha (sam jest napisany z `import "clang-c/Index.h"`), parsuje nagłówek z flagami
+celu i przechodzi po kursorach. Typy: parametr `const char *` → `str`, inny `char *` → `ptr[char]`, wynik `char *` → `str`;
+liczby całkowite według rozmiaru i znaku (`char` jest bez znaku na ARM64 Linux); struktury i enumy według układu.
 
-| ExprKind | Węzeł | Pola |
-|---|---|---|
-| `Int` `Float` `Bool` `Char` `Str` | literały | `value` |
-| `Null` | `NullExpr` | |
-| `Var` | `VarExpr` | `name` |
-| `Unary` | `UnaryExpr` | `op` (`- ! ~`), `operand` |
-| `Binary` | `BinaryExpr` | `BinOp op`, `lhs`, `rhs` |
-| `Call` | `CallExpr` | `callee` (nazwa), `args`, `argNames` |
-| `Member` | `MemberExpr` | `obj`, `field` (`.x`, `.len`, `.ptr`, `.value`) |
-| `Index` | `IndexExpr` | `obj`, `index` |
-| `ArrayLit` | `ArrayLitExpr` | `elems` |
-| `Method` | `MethodExpr` | `obj`, `name`, `args`, `argNames`; także `modul.fn(...)` i `p.metoda(...)` |
-| `MapLit` | `MapLitExpr` | `keys`, `values` (`[:]` nie ma żadnych) |
-| `Try` | `TryExpr` | `call` |
-| `OrElse` | `OrElseExpr` | `call` oraz `fallback` (wyrażenie) albo `block` |
+LLVM IR nie realizuje za ciebie konwencji wywołań C, więc `gen.fch` ją odtwarza:
 
-| StmtKind | Węzeł |
-|---|---|
-| `Block` `VarDecl` `Assign` `Expr` `If` `While` `For` `ForEach` `Return` `Break` `Continue` `Defer` | jak w nazwie; `ForEachStmt` ma `var`, `var2` (`for i, x` / `for k, v`), `list`, `body`; `DeferStmt` trzyma jedną instrukcję |
+- `classify`: System V x86-64: struktura do 16 bajtów idzie w rejestrach według klas ośmiobajtów (INTEGER/SSE), większa w pamięci;
+- `classifyArm64`: AAPCS64, z jednorodnymi agregatami zmiennoprzecinkowymi (HFA);
+- reguły Microsoft x64 (struktury 1, 2, 4, 8 bajtów w rejestrze, reszta przez wskaźnik);
+- `makePlan` zamienia klasyfikację w plan wywołania; `cThunk` robi z `addr(fn)` coś, co C może wywołać (callbacki).
 
-`FnDecl` ma `recv` (struktura metody, w innych przypadkach `""`) i `fallible` (`-> T!`).
-
-`math.sqrt(x)` parsuje się jako `MethodExpr` na `VarExpr("math")`; to, czy `math` jest modułem, czy zmienną,
-rozstrzyga się przy generowaniu kodu. Wywołania nazywają funkcję, zamiast trzymać wyrażenie: Finch nie ma
-funkcji jako wartości, a późne rozwiązywanie nazwy pozwala, by jeden `CallExpr` był funkcją wbudowaną,
-konwersją (`u8(x)`), konstruktorem struktury, funkcją Fincha albo funkcją C.
-
-Nie ma węzła „load”: to, czy `x` znaczy adres, czy wartość, zależy od kontekstu (`ref()` kontra `expr()`, §10.2).
-
-### `Type`
-
-```cpp
-struct Type {
-    enum Kind { Void, Bool, Char, I8, I16, I32, I64, U8, U16, U32, U64, F32, F64,
-                Str, Ptr, Null, Array, Map, Fixed, Struct, Named };
-    Kind kind;
-    std::shared_ptr<Type> elem;   // Ptr (null = `ptr` bez typu), Array, Fixed; Map: wartość
-    std::shared_ptr<Type> key;    // Map
-    long long count;              // Fixed
-    std::string name, module;     // Named (jak napisano) / Struct (rozwiązany)
-    StructInfo *info;             // Struct
-};
-```
-
-Parser tworzy `Named` dla nazw struktur; `Codegen::resolve()` zamienia je na `Struct` ze wskaźnikiem
-`info`. `Fixed` (`[N]T`) pochodzi tylko z pól struktur C. `int` to `I64`, a `float` to `F64`.
-Równość jest strukturalna; dwa `Struct` są równe, gdy mają to samo `info`.
+Ten sam kod pozwala kompilatorowi wołać libclang, którego API przekazuje `CXCursor`, `CXType` i `CXString` przez wartość.
 
 ---
 
-## 6. Wczytywanie: pliki i moduły
+## 6. Sterownik, linkowanie i cele
 
-`Loader::load(path, module, from)` w `main.cpp` czyta plik, dopisuje go do `g_files` (pozycje niosą
-indeks pliku w `Pos::file`), leksuje go i parsuje, a potem wczytuje każdy jeszcze niewidziany `import nazwa`:
-`nazwa.fch` obok importującego pliku albo w folderze z `FINCH_PATH`. Wynik to `std::vector<Program>`,
-z głównym plikiem na początku. Cykle nie przeszkadzają: moduł jest oznaczany jako wczytany, zanim
-zaczniemy podążać za jego importami.
+`finch build|run|ir|index plik.fch [-o wyjście] [-O0] [-g] [-l biblioteka] [-I katalog] [--target cel] [--shared] [--overlay ścieżka=plik]`.
+`ir` wypisuje IR; `index` wypisuje rekordy dla serwera języka (§11); `--shared` robi bibliotekę współdzieloną z `export fn`.
 
-Wszystkie pliki trafiają do **jednego modułu LLVM**. Każdy moduł Fincha ma `ModuleScope` (funkcje,
-struktury, zbiór modułów, które importuje). Nazwy szuka się w bieżącym module; nazwy innego modułu
-są dostępne tylko z kwalifikatorem (`geometry.length`, `geometry.Vec`) i tylko tam, gdzie moduł
-zaimportowano. Funkcje są emitowane jako `finch.<moduł>.<nazwa>` (`finch.<nazwa>` w głównym pliku),
-typy struktur jako `finch.<moduł>.<Nazwa>`.
+`--target windows|linux|arm64|macos|<triple>` zmienia triple i układ danych, znak `char`, reguły ABI powyżej, wariant OS
+modułów (`nazwa_windows.fch`) i kompilator C: `FINCH_CC` albo `clang --target=…`. Przy linkowaniu `pkg-config` podaje flagi
+dla `link "biblioteka"`; gdy linker zawiedzie, wynik jest analizowany i podpowiadane jest brakujące `link "…"`. Obiekt
+runtime'u jest kluczowany skrótem jego źródła i celu.
 
----
+Zmienne środowiskowe: `FINCH_PATH` (katalogi modułów), `FINCH_RT` (źródło runtime'u), `FINCH_CC` (kompilator/linker C; IR
+zawsze kompiluje `clang`, nigdy `CC`), `FINCH_LIBCLANG` (dla `bootstrap/build.sh`).
 
-## 7. Model semantyczny
-
-### Kolejność deklaracji
-
-`Codegen::run()` najpierw deklaruje **wszystkie struktury** wszystkich modułów i zaimportowane struktury C,
-rozwiązuje typy pól i ustawia ciała typów LLVM (`declareStructs` → `resolveStruct`), potem deklaruje
-**wszystkie sygnatury funkcji** (`declare`), a dopiero potem definiuje ciała. Kolejność w pliku i między
-modułami nigdy więc nie ma znaczenia, a rekurencja (także wzajemna i między modułami) działa.
-
-`resolveStruct` wykrywa cykle przez wartość trójstanową flagą (`struct A { A inner }` to błąd z radą,
-by użyć `ptr[A]` albo `[]A`). Wskaźniki i tablice struktury nie potrzebują jej układu, więc
-`struct Wezel { []Wezel dzieci; ptr[Wezel] rodzic }` jest w porządku: rozwiązują nazwę „płytko”
-(`resolveT(…, deep=false)`).
-
-### Zasięgi i zmienne
-
-```cpp
-struct Var     { Value *slot; FType type; bool readonly; std::string readonlyWhy;
-                 bool owned; int order; bool moved; };
-struct Cleanup { bool isDefer; std::string var; const Stmt *body; int order; };
-struct Scope   { unordered_map<string, Var> vars; vector<Cleanup> cleanups; };
-```
-
-Zasięg jest otwierany dla parametrów funkcji, każdego `{ }`, każdego `for` (trzyma `i`), każdego `for … in`
-(ukryta tymczasowa lista) i każdej jego iteracji (trzyma `x`).
-
-- **Bez przesłaniania:** `addVar()` odrzuca nazwę znalezioną w *dowolnym* zewnętrznym zasięgu,
-  funkcję modułu, nazwę zaimportowanego modułu i funkcję wbudowaną.
-- **Tylko do odczytu:** zmienne pętli zakresowej i pętli po elementach (`readonlyWhy` daje konkretny komunikat).
-- `order` numeruje deklaracje; `defer` używa go, by ukryć zmienne zadeklarowane po nim (§9.5).
-
-### Rozwiązywanie nazw
-
-`x` w pozycji wartości: zmienna lokalna → stała C → zmienna globalna C → (nazwa modułu: błąd z podpowiedzią) → błąd.
-Wywołanie `n(...)`: funkcje wbudowane (`print addr input new free exit shell read_file write_file file_exists`) →
-nazwy typów (konwersja) → funkcja bieżącego modułu → struktura bieżącego modułu / struktura C
-(konstruktor) → funkcja C → błąd (z podpowiedzią, jeśli funkcja istnieje w innym module, albo z
-`headerHint` dla znanych nazw z libc).
+Kompilator znajduje `runtime/` i `std/` obok siebie (`../`, `./`) albo w `../share/finch/` (`bootstrap/install.sh`).
 
 ---
 
-## 8. System typów
+## 7. System typów
 
 ### Reprezentacja w LLVM
 
@@ -317,13 +161,13 @@ nazwy typów (konwersja) → funkcja bieżącego modułu → struktura bieżące
 | `char` `i8` `u8` / `i16` `u16` / `i32` `u32` / `int` `u64` | `i8` / `i16` / `i32` / `i64` |
 | `f32` / `float` | `float` / `double` |
 | `str`, `[]T` | `{ ptr, i64, i64 }` (wskaźnik, długość, pojemność) |
-| `map[K]V` | `{ ptr, i64, i64, i64, ptr, i64 }` (entries, len, used, cap, index, icap; §10.12) |
+| `map[K]V` | `{ ptr, i64, i64, i64, ptr, i64 }` (entries, len, used, cap, index, icap; zob. src/gen.fch) |
 | `ptr`, `ptr[T]`, `null` | `ptr` (nieprzezroczysty) |
 | `[N]T` | `[N x T]` |
 | struktura Fincha | nazwany typ struct, naturalny układ |
 | `self` metody | `ptr` (pierwszy parametr) |
 | wynik `-> T!` | `{ i1 ok, T value, str error }` (`i8` w miejscu `T` dla `-> !`) |
-| struktura C | nazwany **upakowany** (packed) struct z jawnymi bajtami wypełnienia (§13.2) |
+| struktura C | nazwany **upakowany** (packed) struct z jawnymi bajtami wypełnienia (§5) |
 
 Znakowość istnieje tylko w typie Fincha i wybiera `sdiv/udiv`, `ashr/lshr`, `icmp s*/u*`,
 `sext/zext`, `sitofp/uitofp`, `fptosi/fptoui`.
@@ -338,7 +182,7 @@ struct Value_ { Value *v; FType type; bool literal; bool fresh; };
   w którym się mieści (`fits()`), albo `f32`. Przechodzi przez minus jednoargumentowy i arytmetykę samych
   literałów zwijaną do stałej; jawne konwersje ją kasują (`u8(250)` to stała z typem, więc `u8(250) + 10` zawija się do 4).
 - **`fresh`**: wartość posiadająca pamięć (str/tablica/struktura z takimi polami), której nikt jeszcze nie
-  trzyma: wynik wywołania, literał, sklejenie, konstruktor. Trzeba ją zapisać (przenieść) albo zwolnić (§9).
+  trzyma: wynik wywołania, literał, sklejenie, konstruktor. Trzeba ją zapisać (przenieść) albo zwolnić (§8).
 
 ### Konwersje niejawne: `coerce(v, want)`
 
@@ -378,7 +222,9 @@ Całkowite i znaki wg znakowości (char bez znaku). Bool: tylko równość. Tabl
 
 ---
 
-## 9. Własność i pamięć
+---
+
+## 8. Własność i pamięć
 
 ### 9.1 Model
 
@@ -499,382 +345,52 @@ podczas iteracji, zagnieżdżonych tablicach struktur i przekazywaniu struktur C
 
 ---
 
-## 10. Generowanie kodu
+---
 
-### 10.1 Zmienne
+## 9. Generyki, enumy i match
 
-Każda zmienna, łącznie z parametrami, dostaje `alloca` na początku bloku wejściowego (`slot()`;
-struktury C dostają wyrównanie z C). `addVar()` zapisuje wartość początkową, rejestruje zmienną,
-dokłada sprzątanie, jeśli zmienna posiada pamięć, i (z `-g`) zgłasza ją debuggerowi.
+Jak są generowane, opisuje §4. Reguły widoczne dla użytkownika: sekcje 23 i 24 [przewodnika dla techników](dla-technikow.md).
+Testy: `tests/new/generics.fch`, `tests/new/enums.fch` i odmowy w `tests/new/fail/`.
 
-### 10.2 Miejsca: `ref()`, `place()`, `expr()`
+---
 
-```cpp
-struct LRef { bool isPlace; Place pl; Value_ val; };   // adres albo (jeśli go nie ma) wartość
+## 10. Bootstrap
+
+Kompilator budowany jest z **ziarna**: własnego IR zapisanego jako `bootstrap/<system>.ll` (zobacz
+[bootstrap/README.md](../../bootstrap/README.md)). `bootstrap/build.sh`:
+
+```
+ziarno .ll ──clang──► finch0 ──buduje src/──► finch1 ──buduje src/──► build/finch
 ```
 
-`ref(e, forWrite)` przechodzi łańcuch `Var`/`Member`/`Index` i zwraca **adres**, jeśli istnieje:
+i przerywa, jeśli `finch1` i `finch` nie dają identycznego IR (punkt stały: kompilator kompiluje siebie tak samo, niezależnie
+od tego, kto go zbudował). `bootstrap/build.sh seed` przepisuje ziarno z bieżącego kompilatora; rób to, gdy źródło
+kompilatora zacznie używać czegoś, czego zatwierdzone ziarno nie ma.
 
-- `Var` → jej `alloca` (albo zmienna globalna C).
-- `.pole` na miejscu-strukturze → `getelementptr` do pola (`llvmIndex`; struktury C pomijają elementy wypełnienia).
-- przez wskaźnik (`p.value`, `p.pole`, `p[i]`) → wczytanie wskaźnika, kontrola null, adres celu.
-  `p.value` na wskaźniku do struktury z własnym polem `value` oznacza to pole.
-- `a[i]` na miejscu-tablicy/tekście → wczytanie `{ptr,len,cap}`, `boundsCheck(i, len)`, `getelementptr`.
-  Przy `forWrite` na `str` najpierw `finch_str_own` (kopiowanie przy zapisie dla literałów). `[N]T` sprawdza względem `N`.
-- `.len` / `.ptr` → wartości.
-- wartość tymczasowa (wynik wywołania…) nie ma adresu: jej pole/element jest wyciągany, kopiowany
-  (jeśli posiada pamięć), a sama wartość zwalniana.
+Ziarno jest na system, bo zapieczono w nim konwencję wywołań C dla wywołań libclang (§5). Linux x86-64 i Linux ARM64 mają
+ziarna. Dla macOS i Windowsa trzeba by ziaren zrobionych z nagłówkami Apple i Microsoftu.
 
-`expr()` dla tych rodzajów woła `ref()` i wczytuje spod adresu: stąd bierze się każdy `load` zmiennej,
-pola albo elementu. `place()` wymaga adresu (cele przypisań, `addr()`).
+---
 
-### 10.3 Przypisanie
+## 11. Serwer języka
 
-`x = v`: **najpierw** liczone jest `v` (może przenieść pamięć, w której żyje cel: `a[0] = f()`, gdzie `f`
-robi `push` do `a`), potem `place(cel, forWrite)`, `coerce`, `own`, wczytanie starej wartości, zapis i
-zwolnienie starej. Złożone `x += v`: liczenie `v`, wczytanie celu, `arith()`, zapis, zwolnienie starej
-wartości (dla `str +=`).
+`finch lsp` mówi JSON-RPC przez stdin/stdout (ramki `Content-Length`, `std/json`). Sam nie sprawdza typów: przy każdej zmianie
+uruchamia `finch index plik.fch --overlay ścieżka=kopia …`, gdzie nakładki to niezapisany tekst edytora. W trybie `index`
+kompilator wypisuje rekordy rozdzielone tabulatorami:
 
-### 10.4 Funkcje i `main`
-
-Funkcje są `internal` z naturalną sygnaturą LLVM (agregaty przez wartość). Parametry posiadające
-pamięć są kopiowane na wejściu tylko wtedy, gdy `borrowParam` jest fałszywe. Metody (§10.10) dostają adres
-`self` jako dodatkowy pierwszy parametr; funkcje, które mogą się nie udać (§10.11), zwracają `{ i1, T, str }`.
-`fn main() -> !` / `-> int!` sprawia, że wrapper przy porażce wypisuje `error: <komunikat>` na stderr
-i kończy z kodem 1. `fn main` to wewnętrzna
-`finch.main`; osobna zewnętrzna `i32 main(i32, ptr)` (`defineMainWrapper`) buduje `[]str args` przez
-`finch_args`, jeśli trzeba, woła ją, zwalnia argumenty i zwraca kod wyjścia. Funkcja, która dochodzi do
-swojego końca, dostaje sprzątanie zasięgów i `ret void` albo błąd `can reach its end without returning T`.
-
-### 10.5 Sterowanie przebiegiem
-
-Bieżący blok buildera jest źródłem prawdy o osiągalności (`terminated()`): instrukcje po terminatorze to
-błąd (`this code can never run`). `continueAt()` usuwa blok łączący, do którego nikt nie skacze.
-`if`/`while`/`for` mają klasyczny układ bloków; `while true` bez `break` zostawia funkcję zakończoną
-(nie trzeba po nim `return`). `for i in a..b` liczy oba końce raz; `continue` idzie do `for.step`.
-`for x in lista` czyta długość listy z jej adresu **w każdej rundzie** (`push` w środku pętli jest bezpieczny)
-i trzyma indeks w slocie na stosie. `break`/`continue` emitują sprzątanie zasięgów otwartych wewnątrz pętli
-(`Loop::scopeDepth`) przed skokiem.
-
-### 10.6 Skrócone `&&` / `||`
-
-Jedyne ręcznie budowane φ: lewa strona kończy się w bloku `from`, prawa w `rhsEnd`;
-`phi i1 [!isAnd, from], [rhs, rhsEnd]`.
-
-### 10.7 Wywołania
-
-`callFinch()` konwertuje argumenty na typy parametrów (literały tablic przez `exprWant`), przekazuje
-posiadające płytko, woła, a potem zwalnia argumenty fresh. Wyniki typów posiadających są fresh.
-`construct()` buduje strukturę od `zeroinitializer` przez `insertvalue`: pozycyjnie (wszystkie pola)
-albo po nazwie (brakujące biorą wyrażenie domyślne pola, liczone w module struktury z podmienionymi
-zasięgami wywołującego, albo zero). Wywołania C opisuje §13.
-
-### 10.8 Wypisywanie
-
-`print` emituje `printf` dla każdego argumentu skalarnego z formatem wybranym wg typu (`%lld`, `%llu`,
-`%g`, `%c`, `%.*s` dla `str` z jego długością), oddzielając spacjami, a na końcu `\n`. Wszystko inne
-(wskaźniki, tablice, tablice o stałym rozmiarze, mapy, struktury) jest najpierw **zamieniane na tekst**
-w buforze `str` na stercie przez `emitFormat()` i wypisywane przez `finch_buf_print`. Typy złożone dostają
-generowany helper `finch.format.<klucz>(buf, wartość*)`, który dopisuje `[1, 2]` / `{"a": 1}` /
-`Punkt(x: 1, y: 2)`, biorąc teksty i znaki w środku w cudzysłów. `str(x)` tablicy, mapy albo struktury
-używa tego samego helpera, więc `str(x)` to zawsze to, co pokazuje `print(x)`.
-
-### 10.9 Metody tablic i tekstów
-
-Tablice: `push` (`finch_arr_reserve` + zapis + len++), `pop`/`remove` (przeniesienie na zewnątrz,
-`remove_gap`), `insert` (`insert_gap`), `clear`/`resize` (zwolnienie znikających elementów,
-`finch_arr_resize`), `find`/`contains` (pętla z `compare(Eq)`), `slice` (nowa tablica, `copyAt` na element),
-`reverse` (pętla zamian), `sort` (`qsort` z libc z generowaną porównywarką `finch.cmp.<klucz>`), `join` (runtime).
-Metody zmieniające tablicę wymagają adresu (zmienna/pole/element).
-Teksty: `sub find contains starts_with ends_with split trim upper lower replace repeat bytes`, wszystkie w runtime.
-`for i, x in lista` dodaje obok elementu zmienną-indeks typu `int` tylko do odczytu.
-
-### 10.10 Metody
-
-`fn Punkt.przesun(int dx)` jest deklarowana jak funkcja `finch.[modul.]Punkt.przesun` z dodatkowym
-pierwszym parametrem `ptr` i trzymana w `Codegen::methods[StructInfo*]` (więc metody idą za strukturą do
-każdego modułu, który jej używa, a struktury z C też mogą mieć metody). W `define()` `self` to `Var`, którego
-`slot` **jest tym argumentem-wskaźnikiem**: `self.x` to GEP od struktury samego wywołującego, a `self = …`
-zapisuje wartość wywołującego. Nigdy nie ma kopii.
-
-Przy wywołaniu `obj.m(args)` (`structMethod()`) `ref(obj)` daje adres, gdy `obj` jest miejscem (zmienna,
-pole, element, `m[klucz]`), wczytany wskaźnik dla `ptr[T]` (sprawdzany na null) albo tymczasowe miejsce na
-stosie dla wartości (`Punkt(1, 2).dlugosc()`), zwalniane po wywołaniu. Z analizy modyfikacji wynikają dwie
-reguły bezpieczeństwa: metody zmieniającej `self` nie można wywołać na zmiennej pętli (tylko do odczytu),
-a jeśli taka metoda dostaje argument żyjący wewnątrz odbiorcy (`c.merge(c)`, `p.add(p.items)`), argument
-jest najpierw kopiowany, żeby `self` nie mógł zwolnić pamięci, na którą argument wciąż wskazuje.
-
-### 10.11 Błędy jako wartości
-
-Funkcja, która może się nie udać (`-> T!`), zwraca `{ i1 ok, T value, str error }`; przy porażce `value`
-jest zerem, więc wywołujący nigdy nie musi go zwalniać. `return v` opakowuje `{1, v, zero}` (`retValue()`);
-`return error(msg)` liczy komunikat, wykonuje sprzątanie i zwraca `{0, zero, msg}` (`retError()`).
-
-Wywołanie takiej funkcji jest dozwolone tylko jako argument `or` / `try`. `fallible(wywołanie)` ustawia
-`fallibleTarget` na wyrażenie wywołania; `callFinch()` (i funkcje wbudowane, które mogą się nie udać)
-porównują z nim swoje `CallExpr`/`MethodExpr` i jeśli pasuje, zostawiają `fallibleFailed` (`i1`)
-i `fallibleMsg` (`str`) dla wywołującego; jeśli wywołanie takiej funkcji nie pasuje, to błąd kompilacji
-*'f' can fail, so say what happens then*. Zagnieżdżone obsługi zapisują i przywracają te trzy pola.
-
-| Forma | Tłumaczenie |
+| Rekord | Znaczenie |
 |---|---|
-| `f(x) or zapasowa` | `br failed, or.failed, or.ok`; blok porażki zwalnia komunikat i liczy wartość zapasową (tylko tam); φ łączy obie wartości |
-| `f(x) or { … }` | blok porażki deklaruje `err` (właściciel komunikatu) i wykonuje blok. Jeśli wartość jest używana, blok musi kończyć się skokiem; jako instrukcja może przejść dalej, a ścieżka sukcesu zwalnia nieużytą wartość |
-| `try f(x)` | blok porażki wykonuje `emitCleanups(0)` i zwraca `{0, zero, msg}` z bieżącej funkcji, która też musi móc się nie udać |
+| `@R plik linia kol dł plikDef liniaDef kolDef podpowiedź` | odwołanie: co pokazuje hover i gdzie jest definicja |
+| `@V nazwa typ plik linia kol plikFn liniaFn koniecFn` | zmienna i funkcja, w której żyje |
+| `@F moduł nazwa odb plik linia kol koniec sygnatura parametry` | funkcja lub metoda |
+| `@S` / `@SF`, `@E`, `@I` | struktury (i pola), enumy, importy |
 
-Funkcje wbudowane z trybem porażki sprawdzają `&wywołanie == fallibleTarget` i przełączają się na
-`finch_str_try_int`, `finch_str_try_float`, `finch_try_read_file`, `finch_try_write_file`,
-`finch_try_delete_file`, które zwracają 1 / 0 i wypełniają `str` z błędem zamiast robić panic. Koszt przy
-sukcesie to jedna przewidywalna gałąź; nic nie jest alokowane, dopóki nie zdarzy się porażka.
-
-### 10.12 Mapy
-
-Runtime (§12) trzyma tablicę haszującą zachowującą kolejność wstawiania, w stylu `dict` z CPythona:
-tablica `entries` z miejscami `{ i64 hash, K key, V value }` w kolejności wstawiania (hash 0 = usunięte)
-oraz `index` z `icap` miejscami (potęga dwójki, ≥ 2 × cap) z sondowaniem liniowym (−1 puste, −2 usunięte,
-w innym razie numer wpisu). Runtime tylko haszuje (FNV-1a + 64-bitowe mieszanie; klucze tekstowe po treści,
-pozostałe po bajtach), znajduje i umieszcza wpisy; kompilator zapisuje, kopiuje i zwalnia klucze i wartości,
-dokładnie tak jak elementy tablic.
-
-| Kod | Tłumaczenie |
-|---|---|
-| odczyt `m[k]` | `finch_map_find`; −1 → `finch_map_missing` (noreturn, z kluczem jako tekst); w innym razie miejsce `entry.value` |
-| zapis `m[k]` (`=`, `+=`, metoda zmieniająca, `addr`) | `mapSlot()`: `finch_map_slot` zwraca wpis, dodając go, jeśli go nie ma; nowy wpis dostaje kopię klucza i wartość domyślną typu |
-| `["a": 1, …]` | wyzerowana mapa + `mapSlot` dla każdego wpisu (pierwszy wpis ustala typy; liczbowe wartości są wszystkie `float`, jeśli któraś ma kropkę) |
-| `has`, `get`, `remove`, `clear`, `keys`, `values` | `codegen_map.cpp`; wartość domyślna `get` jest liczona tylko wtedy, gdy klucza brak |
-| `for k, v in m` | pętla po `0..used` pomijająca usunięte miejsca, wczytująca `entries` i `used` w każdym obrocie |
-| kopia / zwolnienie / tekst | helpery jak dla tablic: `finch_map_clone_raw`, a potem głębokie kopie posiadających kluczy i wartości; zwolnienie każdego żywego wpisu, potem `finch_map_free` |
-
-Usunięcie oznacza miejsce (i wpis w indeksie) jako usunięte; miejsca są upychane, gdy tablica miałaby
-urosnąć, a co najmniej ćwierć z nich jest usunięta. Usunięcie ostatniego klucza resetuje tablicę.
+Pierwszy błąd wypisywany jest jako `ścieżka:linia:kol: error: komunikat` i staje się diagnostyką. Gdy kod się nie kompiluje,
+serwer podpowiada dalej z ostatniej wersji, która się skompilowała. Test akceptacyjny: `tests/lsp_test.py` (22 sprawdzenia).
 
 ---
 
-## 11. Kontrole w czasie działania
-
-Wszystkie błędy w czasie działania idą przez `finch_panic(plik, linia, msg)` /
-`finch_panic_index(plik, linia, i, len)` (zadeklarowane `noreturn cold`), więc gałąź błędu jest układana
-jako zimna, a kontrola kosztuje porównanie i dobrze przewidywany skok. LLVM usuwa kontrole, które potrafi
-udowodnić (stałe indeksy w zakresie, kontrole wyciągnięte z pętli).
-
-| Kontrola | Gdzie |
-|---|---|
-| dzielenie/reszta przez zero (stałe zero: błąd kompilacji) | `checkDivisor()` |
-| `MIN / -1` dla typów ze znakiem | `checkDivisor()` |
-| indeks tablicy/tekstu/tablicy stałej poza zakresem (`icmp uge`, więc także ujemne) | `boundsCheck()` |
-| `.value`, `.pole`, `[i]` przez null | `member()`, `index()` |
-| `pop()` na pustej, `slice()`/`sub()` poza zakresem | metody, runtime |
-| zły tekst w `int(s)`/`float(s)`, nieczytelny plik w `read_file` (bez `or` / `try`) | runtime |
-| odczyt `m[klucz]` z brakującym kluczem | `mapIndex()` |
-| metoda wywołana przez `null` w `ptr[T]` | `structMethod()` |
-
-Sito na 20 milionów elementów z kontrolą zakresu przy każdym dostępie działa tak szybko jak to samo w C
-(ok. 0,09 s): kontrole są wyciągane z pętli albo zwijane.
-
----
-
-## 12. Runtime w C
-
-`runtime/finch_rt.c` to zwykłe C bez stanu globalnego. CMake wbudowuje go w kompilator jako surowy
-napis (`rt_source.inc`); przy pierwszym użyciu `runtimeObject()` kompiluje go przez `$CC -O2 -fPIC -c`
-do `~/.cache/finch/rt-<hash>.o`, gdzie hash obejmuje źródło, wersję Fincha i kompilator C.
-Jest linkowany statycznie do każdego programu.
-
-Wspólny układ:
-
-```c
-typedef struct { char *ptr; int64_t len; int64_t cap; } FStr;   // ptr zawsze zakończony zerem
-typedef struct { void *ptr; int64_t len; int64_t cap; } FArr;
-// cap tekstu: > 0 sterta (posiadany), 0 literał (statyczny), -1 pożyczony z C (skopiuj, zanim zatrzymasz)
-```
-
-Funkcje przyjmują i zwracają te struktury **przez wskaźnik**, więc ich ABI jest trywialne (bez klasyfikacji
-struktur): budowanie tekstów (`concat`, `from_int/uint/float/char/bool`, `sub`, `trim`, `upper`, `lower`,
-`replace`, `split`, `join`, `repeat`, `from_bytes`), porównania (`eq`, `cmp`, `find`, `starts`, `ends`),
-własność (`copy`, `own`, `drop`, `from_c`), tablice (`reserve`, `make`, `resize`, `clone_raw`, `free`,
-`insert_gap`, `remove_gap`), mapy (`map_find`, `map_slot`, `map_remove_at`, `map_clear`, `map_free`,
-`map_clone_raw`, `map_missing`; §10.12), bufory tekstu dla `print`/`str` (`buf_add`, `buf_int`, …,
-`buf_print`), warianty mogące się nie udać (`str_try_int`, `str_try_float`, `try_read_file`,
-`try_write_file`, `try_delete_file`, `report_error`), `args`, `input`, pliki, `shell` i panic. Brak pamięci
-wypisuje `out of memory` i kończy proces.
-
----
-
-## 13. Współpraca z C: nagłówki, struktury, ABI
-
-### 13.1 Import nagłówków
-
-`importHeaders(imports, dirs)` parsuje każdy `import "x.h"` jako osobną jednostkę translacji z pliku
-w pamięci `#include "x.h"`, z `-x c -std=gnu11`, `-I` dla folderu każdego pliku `.fch` i `-isystem` dla
-każdego katalogu przeszukiwanego przez systemowy kompilator C (odczytanego z `$CC -E -v -x c /dev/null`,
-dzięki czemu działa to na NixOS). `gnu11`, bo glibc w trybie ścisłego ISO ukrywa `M_PI` i podobne.
-
-`Importer` odwiedza kursory najwyższego poziomu:
-
-| Kursor | Wynik |
-|---|---|
-| `FunctionDecl` | `CFunc` (sygnatura mapowana w **kontekście sygnatury**; funkcje `static` i K&R zapisywane jako nieobsługiwane) |
-| `TypedefDecl` rekordu | nazywa rekord (`typedef struct {…} CXCursor` → `CXCursor`) |
-| `StructDecl` (definicja) | nazywa rekord jego tagiem |
-| `VarDecl` `extern` | `CGlobal` (mapowany w **kontekście danych**) |
-| `EnumConstantDecl`, liczbowe `MacroDefinition` | `CConst` (literał) |
-
-`mapType()` działa na typach kanonicznych i mapuje liczby całkowite wg rozmiaru. Kontekst decyduje o
-`char *`: w sygnaturach funkcji to `str` (Finch konwertuje przy wywołaniu), ale w strukturach, zmiennych
-globalnych i za wskaźnikami to `ptr[char]` (tam układ pamięci musi zostać pojedynczym wskaźnikiem).
-Rekordy przez wartość stają się `Named{nazwa, "C"}` i są definiowane przez `defineRecord()`: każde pole
-(`clang_Type_visitFields`) z przesunięciem w bajtach, rozmiarem i wyrównaniem, zagnieżdżone rekordy,
-tablice stałe (`Fixed`). Unie i pola bitowe zostają jako ukryte bajty i oznaczają strukturę jako
-nieobsługiwaną przy wywołaniach przez wartość; wskaźniki na wszystko inne (void, funkcje, niekompletne
-struktury) stają się `ptr`.
-
-### 13.2 Układ struktur C
-
-`resolveStruct()` buduje **upakowany** struct LLVM, który odwzorowuje C bajt w bajt: wypełnienie
-`[n x i8]` przed każdym polem, którego przesunięcie wyprzedza bieżącą pozycję, samo pole (tylko jeśli jego
-rozmiar w LLVM zgadza się z C) i wypełnienie końcowe do `sizeof` z C. Dostęp do pól używa zapisanego
-`llvmIndex`. Upakowanie czyni układ dokładnym niezależnie od reguł wyrównania LLVM; alokacje i wartości
-tymczasowe dostają wyrównanie z C jawnie.
-
-### 13.3 Konwencja wywołań System V x86-64
-
-`classify(T)` (w `abi.cpp`) spłaszcza strukturę do skalarnych liści z przesunięciami w bajtach (przez
-zagnieżdżone struktury i tablice stałe) i:
-
-- **MEMORY**, jeśli jest większa niż 16 bajtów albo ma niewyrównany liść: przekazywana jako wskaźnik z
-  `byval(T) align ≥8`, zwracana przez ukryty pierwszy wskaźnik `sret(T)`.
-- w przeciwnym razie każdy eightbyte jest **INTEGER**, jeśli którykolwiek liść w nim jest liczbą
-  całkowitą/wskaźnikiem, a inaczej **SSE**. Części: INTEGER → `iN` dla pozostałych bajtów (`i32` dla
-  4-bajtowego `Color`), SSE → `double`, `<2 x float>` albo `float`. Jedna część idzie wprost; dwie jako
-  dwa argumenty albo zwracane jako `{a, b}`.
-
-`makePlan()` przechodzi parametry, licząc 6 rejestrów całkowitych i 8 SSE; struktura, której części już się
-nie mieszczą, idzie w całości na stos (MEMORY), tak jak robi to clang. Małe parametry całkowite dostają
-`signext`/`zeroext`. `emitCCall()` zapisuje każdy argument-strukturę do slotu wystarczająco dużego dla
-struktury i jej postaci rejestrowej, wczytuje części z przesunięć 0 i 8, woła z zaplanowanym typem funkcji
-i atrybutami, a wyniki-struktury odbudowuje w ten sam sposób.
-
-`cThunk(fn)` to odwrotność dla `addr(fn)`: wewnętrzna funkcja z sygnaturą C, która składa parametry-struktury
-z rejestrów albo pamięci `byval`, woła funkcję Fincha i obniża jej wynik. Akceptowane są tylko sygnatury zgodne z C.
-
-`tests/run/c_structs.fch` sprawdza `{float,float}`, `{float,float,float}`, `{u8×4}`, `{double,int}`,
-`{i64,i64}`, strukturę 24-bajtową, strukturę z `char[8]`, zagnieżdżone struktury, wyczerpanie rejestrów
-przy 13 argumentach-strukturach oraz wywołania zwrotne przyjmujące i zwracające struktury, na bibliotece C
-kompilowanej przez `link "abi.c"`. Wyniki zgadzają się z tymi samymi wywołaniami zrobionymi z C.
-
-### 13.4 Linkowanie kodu C
-
-`link "nazwa"` próbuje `pkg-config --libs nazwa`, a potem `-lnazwa`. `link "plik.c"` kompiluje plik
-(względem pliku `.fch`) przez `$CC -O2 -fPIC -c` do tymczasowego obiektu; pliki `.o` i `.a` przechodzą
-bez zmian. Gdy linkowanie się nie uda, `linkFailed()` mapuje niezdefiniowane symbole na nagłówek, który
-je zadeklarował, i wypisuje linijkę `link` do dopisania.
-
----
-
-## 14. Optymalizacja, emisja, linkowanie
-
-- **Cel:** `sys::getDefaultTargetTriple()`, CPU `generic`, `Reloc::PIC_`. Data layout jest ustawiany na
-  module, zanim powstanie jakikolwiek IR (od niego zależy wyrównanie loadów i store'ów).
-- **Optymalizacja:** `PassBuilder::buildPerModuleDefaultPipeline(O2)`: środkowa część `-O2` z clanga.
-  `-O0` ją pomija (`finch ir plik.fch -O0` pokazuje surowe wyjście `Codegen`).
-- **Emisja:** stary `PassManager` + `addPassesToEmitFile(ObjectFile)`.
-- **Linkowanie:** `$CC prog.o rt.o [obiekty użytkownika] -lm [biblioteki]`. Na Niksie wrapper cc zamienia
-  ścieżki `-L` na `RPATH`, więc programy działają bez `LD_LIBRARY_PATH`.
-- **`run`:** tymczasowy plik wykonywalny uruchamiany z resztą argumentów i potem usuwany; sygnał jest
-  zgłaszany jako `the program crashed: <nazwa>` z kodem wyjścia `128 + n`.
-
-Uwagi o wydajności: funkcje użytkownika są `internal`, więc LLVM swobodnie je wstawia i specjalizuje
-(rekurencyjne `fib(40)`: ok. 0,19 s wobec ok. 0,23 s dla `clang -O2` na tym samym kodzie C na maszynie
-autora); kod tablicowy z kontrolą zakresu dorównuje C na sicie.
-
----
-
-## 15. Informacje dla debuggera
-
-Z `-g` `Codegen` tworzy `DIBuilder`, jednostkę kompilacji (`DW_LANG_C`, więc składnia wyrażeń C w gdb
-działa dla `print p.x`), `DIFile` na plik źródłowy, `DISubprogram` na funkcję, zmienne-parametry
-(`createParameterVariable`, więc `bt` pokazuje `length (v=…)`), zmienne lokalne (`insertDeclare` na ich
-`alloca`) i `DILocation` na każdą instrukcję i wywołanie (`setLoc`). Typy: podstawowe z nazwami Fincha
-(`int`, `u8`, `float`), `str`/tablice jako struktury `{ptr, len, cap}`, wskaźniki, tablice stałe i struktury
-z przesunięciami pól z `StructLayout` LLVM. Struktury rekurencyjne używają zastępowalnej deklaracji
-wyprzedzającej. Generowane helpery nie mają lokacji. Najlepiej działa `-g -O0`; przy O2 część zmiennych jest usuwana.
-
----
-
-## 16. Diagnostyka
-
-`failAt(plik, linia, kol, msg)` wypisuje `ścieżka:linia:kol: error: msg` i linijkę źródła ze znakiem `^`
-(tabulatory zachowane, kolumny liczone w znakach), a potem kończy proces z kodem 1. Konwencje: operatory
-binarne raportują operator, wywołania nazwę funkcji, błędy argumentów pozycję argumentu. Komunikaty mówią,
-co jest źle, a gdy naprawa jest oczywista, także jak to naprawić. Ostrzeżeń nie ma. Błąd weryfikatora LLVM
-wypisuje `internal compiler error (please report)` i kończy proces z kodem 2.
-
----
-
-## 17. Kompilator samohostujący (`boot/`)
-
-`boot/` to drugi kompilator Fincha napisany w Finchu (ok. 3100 linii):
-
-| Plik | Zawartość |
-|---|---|
-| `boot/lexer.fch` | lekser (tokeny to `{kind, text, line, col, nl}`; rodzaje to słowa, a słowa kluczowe i operatory są swoim własnym rodzajem) |
-| `boot/ast.fch` | `Type` (`kind`, `elem` jako tablica 0/1 elementów, `name`, `module`), jeden ogólny `Node` na wszystko, `Program` |
-| `boot/parser.fch` | ta sama gramatyka i reguły nowych linii co parser C++, wspinanie się po priorytetach dla operatorów binarnych |
-| `boot/gen.fch` | sprawdzanie typów + generator **tekstowego LLVM IR**: zasięgi, miejsca, konwersje, kopie, helpery, wypisywanie, kontrole, metody tablic i tekstów |
-| `boot/main.fch` | ładowanie modułów i sterownik: zapisuje `.ll`, uruchamia `clang -O2 plik.ll runtime/finch_rt.c` |
-
-Obsługuje rdzeń języka: `int float bool char str`, `[]T`, struktury (wartości domyślne, konstruktory po
-nazwie i po kolei), `ptr[T]`/`addr`/`new`/`free`/`null`, wszystkie instrukcje poza `defer`, moduły oraz
-funkcje wbudowane i metody kompilatora C++, bez importu C, liczb z rozmiarem i `defer`. Ma tę samą
-semantykę wartości i analizę pożyczania (kopiuje tam, gdzie główny kompilator), ale **nigdy nie zwalnia**:
-jako kompilator bootstrapowy zostawia pamięć systemowi operacyjnemu.
-
-Stan kompilatora to jedna struktura `Gen` przekazywana jako `ptr[Gen]`: Finch nie ma zmiennych globalnych,
-a przekazanie wskaźnika to sposób, w jaki funkcja zmienia wartość wywołującego. Bez `defer` i typu map zasięgi
-to tablice tablic przeszukiwane liniowo; funkcje pomocnicze (kopiowanie/wypisywanie/porównywanie na typ)
-są generowane przez tymczasową podmianę buforów wyjścia (`beginHelper`/`endHelper`).
-
-**Punkt stały.** `tests/boot.sh`:
-
-1. `build/finch` (C++) kompiluje `boot/` → **stage 1**,
-2. stage 1 kompiluje `boot/` → **stage 2** (i jego IR),
-3. stage 2 kompiluje `boot/` → IR **stage 3**,
-
-i wymaga, żeby IR ze stage 2 i stage 3 był **identyczny co do bajtu** (ok. 32 000 linii). Potem kompiluje
-kompilatorem samohostującym każdy test z `tests/run`, który mieści się w podzbiorze języka, i porównuje
-wynik z oczekiwanym. Kompilacja samego siebie zajmuje kompilatorowi samohostującemu ok. 2,3 s.
-
----
-
-## 18. System budowania
-
-- `find_package(LLVM CONFIG)`; **jeśli istnieje współdzielony cel `LLVM`, Finch linkuje tę jedną bibliotekę.**
-  `libclang.so` sam linkuje `libLLVM.so`; linkowanie dodatkowo statycznych bibliotek komponentów wprowadzało
-  do procesu dwie kopie LLVM, a zduplikowane obiekty globalne wywracały program przy wyjściu (podwójne
-  zwolnienie w globalnym destruktorze). Do tego binarka miała 82 MB zamiast ok. 20 MB.
-- libclang: `find_path(clang-c/Index.h)` + `find_library(clang)`.
-- `runtime/finch_rt.c` jest wczytywany przy konfiguracji do `build/rt_source.inc` jako surowy literał
-  napisowy; `CMAKE_CONFIGURE_DEPENDS` ponawia konfigurację, gdy plik się zmieni.
-- `FINCH_VERSION` z `project(VERSION 2.4.0)`. C++17, `-Wall -Wextra` (MSVC: `/W3`), bez ostrzeżeń.
-- `shell.nix` wymienia `llvmPackages.clang` przed `llvmPackages.libclang`: ten drugi dostarcza też
-  „gołego” `clang`, który nie widzi nagłówków systemowych.
-
----
-
-## 19. Testy
-
-- `tests/run.sh`: każdy `tests/run/*.fch` z `fn main` musi wypisać dokładnie swój `.out` (stdin z `.in`, jeśli
-  jest); pliki bez `main` to moduły albo pliki pomocnicze. Każdy `tests/fail/*.fch` musi się nie udać z tekstem
-  z linijki `// expect:`. Obecnie **74 passed, 0 failed**.
-- `MEMCHECK=1 tests/run.sh`: to samo plus valgrind na każdym programie (bez wycieków i złych dostępów).
-- `tests/boot.sh`: punkt stały samohostowania i przebieg na podzbiorze (§17).
-- `tests/cross.sh windows|arm64`: każdy test zbudowany z `--target` i uruchomiony w Wine / QEMU.
-- `python3 tests/lsp_test.py`: serwer języka, sterowany jak przez edytor.
-- CI (`.github/workflows/ci.yml`) uruchamia to wszystko na Linuksie x86-64, Linuksie ARM64, macOS ARM64 i Windowsie.
-
----
-
-## 20. Semantyka a C
+## 12. Semantyka a C
 
 | Sytuacja | C | Finch 2.0 |
 |---|---|---|
@@ -894,246 +410,15 @@ wynik z oczekiwanym. Kompilacja samego siebie zajmuje kompilatorowi samohostują
 
 ---
 
-## 21. Spis funkcji
-
-### Sterownik (`main.cpp`)
-
-| Funkcja | Robi |
-|---|---|
-| `Loader::load` / `findModule` | czyta, leksuje i parsuje plik oraz rekurencyjnie jego moduły / szuka `nazwa.fch` |
-| `hostMachine`, `optimize`, `emitObject` | maszyna docelowa, potok O2, plik obiektowy |
-| `runtimeObject` | kompiluje runtime i trzyma go w cache |
-| `capture`, `libFlags`, `link` | uruchamia polecenie / pkg-config albo `-l` / linkowanie, z kompilacją plików z `link "x.c"` |
-| `linkFailed`, `guessLib` | zamieniają wyjście linkera na porady |
-
-### Lekser i parser
-
-| Funkcja | Robi | Różni się od |
-|---|---|---|
-| `lex` / `tokName` | tekst → tokeny / nazwy do komunikatów | |
-| `accept` / `expect` / `unexpected` | konsumuje, jeśli pasuje / konsumuje albo zgłasza błąd / błąd z kontekstem | |
-| `sameLine` / `endOfStatement` | czy ten token może kontynuować wyrażenie? / czy instrukcja się skończyła? | |
-| `atDeclaration` / `type` | podgląd deklaracji / parsowanie typu | |
-| `args` | `( [nazwa:] expr, … )` dla wywołań, metod i konstruktorów | |
-| `postfix` | łańcuchy `.pole`, `.metoda(…)`, `[i]` | `primary` parsuje początek łańcucha |
-
-### Codegen: program i instrukcje (`codegen.cpp`)
-
-| Funkcja | Robi | Różni się od |
-|---|---|---|
-| `declareStructs` / `declareFns` / `declare` | wszystkie typy / wszystkie sygnatury / jedna sygnatura + analiza pożyczania | |
-| `define` / `defineMainWrapper` | jedno ciało / punkt wejścia C | |
-| `pushScope` / `popScope` | otwiera / zamyka zasięg (`popScope` emituje jego sprzątanie, jeśli osiągalne) | |
-| `emitCleanups(downTo)` / `emitScopeCleanups(i)` | sprzątanie kilku zasięgów bez zamykania (return/break) / jednego zasięgu | |
-| `slot` / `tmpOf` / `tmp` | `alloca` zmiennej / anonimowa / anonimowa z wartością | |
-| `lookup` / `addVar` | szuka widocznej zmiennej (respektuje `deferLimit`) / deklaruje zmienną | |
-| `stmt`, `varDecl`, `assign`, `ifStmt`, `whileStmt`, `forStmt`, `forEachStmt`, `returnStmt`, `jump` | instrukcje | |
-| `rootVar` / `mutates` / `mutatesExpr` | zmienna, od której zaczyna się l-wartość / czy instrukcja albo wyrażenie ją zmienia? | |
-
-### Codegen: wyrażenia
-
-| Funkcja | Robi | Różni się od |
-|---|---|---|
-| `expr` / `exprWant` | r-wartość / to samo z oczekiwanym typem dla literałów tablic | |
-| `ref` / `place` | adres, jeśli jest, inaczej wartość / adres albo błąd | `expr` wczytuje z `ref` |
-| `member` / `index` | `.x`, `.len`, `.ptr`, `.value`, auto-dereferencja / `[i]` z kontrolą zakresu i kopiowaniem przy zapisie | |
-| `arrayLit` | `[…]` → tablica na stercie | |
-| `unary`, `binary`, `arith`/`arithOp`, `compare`, `logic` | operatory (`arith` dokłada flagę literału) | |
-| `unify` / `coerce` / `convert` | dwa argumenty do siebie / jedna wartość do miejsca / jawne `T(x)` | |
-
-### Codegen: typy i własność (`codegen_types.cpp`)
-
-| Funkcja | Robi |
-|---|---|
-| `ty`, `resolve`/`resolveT`, `findStruct`, `resolveStruct` | typ LLVM; Named → Struct (głęboko albo płytko); szukanie struktury; układ + kontrola cykli |
-| `owning`, `zero`, `defaultValue` | czy typ posiada pamięć; stała zerowa; zero albo wartości domyślne struktury |
-| `own` / `release` | coś do zapisania (przeniesienie albo kopia) / zwolnienie niezatrzymanej wartości fresh |
-| `copyValue`, `dropValue`, `copyAt`, `dropAt`, `copyFn`, `dropFn`, `typeKey` | kopiowanie i zwalnianie przez wartość, przez adres i helpery na typ |
-| `forN` | wewnętrzna pętla `for i in 0..n` używana przez helpery |
-| `strConst`, `cstr`, `strFromC`, `elemSize` | stała-literał str; str → `char*`; `char*` → pożyczony str; rozmiar elementu |
-| `emitPrint`, `printFn`, `printf_` | wypisywanie |
-| `diType`, `setLoc` | informacje dla debuggera |
-
-### Codegen: wywołania (`codegen_builtins.cpp`) i ABI (`abi.cpp`)
-
-| Funkcja | Robi |
-|---|---|
-| `call` / `method` | rozwiązuje wywołanie / metodę albo wywołanie z modułu |
-| `callFinch` / `construct` / `callC` | funkcja lub metoda Fincha / konstruktor struktury / funkcja C |
-| `structMethod` | `obj.m(...)`: adres odbiorcy, kontrole bezpieczeństwa, wywołanie |
-| `print`, `addrOf`, `convert`, `arrayMethod` | funkcje wbudowane |
-| `fallible`, `tryExpr`, `orElse`, `retValue`, `retError` (`codegen.cpp`) | błędy jako wartości (§10.11) |
-| `mapIndex`, `mapLit`, `mapMethod`, `mapSlot`, `forEachEntry` (`codegen_map.cpp`) | mapy (§10.12) |
-| `rt` / `libc` | deklaruje funkcję runtime'u / libc |
-| `fileName`, `panicIf`, `boundsCheck`, `checkDivisor` | kontrole w czasie działania |
-| `classify`, `makePlan`, `declareC`, `emitCCall`, `cThunk` | klasyfikacja ABI (System V, Microsoft x64, AAPCS64), plan rejestrów, deklaracja, wywołanie, wrapper dla callbacków |
-
 ---
 
-## 22. Rozbudowa kompilatora
+## 13. Znane ograniczenia
 
-**Funkcja wbudowana:** dodaj nazwę do `isBuiltin()`, obsłuż ją w `call()`, zaimplementuj (w IR albo jako
-funkcję runtime'u zadeklarowaną w tabeli `rt()`), dodaj przypadki w `tests/run/` i `tests/fail/`. Jeśli ma
-istnieć też w kompilatorze samohostującym, dodaj ją do `call()` i `runtimeDecls()` w `boot/gen.fch`.
-
-**Metoda tablicy albo tekstu:** dodaj gałąź w `arrayMethod()` albo w części `str` w `method()`; jeśli
-zmienia tablicę, dopisz jej nazwę do zbiorów `changing` w `method()` i `mutatesExpr()`, żeby pożyczanie
-dalej było poprawne.
-
-**Operator:** token leksera + `tokName`, `BinOp`, właściwa funkcja priorytetu w parserze, `opName`, emisja
-w `arithOp`/`compare` i wyjaśnienie w `badOperands`.
-
-**Instrukcja:** `StmtKind` + węzeł, `Parser::statement`, `Codegen::stmt`; jeśli przenosi sterowanie,
-respektuj `terminated()`, używaj `continueAt()` dla bloków łączących i emituj sprzątanie (`emitCleanups`)
-przed wyskokiem z zasięgów.
-
-**Nowy typ posiadający pamięć:** rozszerz `owning()`, `dropAt`/`copyAt` (i ich helpery), `emitPrint`, `diType`.
-
----
-
-## 23. Platformy: Windows, macOS, ARM64
-
-`src/target.h` trzyma `g_target`: triple LLVM, flagi `windows` / `msvc` / `darwin` / `cross`, kompilator C
-(`cc`) i rozszerzenie plików wykonywalnych. `setTarget()` zamienia `windows`, `linux`, `arm64`, `macos`
-(albo pełny triple) na triple i wybiera kompilator C: `FINCH_CC`, potem `CC` (nie przy kompilacji
-krzyżowej), potem `x86_64-w64-mingw32-gcc` / `aarch64-linux-gnu-gcc` dla Windowsa / Linuksa ARM64 z innego
-systemu, `clang --target=<triple>` dla pozostałych celów krzyżowych, `clang` na Windowsie, `cc` na Uniksie.
-`initTargets()` rejestruje backendy X86 i AArch64 (te, które ma dany LLVM; CMake definiuje
-`FINCH_TARGET_X86` / `FINCH_TARGET_AARCH64` i linkuje ich biblioteki). Przez tę warstwę idzie wszystko,
-co zależy od platformy:
-
-- **Nagłówki:** libclang parsuje z `--target=<triple>` (więc `long` ma 32 bity na Windowsie i używane są
-  właściwe nagłówki), a na Windowsie z `-D_USE_MATH_DEFINES`. Katalogi nagłówków pochodzą z `<cc> -E -v`.
-- **Procesy:** `capture()` / `runCommand()` opakowują `popen` / `system` (`_popen` na Windowsie) i dekodują
-  kody wyjścia (POSIX `WIFEXITED`/sygnały albo kody Windowsa i wyjątki NTSTATUS, np. `0xC0000005`).
-  `shellQuote()` cytuje dla `sh` (`'…'`) albo `cmd.exe` (`"…"`); linia polecenia dla `cmd /c`, która
-  zaczyna się od cudzysłowu, dostaje dodatkową parę cudzysłowów.
-- **Linkowanie:** bez `-lm` przy MSVC; nazwy `.exe`; klucz cache runtime'u obejmuje triple i kompilator C.
-  Komunikaty linkera MSVC (`LNK2019 unresolved external symbol`, `LNK1104`/`LNK1181 cannot open file`) są
-  tłumaczone tak jak komunikaty GNU ld.
-- **Uruchamianie:** `runPrefix()`: program dla Windowsa zbudowany na Linuksie uruchamia się przez `wine`,
-  program dla Linuksa ARM64 na innym procesorze przez `qemu-aarch64`.
-- **macOS:** `<cc> -E -v` wypisuje wpisy `(framework directory)`; zamieniają się w `-iframework` dla
-  libclang, więc `import "OpenGL/gl.h"` działa. `link "Cocoa.framework"` daje `-framework Cocoa`. Komunikaty
-  linkera Apple (`Undefined symbols for architecture arm64: "_f"`, `ld: library 'x' not found`,
-  `framework 'X' not found`) są tłumaczone jak pozostałe, bez wiodącego `_` z Mach-O.
-- **Informacje dla debuggera:** CodeView dla celów MSVC, DWARF w pozostałych.
-- **Runtime:** na Windowsie nie ma `getline` ani `sys/wait.h`; `stdin`/`stdout`/`stderr` są tam makrami,
-  więc `finch_std_stream(i)` udostępnia je Finchowi, gdy nagłówek nie ma dla nich zmiennej `extern`.
-- **Wypisywanie wskaźników** jest wszędzie takie samo: `null` albo `0x…`.
-
-### Konwencja wywołań Microsoft x64
-
-`classify()` rozgałęzia się po `g_target.windows`. Struktura o rozmiarze dokładnie 1, 2, 4 albo 8 bajtów
-idzie jako **jedna liczba całkowita** tego rozmiaru, nawet jeśli zawiera floaty (`{float, float}` → `i64`).
-Każda inna struktura jest **pośrednia (Indirect)**: wywołujący kopiuje ją na swój stos i przekazuje adres
-kopii (bez `byval`: funkcja dostaje zwykły wskaźnik). Wyniki 1/2/4/8-bajtowe wracają w `rax` jako liczba;
-wszystko inne przez ukryty wskaźnik `sret`. Każdy argument zajmuje jedno miejsce, więc nie ma liczenia
-rejestrów. `cThunk()` robi to samo w drugą stronę dla callbacków.
-
-`tests/cross.sh windows` buduje każdy test z `--target windows`, uruchamia go w Wine i porównuje wynik: przechodzą
-wszystkie, łącznie z `c_structs` (który wtedy sprawdza reguły Microsoftu na bibliotece C zbudowanej MinGW).
-CI dodatkowo buduje `finch.exe` przez MSVC na Windows Server i uruchamia tam `tests/run.sh`.
-
-### AAPCS64 (Linux ARM64 i Apple)
-
-`classify()` odwzorowuje to, jak clang tłumaczy wywołania na AArch64:
-
-- **Jednorodny agregat zmiennoprzecinkowy** (1–4 elementy, wszystkie `float` albo wszystkie `double`,
-  zagnieżdżone struktury i tablice spłaszczone) idzie w rejestrach wektorowych: przekazywany jako
-  `[n x float]` / `[n x double]`, zwracany jako `{ float, … }`. Na Linuksie argument dostaje też
-  `alignstack(8)`, tak jak u clanga; Apple tego nie robi.
-- Każda inna struktura do 16 bajtów idzie w rejestrach ogólnych: `i64` (≤ 8 bajtów) albo `[2 x i64]`
-  (`i128`, jeśli jej wyrównanie to 16); zwracana jest jako liczba całkowita dokładnie jej rozmiaru albo `[2 x i64]`.
-- Większe struktury są **pośrednie (Indirect)**: kopia na stosie wywołującego, przekazana przez adres
-  (bez `byval`); zwracane przez `sret`.
-- Nie ma liczenia rejestrów: każdą część rozmieszcza backend.
-- Zwykły `char` w C jest **bez znaku** na Linuksie ARM64, a ze znakiem na Apple i x86, co ma znaczenie przy
-  rozszerzaniu argumentów i wyników typu `char` (`charIsSigned()`).
-- Apple przekazuje zmienną część `printf(...)` przez stos; LLVM robi to na podstawie `...` w typie funkcji.
-
-`tests/cross.sh arm64` uruchamia cały zestaw testów (łącznie z testem ABI struktur na bibliotece C
-zbudowanej GCC) w QEMU, a CI robi to natywnie na Linuksie ARM64 i Apple Silicon.
-
-### Budowanie finch.exe
-
-CI używa Visual Studio 2022, Ninja i oficjalnego pakietu `clang+llvm-21.x-x86_64-pc-windows-msvc`
-(biblioteki statyczne, `/MT`, więc `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`). Dwa szczegóły Windowsa
-w `CMakeLists.txt`: ten pakiet podaje ścieżkę do biblioteki DIA SDK z maszyny, na której zbudowano LLVM,
-więc jest ona przekierowywana na zainstalowane Visual Studio; a osadzony runtime jest zapisywany jako
-kilka surowych napisów, bo MSVC ogranicza jeden literał do 16 KB. LLVM jest inicjalizowany tylko z
-natywnym backendem, żeby budowanie statyczne nie wciągało wszystkich architektur.
-
----
-
-## 24. Serwer języka
-
-`finch lsp` (`src/lsp.cpp`) mówi protokołem LSP przez stdin/stdout, używając `llvm::json`. Przy
-`didOpen`/`didChange` uruchamia na dokumencie prawdziwy front-end: `Loader` (z tekstem otwartych
-dokumentów jako nadpisaniem plików), `importHeaders` (w cache na zestaw importów, bo czytanie nagłówków
-jest najwolniejsze) i `generate()` bez optymalizacji i emisji. Dwa przełączniki pozwalają użyć
-kompilatora wewnątrz serwera:
-
-- `g_throwErrors`: `failAt()` rzuca `FinchError{file, line, col, msg}` zamiast wypisywać i kończyć proces.
-  Serwer publikuje to jako diagnostykę (dla właściwego pliku, także wewnątrz importowanego modułu) i czyści
-  diagnostyki, które zniknęły.
-- `g_index`: podczas generowania kodu `Codegen::note()` zapisuje `SymRef` dla każdej rozwiązywanej nazwy
-  (zmienne, parametry, pola, funkcje, konstruktory, funkcje i stałe C, funkcje wbudowane, metody, elementy
-  modułów): jej zakres, opis w markdownie i pozycję definicji. `define()` i `declareStructs()` dokładają
-  `FnInfo` / `StructIndex`; `addVar()` dokłada `VarInfo` z zakresem linii otaczającej funkcji. Pozycje nazw
-  pochodzą z pól `namePos`, które zapisuje parser.
-
-Zapytania korzystają z tego indeksu:
-
-| Zapytanie | Źródło |
-|---|---|
-| hover, definition | `SymRef` pod kursorem |
-| completion | słowa kluczowe, typy, funkcje wbudowane, zmienne otaczającej funkcji, funkcje, struktury, importowane moduły, nazwy z C pasujące do wpisanego początku; po `nazwa.`: pola struktury (także przez `ptr[T]`), metody tablic/tekstów albo zawartość modułu |
-| signatureHelp | cofa się do niezamkniętego `(`, liczy przecinki na najwyższym poziomie i szuka sygnatury Fincha / C / wbudowanej |
-| documentSymbol | funkcje i struktury (z polami) z pliku |
-
-Kod w trakcie pisania (`p.`, `add(1, `) się nie kompiluje, więc serwer trzyma **ostatnią udaną** analizę
-każdego dokumentu i dołącza z niej funkcje, struktury i zmienne do podpowiedzi. `tests/lsp_test.py`
-steruje serwerem tak jak edytor i sprawdza każdą funkcję.
-
-`src/builtins_doc.h` to jedyny opis funkcji wbudowanych i metod, używany przy hover, podpowiedziach
-i podpowiedziach parametrów (i odwzorowany w ściągach).
-
----
-
-## 25. Integracje z edytorami
-
-### Kate
-
-`editors/kate/finch.xml` to definicja KSyntaxHighlighting (silnika Kate, KWrite i KDevelop): listy słów
-kluczowych zgodne z `builtins_doc.h`, kontekst dla `fn Typ.metoda`, teksty ze znakami specjalnymi oraz
-regiony zwijania dla `{ }` i komentarzy blokowych. `lspclient.json` to wpis dla klienta LSP w Kate
-(`highlightingModeRegex: ^Finch$`); `install.sh` kopiuje definicję i dołącza wpis do
-`~/.config/kate/lspclient/settings.json`. Kate wysyła więcej zapytań niż VS Code (`documentHighlight`,
-`foldingRange`, …); serwer odpowiada na każde nieobsługiwane zapytanie błędem `MethodNotFound`, więc żaden
-klient nie czeka.
-
-### VS Code
-
-`editors/vscode` to zwykłe rozszerzenie w JavaScripcie: `extension.js` uruchamia `finch lsp` przez
-`vscode-languageclient` (ścieżka z ustawienia `finch.path`) i dodaje **Run** / **Build** jako zadania
-`ProcessExecution` (bez cytowania dla powłoki; matcher `$finch` zamienia linie `plik:linia:kol: error:`
-w wpisy w Problems). `syntaxes/finch.tmLanguage.json` to gramatyka TextMate, testowana przez `npm test`
-z `vscode-textmate` + `vscode-oniguruma` (tym samym silnikiem, którego używa VS Code);
-`language-configuration.json` daje komentarze, nawiasy, automatyczne domykanie i wcięcia; `snippets/`
-szablony. CI pakuje je przez `vsce` do `finch-lang.vsix`.
-
-## 26. Znane ograniczenia
-
-- Brak typów generycznych, interfejsów, `match`, domknięć i enumów pisanych w Finchu.
-- Teksty to bajty: `.len`, `s[i]`, `upper()` nie znają Unicode.
-- Zmiana kluczy mapy wewnątrz `for` po tej samej mapie nie jest wykrywana (jest bezpieczna dla pamięci,
-  ale wpisy mogą zostać pominięte albo odwiedzone dwa razy).
-- Porażka `try` / `or` w środku wyrażenia nie zwalnia świeżych wartości tymczasowych policzonych wcześniej
-  w tym wyrażeniu (mały wyciek, tylko na ścieżce porażki).
-- Wiszące wskaźniki (`addr` zmiennej, która zniknęła, użycie po `free`) nie są wykrywane.
-- Wielkość przesunięć i konwersje float→int nie są sprawdzane (poison w LLVM, jak w C).
-- C: unie i struktury z polami bitowymi przez wartość, makra-funkcje, `long double`.
-- Cele: x86-64 i ARM64 (Linux, macOS; Windows na x86-64). Bez Windowsa na ARM64, systemów 32-bitowych i WebAssembly.
-- Kompilator samohostujący nie ma importu C, liczb z rozmiarem, `defer`, map, metod ani błędów jako
-  wartości i nie zwalnia pamięci.
+- Kompilator działa tylko na Linuksie x86-64 i ARM64 (brak ziarna dla macOS i Windowsa). Programy można budować na wszystkie trzy.
+- Wynik dla macOS jest sprawdzany tylko jako IR; Windows i ARM64 uruchamiane są w CI pod Wine i qemu.
+- Jeden błąd na uruchomienie, bez odzyskiwania.
+- Informacje `-g` najlepiej z `-O0`.
+- Sterownik używa narzędzi `sh` (`rm`, `mkdir`), więc wymaga powłoki POSIX.
+- Generyki są monomorfizowane (kod rośnie z liczbą instancji); nie ma ograniczeń na typy, błędne użycie to błąd wewnątrz
+  wygenerowanego ciała.
+- Jeszcze nie ma enumów z danymi (warianty nie niosą wartości).
