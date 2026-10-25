@@ -370,7 +370,35 @@ Any LSP editor: `finch lsp`.
 
 ---
 
+## Enums and `match`
+
+```
+enum Color { Red, Green, Blue }          enum Status { Ok = 200, NotFound = 404 }
+c := Color.Green    int(c)    Color(2)    c == Color.Red      // == and != only; Color(7) is an error
+fn Color.next() -> Color { ... }                               // methods work
+
+match c { Red -> ...   Green, Blue -> { ... }   else -> ... }  // bare variant names; every variant or else
+x := match n { 1, 2 -> "few"   else -> "many" }                // an expression: every arm the same type
+```
+
+## Generics
+
+```
+fn max[T](T a, T b) -> T { ... }     max(3, 9)     max[float](1, 2.5)    // worked out, or written out
+struct Stack[T] { []T items }        fn Stack[T].push(T x) { ... }       // the type goes with it:
+s := Stack[int]()     Stack[int] t     Pair[str, int]("age", 31)         //   never just Stack()
+```
+
+## Standard library (`import name`; your own file of that name wins)
+
+| | |
+|---|---|
+| `path` | `join(a, b)` `base(p)` `dir(p)` `ext(p)` `stem(p)` `parts(p)` `clean(p)` `is_abs(p)` |
+| `time` | `now()` `millis()` `sleep(ms)` `date(t)` `local(t)` `format(t, fmt)` `days_in_month(y, m)` |
+| `proc` | `run(cmd)` `output(cmd)` (fails with its output) `env(name, fallback)` `pid()` `cwd()` |
+| `json` | `parse(text)` `stringify(v)` `pretty(v)` `new_text/number/bool/null/list/object` `v.get(k)` `v.at(i)` `v.set(k, x)` `v.push(x)` `v.has(k)` `v.str_or(d)` `v.int_or(d)` `v.float_or(d)` `v.bool_or(d)` |
+
 ## Keywords
 
-`fn return if else while for in break continue true false null import link struct defer or try`
+`fn return if else while for in break continue true false null import link struct enum match defer or try`
 (and `self` inside methods)

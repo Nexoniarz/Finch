@@ -370,6 +370,34 @@ Każdy edytor z LSP: `finch lsp`.
 
 ---
 
+## Enumy i `match`
+
+```
+enum Kolor { Czerwony, Zielony }          enum Status { Ok = 200, Brak = 404 }
+k := Kolor.Zielony    int(k)    Kolor(1)    k == Kolor.Czerwony   // tylko == i !=; Kolor(7) to błąd
+fn Kolor.nastepny() -> Kolor { ... }                               // metody działają
+
+match k { Czerwony -> ...   Zielony -> { ... }   else -> ... }     // same nazwy wariantów; każdy wariant albo else
+x := match n { 1, 2 -> "mało"   else -> "dużo" }                   // wyrażenie: gałęzie tego samego typu
+```
+
+## Typy generyczne
+
+```
+fn max[T](T a, T b) -> T { ... }     max(3, 9)     max[float](1, 2.5)    // wynika z argumentów albo zapisane
+struct Stos[T] { []T elementy }      fn Stos[T].dodaj(T x) { ... }       // typ zawsze podaje się przy tworzeniu:
+s := Stos[int]()     Stos[int] t     Para[str, int]("wiek", 31)          //   nigdy samo Stos()
+```
+
+## Biblioteka standardowa (`import nazwa`; własny plik o tej nazwie ma pierwszeństwo)
+
+| | |
+|---|---|
+| `path` | `join(a, b)` `base(p)` `dir(p)` `ext(p)` `stem(p)` `parts(p)` `clean(p)` `is_abs(p)` |
+| `time` | `now()` `millis()` `sleep(ms)` `date(t)` `local(t)` `format(t, fmt)` `days_in_month(r, m)` |
+| `proc` | `run(cmd)` `output(cmd)` (błąd z jego wyjściem) `env(nazwa, domyślna)` `pid()` `cwd()` |
+| `json` | `parse(tekst)` `stringify(v)` `pretty(v)` `new_text/number/bool/null/list/object` `v.get(k)` `v.at(i)` `v.set(k, x)` `v.push(x)` `v.has(k)` `v.str_or(d)` `v.int_or(d)` `v.float_or(d)` `v.bool_or(d)` |
+
 ## Słowa kluczowe
 
 | Słowo | Po polsku |
@@ -383,6 +411,8 @@ Każdy edytor z LSP: `finch lsp`.
 | `true` / `false` / `null` | prawda / fałsz / nic |
 | `import` / `link` | zaimportuj / dolinkuj |
 | `struct` | struktura |
+| `enum` | wyliczenie |
+| `match` | dopasuj |
 | `defer` | odłóż (na koniec bloku) |
 | `or` | albo (co zrobić przy porażce) |
 | `try` | spróbuj (porażkę przekaż dalej) |

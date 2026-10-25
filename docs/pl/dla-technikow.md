@@ -33,7 +33,10 @@ kompilator działa w środku. Do tego służy [przewodnik dla inżynierów](dla-
 20. [Debugowanie](#20-debugowanie)
 21. [Rozwiązywanie problemów](#21-rozwiązywanie-problemów)
 22. [Struktura projektu i testy](#22-struktura-projektu-i-testy)
-23. [Obecne ograniczenia](#23-obecne-ograniczenia)
+23. [Enumy i match](#23-enumy-i-match)
+24. [Typy generyczne](#24-typy-generyczne)
+25. [Biblioteka standardowa](#25-biblioteka-standardowa)
+26. [Obecne ograniczenia](#26-obecne-ograniczenia)
 
 ---
 
@@ -964,11 +967,108 @@ python3 tests/lsp_test.py    # serwer języka
 
 ---
 
-## 23. Obecne ograniczenia
+## 23. Enumy i match
+
+**Enum** to typ z krótką listą nazwanych wartości.
+
+```
+enum Kolor { Czerwony, Zielony, Niebieski }
+enum Status { Ok = 200, Brak = 404 }          // wariantowi można nadać numer
+
+k := Kolor.Zielony
+print(k)                    // Zielony
+print(int(Status.Brak))     // 404
+print(Kolor(2))             // Niebieski: liczba zamieniona na enum (sprawdzana: Kolor(7) to błąd)
+```
+
+Warianty pisze się `Kolor.Czerwony`. Można je porównywać przez `==` i `!=` (nie przez `<`), używać jako klucze map,
+pola struktur i elementy tablic, a enum może mieć metody jak struktura: `fn Kolor.nastepny() -> Kolor { ... }`.
+
+**match** wybiera, co zrobić, na podstawie wartości — zamiast drabinki `if`:
+
+```
+match k {
+    Czerwony -> print("ciepły")           // w matchu na enumie wystarczy sama nazwa
+    Zielony, Niebieski -> print("zimny")  // kilka wartości w jednej gałęzi
+}
+
+rozmiar := match n {                      // jako wyrażenie: daje wartość
+    1, 2, 3 -> "mały"
+    4, 5 -> "średni"
+    else -> "duży"
+}
+
+match slowo {
+    "koniec" -> {
+        print("pa")
+        return
+    }
+    else -> print("co?")
+}
+```
+
+`match` działa na enumach, liczbach całkowitych, znakach, tekście i bool. Gałęzie sprawdzane są po kolei. Match na
+enumie musi obsłużyć **każdy wariant** albo kończyć się `else` (kompilator wskaże brakujące); każdy inny match
+potrzebuje `else`. W wyrażeniu wszystkie gałęzie dają ten sam typ.
+
+## 24. Typy generyczne
+
+Napisz funkcję lub strukturę raz dla dowolnego typu, z typem jako nazwą w nawiasach kwadratowych:
+
+```
+fn max[T](T a, T b) -> T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+struct Stos[T] {
+    []T elementy
+}
+
+fn Stos[T].dodaj(T x) {
+    self.elementy.push(x)
+}
+
+print(max(3, 9), max("jabłko", "gruszka"))   // T wynika z argumentów
+print(max[float](1, 2.5))                    // albo zapisane wprost, gdzie nie da się go ustalić
+s := Stos[int]()                             // generyczną strukturę zawsze pisze się z typem
+s.dodaj(7)
+```
+
+Parametrów może być kilka (`struct Para[A, B]`), typy można zagnieżdżać (`Stos[Para[int, str]]`). Każde użycie tworzy
+własną kopię kodu, więc generyk jest tak szybki jak kod napisany ręcznie. Nie ma ograniczeń: jeśli `T` nie potrafi
+tego, co robi funkcja (`a > b` na strukturze), błąd mówi o tym i podaje, którą wersję budowano, np.
+`(while building wiekszy[Punkt])`.
+
+## 25. Biblioteka standardowa
+
+Moduły dołączone do Fincha, napisane w Finchu. `import json` szuka najpierw `json.fch` obok Twojego pliku, potem w
+bibliotece — więc Twój własny plik o tej nazwie ma pierwszeństwo.
+
+| Moduł | Co robi |
+|---|---|
+| `path` | `join`, `base`, `dir`, `ext`, `stem`, `parts`, `clean`, `is_abs`: ścieżki jako tekst, rozdzielone `/` |
+| `time` | `now()`, `millis()` (zegar do mierzenia), `sleep(ms)`, `date(t)`, `local(t)`, `format(t, "%Y-%m-%d")`, `days_in_month` |
+| `proc` | `run(cmd)` (kod wyjścia), `output(cmd)` (co wypisało; błąd, jeśli się nie udało), `env(nazwa, domyślna)`, `pid()`, `cwd()` |
+| `json` | `parse(tekst)`, `stringify(v)`, `pretty(v)` oraz typ wartości `Json` z `get`, `at`, `set`, `push`, `has`, `str_or`, `int_or` ... |
+
+```
+import json
+import path
+
+dok := try json.parse(read_file("config.json"))
+nazwa := dok.get("name").str_or("bez nazwy")      // brakujący klucz to null, więc łańcuch nigdy się nie psuje
+dok.set("name", json.new_text(nazwa + "!"))
+write_file(path.join("out", "config.json"), json.pretty(dok))
+```
+
+## 26. Obecne ograniczenia
 
 Jeszcze nie ma:
 
-- Typów generycznych (własnego `Lista[T]`), interfejsów, `match`, enumów pisanych w Finchu.
+- Interfejsów i enumów, których warianty niosą wartości (`Kolo(promien)`).
 - Tekstu świadomego Unicode: `.len`, `s[i]` i `upper()` działają na bajtach / ASCII.
 - Wątków.
 - Windowsa na ARM64, systemów 32-bitowych, WebAssembly.

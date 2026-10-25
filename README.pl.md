@@ -105,7 +105,9 @@ Wybierz przewodnik dla siebie:
 | Tekst | `"a" + "b"`, `str(42)`, `int("42")`, `s.split(",")`, `s.upper()`, `s[0]` |
 | Sterowanie | `if` / `else if` / `else`, `while`, `for i in 0..10`, `break`, `continue`, `defer` |
 | Pamięć | automatyczna dla tablic, tekstów i struktur; `new(...)` / `free(...)` dla własnych struktur na stercie |
-| Moduły | `import ksztalty` → `ksztalty.pole(p)` |
+| Enumy, match | `enum Kolor { Czerwony, Zielony }`, `match k { Czerwony -> ... else -> ... }` (także jako wartość) |
+| Generyki | `fn max[T](T a, T b) -> T`, `struct Stos[T]`, `Stos[int]()` |
+| Moduły | `import ksztalty` → `ksztalty.pole(p)`; biblioteka standardowa: `json`, `path`, `time`, `proc` |
 | Współpraca z C | `import "stdio.h"`, `link "glfw"`, `link "moje.c"`, `addr(fn)` dla callbacków |
 | Wejście/wyjście | `print(...)`, `input("? ")`, `read_file`, `write_file`, `shell` |
 | Narzędzia | `finch run/build/ir/lsp`, `--target windows/arm64/macos`, `-g` dla gdb/lldb, `-O0` |
@@ -147,8 +149,8 @@ Wybierz przewodnik dla siebie:
 - [x] Serwer języka (`finch lsp`) i rozszerzenie VS Code
 - [x] macOS i ARM64 (Linux i Apple Silicon) z ich konwencjami wywołań C; obsługa Kate
 - [x] Metody w strukturach, mapy, błędy jako wartości (`!`, `or`, `try`)
-- [ ] Typy generyczne, `match`, enumy
-- [ ] Biblioteka standardowa w Finchu (JSON, ścieżki, czas, procesy)
+- [x] Typy generyczne (`fn max[T]`, `struct Stos[T]`), `match`, enumy
+- [x] Biblioteka standardowa w Finchu: `json`, `path`, `time`, `proc`
 
 ## Struktura
 

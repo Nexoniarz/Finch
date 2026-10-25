@@ -33,7 +33,10 @@ compiler works inside. For that, see the [guide for engineers](for-engineers.md)
 20. [Debugging](#20-debugging)
 21. [Troubleshooting](#21-troubleshooting)
 22. [Project layout and tests](#22-project-layout-and-tests)
-23. [Current limits](#23-current-limits)
+23. [Enums and match](#23-enums-and-match)
+24. [Generics](#24-generics)
+25. [The standard library](#25-the-standard-library)
+26. [Current limits](#26-current-limits)
 
 ---
 
@@ -961,11 +964,108 @@ python3 tests/lsp_test.py    # the language server
 
 ---
 
-## 23. Current limits
+## 23. Enums and match
+
+An **enum** is a type with a short list of named values.
+
+```
+enum Color { Red, Green, Blue }
+enum Status { Ok = 200, NotFound = 404 }      // give a variant a number if it needs one
+
+c := Color.Green
+print(c)                    // Green
+print(int(Status.NotFound)) // 404
+print(Color(2))             // Blue: a number turned into the enum (checked: Color(7) is an error)
+```
+
+Variants are written `Color.Red`. They can be compared with `==` and `!=` (not with `<`), used as map keys,
+struct fields and array elements, and an enum can have methods like a struct: `fn Color.next() -> Color { ... }`.
+
+**match** picks what to do from a value, instead of a ladder of `if`:
+
+```
+match c {
+    Red -> print("warm")                  // inside a match on an enum, the bare name is enough
+    Green, Blue -> print("cool")          // several values for one arm
+}
+
+size := match n {                         // as an expression: it gives a value
+    1, 2, 3 -> "small"
+    4, 5 -> "medium"
+    else -> "large"
+}
+
+match word {
+    "quit" -> {
+        print("bye")
+        return
+    }
+    else -> print("what?")
+}
+```
+
+`match` works on enums, whole numbers, chars, text and bools. The arms are tried in order. A match on an enum has to
+handle **every variant** or end with `else` (the compiler says which are missing); any other match needs `else`.
+In an expression, every arm gives the same type.
+
+## 24. Generics
+
+Write a function or a struct once for any type, with the type as a name in square brackets:
+
+```
+fn max[T](T a, T b) -> T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+struct Stack[T] {
+    []T items
+}
+
+fn Stack[T].push(T x) {
+    self.items.push(x)
+}
+
+print(max(3, 9), max("apple", "pear"))    // T is worked out from the arguments
+print(max[float](1, 2.5))                 // or written out, where it can't be worked out
+s := Stack[int]()                         // a generic struct is always written with its type
+s.push(7)
+```
+
+Several parameters work (`struct Pair[A, B]`), and so do nested types (`Stack[Pair[int, str]]`). Each use makes its
+own copy of the code, so a generic is as fast as code written by hand. There are no constraints: if `T` can't do
+what the function does (`a > b` on a struct), the error says so and tells which version it was building, like
+`(while building bigger[Point])`.
+
+## 25. The standard library
+
+Modules that come with Finch, written in Finch. `import json` finds `json.fch` next to your file first, and the
+library's second, so your own file of the same name wins.
+
+| Module | What it does |
+|---|---|
+| `path` | `join`, `base`, `dir`, `ext`, `stem`, `parts`, `clean`, `is_abs`: paths as text, separated by `/` |
+| `time` | `now()`, `millis()` (a clock for measuring), `sleep(ms)`, `date(t)`, `local(t)`, `format(t, "%Y-%m-%d")`, `days_in_month` |
+| `proc` | `run(cmd)` (the exit code), `output(cmd)` (what it printed; an error if it failed), `env(name, fallback)`, `pid()`, `cwd()` |
+| `json` | `parse(text)`, `stringify(v)`, `pretty(v)`, and the value type `Json` with `get`, `at`, `set`, `push`, `has`, `str_or`, `int_or` ... |
+
+```
+import json
+import path
+
+doc := try json.parse(read_file("config.json"))
+name := doc.get("name").str_or("unnamed")        // a missing key is null, so chains never fail
+doc.set("name", json.new_text(name + "!"))
+write_file(path.join("out", "config.json"), json.pretty(doc))
+```
+
+## 26. Current limits
 
 Not there yet:
 
-- Generics (your own `List[T]`), interfaces, `match`, enums written in Finch.
+- Interfaces, and enums whose variants carry values (`Circle(radius)`).
 - Unicode-aware text: `.len`, `s[i]` and `upper()` work on bytes / ASCII.
 - Threads.
 - Windows on ARM64, 32-bit systems, WebAssembly.

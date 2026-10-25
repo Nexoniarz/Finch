@@ -106,7 +106,9 @@ Pick the guide that fits you:
 | Text | `"a" + "b"`, `str(42)`, `int("42")`, `s.split(",")`, `s.upper()`, `s[0]` |
 | Control | `if` / `else if` / `else`, `while`, `for i in 0..10`, `break`, `continue`, `defer` |
 | Memory | automatic for arrays, text and structs; `new(...)` / `free(...)` for your own heap structures |
-| Modules | `import shapes` → `shapes.area(b)` |
+| Enums, match | `enum Color { Red, Green }`, `match c { Red -> ... else -> ... }` (also as a value) |
+| Generics | `fn max[T](T a, T b) -> T`, `struct Stack[T]`, `Stack[int]()` |
+| Modules | `import shapes` → `shapes.area(b)`; the standard library: `json`, `path`, `time`, `proc` |
 | C interop | `import "stdio.h"`, `link "glfw"`, `link "mine.c"`, `addr(fn)` for callbacks |
 | I/O | `print(...)`, `input("? ")`, `read_file`, `write_file`, `shell` |
 | Tools | `finch run/build/ir/lsp`, `--target windows/arm64/macos`, `-g` for gdb/lldb, `-O0` |
@@ -148,8 +150,8 @@ Pick the guide that fits you:
 - [x] Language server (`finch lsp`) and a VS Code extension
 - [x] macOS and ARM64 (Linux and Apple Silicon), with their C calling conventions; Kate support
 - [x] Methods on structs, maps, errors as values (`!`, `or`, `try`)
-- [ ] Generics, `match`, enums
-- [ ] A standard library in Finch (JSON, paths, time, processes)
+- [x] Generics (`fn max[T]`, `struct Stack[T]`), `match`, enums
+- [x] A standard library in Finch: `json`, `path`, `time`, `proc`
 
 ## Layout
 
