@@ -111,6 +111,9 @@ struct Program {
     str module
     str path
     []str imports   // Finch modules
+    []str cimports  // C headers: import "stdio.h"
+    []str cwhere    // where each was written, for error messages
+    []str links     // link "glfw", link "mine.c"
     []Node structs
     []Node fns
 }

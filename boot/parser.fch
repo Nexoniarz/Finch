@@ -159,10 +159,18 @@ fn parseProgram(ptr[Parser] p) -> ast.Program {
     while !at(p, "eof") {
         if at(p, "import") {
             t := next(p)
-            if !at(p, "ident") {
-                fail(p, t, "the self-hosted compiler only imports Finch modules (import name)")
+            if at(p, "string") {
+                prog.cwhere.push(p.path + ":" + str(t.line) + ":" + str(t.col))
+                prog.cimports.push(next(p).text)
+            } else {
+                if !at(p, "ident") {
+                    fail(p, t, "expected a module name or a C header after 'import'")
+                }
+                prog.imports.push(next(p).text)
             }
-            prog.imports.push(next(p).text)
+        } else if at(p, "link") {
+            next(p)
+            prog.links.push(expect(p, "string", "a library or C file name, like  link \"glfw\"").text)
         } else if at(p, "struct") {
             prog.structs.push(parseStruct(p))
         } else {

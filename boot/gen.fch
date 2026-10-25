@@ -4,6 +4,7 @@
 // C runtime the main compiler uses. This compiler copies values like the main one
 // (so programs behave the same) but never frees them: it is the bootstrap compiler.
 import ast
+import cimport
 
 struct Var {
     str name
@@ -31,6 +32,7 @@ struct FnSig {
     str module
     str name
     str recv        // a method of this struct ("" for a function)
+    str recvmod     // and the module of that struct: "C" for a struct from a header
     bool fallible   // -> T!: returns { i1 ok, T value, str error }
     bool mutself    // the method changes self
     str ll
@@ -45,6 +47,11 @@ struct FnSig {
 struct StructDef {
     str module
     str name
+    bool isC            // a struct from a C header: module "C", laid out as C laid it out
+    []int lidx          // the LLVM element number of each field (C structs have padding between)
+    str unsupported     // C: why it can't be passed by value
+    int csize
+    int calign
     []str fnames
     []ast.Type ftypes
     int prog
@@ -91,6 +98,8 @@ struct Gen {
     []str done
     []str mm        // names of methods that change self, for the mutation analysis
     int nvars       // variables declared so far in this function
+    cimport.CImports ci
+    []str cdone         // C functions and variables already declared
     str ftarget     // the call an enclosing or / try is waiting on (see nodeKey)
     str ffailed     // set by that call: an i1, true if it failed
     str fmsg        // and the error text
@@ -283,6 +292,11 @@ fn resolve(ptr[Gen] g, ast.Type t, ast.Node at) -> ast.Type {
     if t.kind == "map" {
         return ast.mapOf(resolve(g, t.elem[0], at), resolve(g, t.elem[1], at))
     }
+    if t.kind == "fixed" {
+        out := ast.Type(kind: "fixed", count: t.count)
+        out.elem.push(resolve(g, t.elem[0], at))
+        return out
+    }
     if t.kind == "ptr" {
         if t.elem.len == 0 {
             return t
@@ -292,6 +306,12 @@ fn resolve(ptr[Gen] g, ast.Type t, ast.Node at) -> ast.Type {
     if t.kind != "named" {
         return t
     }
+    if t.module == "C" {
+        if findStruct(g, "C", t.name) < 0 {
+            fail(g, at, "there is no C struct named '" + t.name + "'")
+        }
+        return ast.Type(kind: "struct", name: t.name, module: "C")
+    }
     module := g.module
     if t.module.len > 0 {
         if !imports(g, t.module) {
@@ -300,6 +320,10 @@ fn resolve(ptr[Gen] g, ast.Type t, ast.Node at) -> ast.Type {
         module = t.module
     }
     if findStruct(g, module, t.name) < 0 {
+        // a bare name may be a struct from a C header
+        if t.module.len == 0 && findStruct(g, "C", t.name) >= 0 {
+            return ast.Type(kind: "struct", name: t.name, module: "C")
+        }
         fail(g, at, "there is no type named '" + ast.show(t) + "'")
     }
     return ast.Type(kind: "struct", name: t.name, module: module)
@@ -331,6 +355,9 @@ fn llty(ptr[Gen] g, ast.Type t) -> str {
     }
     if k == "map" {
         return "{ ptr, i64, i64, i64, ptr, i64, i64 }"      // entries, len, used, cap, index, icap, adds
+    }
+    if k == "fixed" {
+        return "[" + str(t.count) + " x " + llty(g, t.elem[0]) + "]"
     }
     if k == "ptr" || k == "null" {
         return "ptr"
@@ -566,8 +593,8 @@ fn copyFn(ptr[Gen] g, ast.Type t) -> str {
         store(g, st, load(g, st, "%src"), "%dst")
         for k in 0..sd.ftypes.len {
             if owning(g, sd.ftypes[k]) {
-                dp := op(g, "getelementptr inbounds " + st + ", ptr %dst, i32 0, i32 " + str(k))
-                spp := op(g, "getelementptr inbounds " + st + ", ptr %src, i32 0, i32 " + str(k))
+                dp := op(g, "getelementptr inbounds " + st + ", ptr %dst, i32 0, i32 " + str(sd.lidx[k]))
+                spp := op(g, "getelementptr inbounds " + st + ", ptr %src, i32 0, i32 " + str(sd.lidx[k]))
                 copyAt(g, dp, spp, sd.ftypes[k])
             }
         }
@@ -760,7 +787,7 @@ fn formatFn(ptr[Gen] g, ast.Type t) -> str {
                 sep = ""
             }
             bufText(g, "%buf", sep + sd.fnames[k] + ": ")
-            fp := op(g, "getelementptr inbounds " + st + ", ptr %a, i32 0, i32 " + str(k))
+            fp := op(g, "getelementptr inbounds " + st + ", ptr %a, i32 0, i32 " + str(sd.lidx[k]))
             emitFormat(g, "%buf", load(g, llty(g, sd.ftypes[k]), fp), sd.ftypes[k], true)
         }
         bufText(g, "%buf", ")")
@@ -887,7 +914,7 @@ fn findFn(ptr[Gen] g, str module, str name) -> int {
 
 fn findMethod(ptr[Gen] g, str module, str recv, str name) -> int {
     for i in 0..g.sigs.len {
-        if g.sigs[i].module == module && g.sigs[i].recv == recv && g.sigs[i].name == name {
+        if g.sigs[i].recvmod == module && g.sigs[i].recv == recv && g.sigs[i].name == name {
             return i
         }
     }
@@ -1010,6 +1037,9 @@ fn declare(ptr[Gen] g) {
             g.structs.push(StructDef(module: g.module, name: s.name, prog: pi, index: si))
         }
     }
+    for ni in 0..g.ci.structOrder.len {
+        g.structs.push(StructDef(module: "C", name: g.ci.structOrder[ni], isC: true, prog: -1, index: ni))
+    }
     for i in 0..g.structs.len {
         resolveStruct(g, i)
     }
@@ -1017,12 +1047,17 @@ fn declare(ptr[Gen] g) {
         g.module = g.progs[pi].module
         for fi in 0..g.progs[pi].fns.len {
             f := g.progs[pi].fns[fi]
+            recvmod := g.module
             if f.recv.len > 0 {
                 si := findStruct(g, g.module, f.recv)
-                if si < 0 {
-                    fail(g, f, "there is no struct named '" + f.recv + "' here (a method goes in the same file as its struct)")
+                if si < 0 && findStruct(g, "C", f.recv) >= 0 {
+                    si = findStruct(g, "C", f.recv)         // a method on a struct from C
+                    recvmod = "C"
                 }
-                if findMethod(g, g.module, f.recv, f.name) >= 0 {
+                if si < 0 {
+                    fail(g, f, "there is no struct named '" + f.recv + "' here (a method goes in the same file as its struct, or on a struct from C)")
+                }
+                if findMethod(g, recvmod, f.recv, f.name) >= 0 {
                     fail(g, f, "the method " + f.recv + "." + f.name + " is defined twice")
                 }
                 if g.structs[si].fnames.contains(f.name) {
@@ -1036,7 +1071,7 @@ fn declare(ptr[Gen] g) {
                     fail(g, f, "'" + f.name + "' is a built-in function, pick another name")
                 }
             }
-            sig := FnSig(module: g.module, name: f.name, recv: f.recv, fallible: f.fallible, prog: pi, index: fi)
+            sig := FnSig(module: g.module, name: f.name, recv: f.recv, recvmod: recvmod, fallible: f.fallible, prog: pi, index: fi)
             sig.ll = "@finch." + modName(g.module) + "." + f.name
             if f.recv.len > 0 {
                 sig.ll = "@finch." + modName(g.module) + "." + f.recv + "." + f.name
@@ -1079,8 +1114,49 @@ fn declare(ptr[Gen] g) {
     }
 }
 
+// A struct from a C header: the fields clang says it has, at the offsets clang says,
+// with byte padding wherever C left a gap (or a field Finch can't see).
+fn resolveCStruct(ptr[Gen] g, int i) {
+    cs := g.ci.structs[g.structs[i].name]
+    g.structs[i].state = 1
+    cur := 0
+    []str elems
+    for f in cs.fields {
+        if f.hidden {
+            continue
+        }
+        t := resolve(g, f.ty, ast.Node())
+        if t.kind == "struct" {
+            resolveStruct(g, findStruct(g, t.module, t.name))
+        }
+        if f.offset > cur {
+            elems.push("[" + str(f.offset - cur) + " x i8]")
+        }
+        g.structs[i].fnames.push(f.name)
+        g.structs[i].ftypes.push(t)
+        g.structs[i].lidx.push(elems.len)
+        elems.push(llty(g, t))
+        cur = f.offset + f.size
+    }
+    if cs.size > cur {
+        elems.push("[" + str(cs.size - cur) + " x i8]")
+    }
+    g.structs[i].unsupported = cs.unsupported
+    if cs.hasHidden && cs.unsupported.len == 0 {
+        g.structs[i].unsupported = "has fields Finch can't see (unions or bit fields)"
+    }
+    g.structs[i].csize = cs.size
+    g.structs[i].calign = cs.align
+    g.structs[i].state = 2
+    g.head.push("%S.C." + cs.name + " = type { " + elems.join(", ") + " }")
+}
+
 fn resolveStruct(ptr[Gen] g, int i) {
     if g.structs[i].state == 2 {
+        return
+    }
+    if g.structs[i].isC {
+        resolveCStruct(g, i)
         return
     }
     decl := g.progs[g.structs[i].prog].structs[g.structs[i].index]
@@ -1097,6 +1173,7 @@ fn resolveStruct(ptr[Gen] g, int i) {
         if t.kind == "struct" {
             resolveStruct(g, findStruct(g, t.module, t.name))
         }
+        g.structs[i].lidx.push(g.structs[i].fnames.len)
         g.structs[i].fnames.push(f.name)
         g.structs[i].ftypes.push(t)
         if owning(g, t) {
@@ -1129,7 +1206,7 @@ fn define(ptr[Gen] g, int si) {
     if g.cur.recv.len > 0 {
         // self is the caller's struct itself, reached through its address
         params.push("ptr %self")
-        g.scopes[0].vars.push(Var(name: "self", ty: ast.Type(kind: "struct", name: g.cur.recv, module: g.cur.module), slot: "%self", readonly: false))
+        g.scopes[0].vars.push(Var(name: "self", ty: ast.Type(kind: "struct", name: g.cur.recv, module: g.cur.recvmod), slot: "%self", readonly: false))
     }
     for k in 0..g.cur.params.len {
         pt := g.cur.params[k]
@@ -1253,6 +1330,9 @@ fn declStmt(ptr[Gen] g, ast.Node s) {
 
 fn hasDefaults(ptr[Gen] g, ast.Type t) -> bool {
     sd := g.structs[findStruct(g, t.module, t.name)]
+    if sd.isC {
+        return false
+    }
     for f in g.progs[sd.prog].structs[sd.index].kids {
         if f.kids.len > 0 {
             return true
@@ -2286,6 +2366,21 @@ fn place(ptr[Gen] g, ast.Node e, bool write) -> Place {
 fn ref(ptr[Gen] g, ast.Node e, bool write) -> Ref {
     if e.kind == "var" {
         id := lookup(g, e.name)
+        if id < 0 && g.ci.consts.has(e.name) {
+            c := g.ci.consts[e.name]
+            if c.isFloat {
+                return Ref(isPlace: false, val: Val(v: llFloat(c.text), ty: T("float"), lit: true))
+            }
+            return Ref(isPlace: false, val: Val(v: str(c.i), ty: T("int"), lit: true))
+        }
+        if id < 0 && g.ci.globals.has(e.name) {
+            gt := resolve(g, g.ci.globals[e.name], e)
+            if !g.cdone.contains("g:" + e.name) {
+                g.cdone.push("g:" + e.name)
+                g.head.push("@" + e.name + " = external global " + llty(g, gt))
+            }
+            return Ref(isPlace: true, pl: Place(addr: "@" + e.name, ty: gt))
+        }
         if id < 0 {
             if imports(g, e.name) {
                 fail(g, e, "'" + e.name + "' is a module; use something from it, like " + e.name + ".name(...)")
@@ -2302,6 +2397,25 @@ fn ref(ptr[Gen] g, ast.Node e, bool write) -> Ref {
         return index(g, e, write)
     }
     return Ref(isPlace: false, val: expr(g, e))
+}
+
+// A float as C wrote it, in the form LLVM's text format wants: 1e10 -> 1.0e10, .5 -> 0.5
+fn llFloat(str text) -> str {
+    s := text
+    if s.starts_with(".") {
+        s = "0" + s
+    }
+    if !s.contains(".") {
+        e := s.find("e")
+        if e < 0 {
+            e = s.find("E")
+        }
+        if e < 0 {
+            return s + ".0"
+        }
+        return s.sub(0, e) + ".0" + s.sub(e, s.len)
+    }
+    return s
 }
 
 fn member(ptr[Gen] g, ast.Node m, bool write) -> Ref {
@@ -2333,6 +2447,39 @@ fn member(ptr[Gen] g, ast.Node m, bool write) -> Ref {
         obj = Ref(isPlace: true, pl: Place(addr: pv, ty: target))
         t = target
     }
+    if t.kind == "fixed" {
+        if write {
+            fail(g, m, "." + m.name + " can't be changed directly")
+        }
+        if m.name == "len" {
+            return Ref(isPlace: false, val: Val(v: str(t.count), ty: T("int"), lit: true))
+        }
+        if m.name != "ptr" {
+            fail(g, m, "an array has .len and .ptr, not '." + m.name + "'")
+        }
+        if !obj.isPlace {
+            fail(g, m, ".ptr of a temporary value would point to nothing")
+        }
+        return Ref(isPlace: false, val: Val(v: obj.pl.addr, ty: ast.ptrTo(t.elem[0])))
+    }
+    if (t.kind == "array" || t.kind == "str") && m.name == "ptr" {
+        // the address of the first element, for C; a literal lives as long as the program, other temporaries do not
+        if write {
+            fail(g, m, ".ptr can't be changed directly")
+        }
+        // a constant (a text literal) lives as long as the program; a computed value is freed right after
+        if !obj.isPlace && obj.val.fresh && obj.val.v.starts_with("%") {
+            fail(g, m, ".ptr of a temporary value would point to freed memory")
+        }
+        v := obj.val.v
+        if obj.isPlace {
+            v = load(g, llty(g, t), obj.pl.addr)
+        }
+        if t.kind == "str" {
+            return Ref(isPlace: false, val: Val(v: cstr(g, v), ty: ast.ptrTo(T("char"))))
+        }
+        return Ref(isPlace: false, val: Val(v: op(g, "extractvalue { ptr, i64, i64 } " + v + ", 0"), ty: ast.ptrTo(t.elem[0])))
+    }
     if t.kind == "array" || t.kind == "str" || t.kind == "map" {
         if m.name != "len" {
             fail(g, m, "an array, map or str has .len, not '." + m.name + "'")
@@ -2356,10 +2503,10 @@ fn member(ptr[Gen] g, ast.Node m, bool write) -> Ref {
     }
     ft := sd.ftypes[k]
     if obj.isPlace {
-        fp := op(g, "getelementptr inbounds " + llty(g, t) + ", ptr " + obj.pl.addr + ", i32 0, i32 " + str(k))
+        fp := op(g, "getelementptr inbounds " + llty(g, t) + ", ptr " + obj.pl.addr + ", i32 0, i32 " + str(sd.lidx[k]))
         return Ref(isPlace: true, pl: Place(addr: fp, ty: ft))
     }
-    fv := op(g, "extractvalue " + llty(g, t) + " " + obj.val.v + ", " + str(k))
+    fv := op(g, "extractvalue " + llty(g, t) + " " + obj.val.v + ", " + str(sd.lidx[k]))
     out := Val(v: fv, ty: ft)
     if owning(g, ft) && obj.val.fresh {
         out = Val(v: copyValue(g, fv, ft), ty: ft, fresh: true)
@@ -2377,6 +2524,17 @@ fn index(ptr[Gen] g, ast.Node e, bool write) -> Ref {
         return mapIndex(g, e, obj, t, write)
     }
     i := coerce(g, expr(g, e.kids[1]), T("int"), e.kids[1], "an index").v
+    if t.kind == "fixed" {
+        base := ""
+        if obj.isPlace {
+            base = obj.pl.addr
+        } else {
+            base = spill(g, obj.val)
+        }
+        boundsCheck(g, i, str(t.count), e)
+        ep := op(g, "getelementptr inbounds " + llty(g, t) + ", ptr " + base + ", i64 0, i64 " + i)
+        return Ref(isPlace: true, pl: Place(addr: ep, ty: t.elem[0]))
+    }
     if t.kind == "ptr" {
         if t.elem.len == 0 {
             fail(g, e, "this ptr has no type, so Finch doesn't know what's inside")
@@ -2451,7 +2609,7 @@ fn numType(str n) -> str {
     if n == "f64" {
         return "float"
     }
-    names := ["int", "float", "char", "bool", "i8", "i16", "i32", "u8", "u16", "u32", "u64", "f32"]
+    names := ["int", "float", "char", "bool", "i8", "i16", "i32", "u8", "u16", "u32", "u64", "f32", "ptr"]
     if names.contains(n) {
         return n
     }
@@ -2521,8 +2679,152 @@ fn convert(ptr[Gen] g, ast.Node c, ast.Type to) -> Val {
     if to.kind == "bool" && isInt(from) {
         return Val(v: op(g, "icmp ne " + llty(g, from) + " " + v.v + ", 0"), ty: to)
     }
+    if to.kind == "ptr" && (from.kind == "ptr" || from.kind == "null") {
+        return Val(v: v.v, ty: to)
+    }
+    if to.kind == "ptr" && isInt(from) {
+        return Val(v: op(g, "inttoptr i64 " + intCast(g, v.v, from, T("u64")) + " to ptr"), ty: to)      // an address or offset for C
+    }
+    if isInt(to) && from.kind == "ptr" {
+        return Val(v: op(g, "ptrtoint ptr " + v.v + " to " + llty(g, to)), ty: to)
+    }
+    if to.kind == "ptr" && from.kind == "str" {
+        fail(g, c.kids[0], "use .ptr to get a str's address (it is only valid while the str lives)")
+    }
     fail(g, c.kids[0], "can't turn " + ast.show(from) + " into " + c.name)
     return v
+}
+
+// ---------- calling C ----------
+
+// How C extends a number narrower than 32 bits: plain `char` is signed on x86.
+fn cExt(ast.Type t) -> str {
+    if t.kind == "bool" || isUnsigned(t) {
+        if bitsOf(t) < 32 {
+            return " zeroext"
+        }
+    }
+    if (isSigned(t) || t.kind == "char") && bitsOf(t) < 32 {
+        return " signext"
+    }
+    return ""
+}
+
+fn cLL(ptr[Gen] g, ast.Type t) -> str {
+    if t.kind == "str" {
+        return "ptr"
+    }
+    return llty(g, t)
+}
+
+fn callC(ptr[Gen] g, ast.Node c, cimport.CFunc f) -> Val {
+    if f.unsupported.len > 0 {
+        fail(g, c, "the C function '" + f.name + "' can't be used from Finch yet: it " + f.unsupported)
+    }
+    have := c.kids.len
+    if f.variadic {
+        if have < f.params.len {
+            fail(g, c, "'" + f.name + "' takes at least " + str(f.params.len) + " argument(s), but got " + str(have))
+        }
+    } else if have != f.params.len {
+        fail(g, c, "'" + f.name + "' takes " + str(f.params.len) + " argument(s), but got " + str(have))
+    }
+    ret := resolve(g, f.ret, c)
+    if ret.kind == "struct" {
+        fail(g, c, "the C function '" + f.name + "' returns the struct " + ast.show(ret) + " by value, which the self-hosted compiler can't receive yet")
+    }
+    []str ptys
+    []str args
+    for i in 0..c.kids.len {
+        if i < f.params.len {
+            pt := resolve(g, f.params[i], c)
+            if pt.kind == "struct" {
+                fail(g, c, "the C function '" + f.name + "' takes the struct " + ast.show(pt) + " by value, which the self-hosted compiler can't pass yet")
+            }
+            v := coerce(g, exprWant(g, c.kids[i], pt), pt, c.kids[i], "argument " + str(i + 1) + " of " + f.name)
+            ptys.push(cLL(g, pt) + cExt(pt))
+            if pt.kind == "str" {
+                args.push("ptr " + cstr(g, v.v))
+            } else {
+                args.push(llty(g, pt) + cExt(pt) + " " + v.v)
+            }
+            continue
+        }
+        // the '...' part: C's default promotions
+        v := expr(g, c.kids[i])
+        t := v.ty
+        if t.kind == "void" {
+            fail(g, c.kids[i], "this gives back nothing")
+        }
+        if t.kind == "struct" || t.kind == "array" {
+            fail(g, c.kids[i], "structs and arrays can't be passed to the '...' part of a C function")
+        }
+        x := v.v
+        if t.kind == "f32" {
+            x = floatCast(g, x, t, T("float"))
+            t = T("float")
+        } else if t.kind == "str" {
+            x = cstr(g, x)
+            t = T("ptr")
+        } else if t.kind == "bool" || ((isInt(t) || t.kind == "char") && bitsOf(t) < 32) {
+            x = intCast(g, x, t, T("i32"))
+            if t.kind == "bool" {
+                x = op(g, "zext i1 " + v.v + " to i32")
+            }
+            t = T("i32")
+        }
+        args.push(llty(g, t) + " " + x)
+    }
+    // declared once (the runtime already declares a few of the libc ones)
+    retLL := cLL(g, ret)
+    if ret.kind == "void" {
+        retLL = "void"
+    }
+    retExt := cExt(ret)
+    if !g.cdone.contains("f:" + f.name) {
+        g.cdone.push("f:" + f.name)
+        if !runtimeDeclares(f.name) {
+            tail := ""
+            if f.variadic {
+                tail = ", ..."
+                if ptys.len == 0 || f.params.len == 0 {
+                    tail = "..."
+                }
+            }
+            []str decl
+            for k in 0..f.params.len {
+                decl.push(ptys[k])
+            }
+            g.head.push("declare" + retExt + " " + retLL + " @" + f.name + "(" + decl.join(", ") + tail + ")")
+        }
+    }
+    sig := ""
+    if f.variadic {
+        []str fixed
+        for k in 0..f.params.len {
+            fixed.push(ptys[k])
+        }
+        fixed.push("...")
+        sig = " (" + fixed.join(", ") + ")"
+    }
+    text := "call" + retExt + " " + retLL + sig + " @" + f.name + "(" + args.join(", ") + ")"
+    if ret.kind == "void" {
+        emit(g, text)
+        return Val(ty: ret)
+    }
+    r := op(g, text)
+    if ret.kind == "str" {
+        out := strOut(g)
+        store(g, "{ ptr, i64, i64 }", "zeroinitializer", out)
+        emit(g, "call void @finch_str_from_c(ptr " + out + ", ptr " + r + ")")
+        return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: ret)     // borrowed: copied if it is kept
+    }
+    return Val(v: r, ty: ret)
+}
+
+// libc functions the runtime declares itself, with the signatures C has
+fn runtimeDeclares(str name) -> bool {
+    return ["printf", "fflush", "exit", "free", "qsort"].contains(name)
 }
 
 fn call(ptr[Gen] g, ast.Node c) -> Val {
@@ -2684,6 +2986,13 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     if si >= 0 {
         return construct(g, si, c.kids, c.names, c)
     }
+    if g.ci.fns.has(n) {
+        return callC(g, c, g.ci.fns[n])
+    }
+    si = findStruct(g, "C", n)
+    if si >= 0 {
+        return construct(g, si, c.kids, c.names, c)
+    }
     if lookup(g, n) >= 0 {
         fail(g, c, "'" + n + "' is a variable, not a function")
     }
@@ -2733,7 +3042,10 @@ fn callFn(ptr[Gen] g, int fi, ast.Node c, int first, str shown, str selfAddr, st
 
 fn construct(ptr[Gen] g, int si, []ast.Node args, []str names, ast.Node at) -> Val {
     sd := g.structs[si]
-    decl := g.progs[sd.prog].structs[sd.index]
+    decl := ast.Node()
+    if !sd.isC {
+        decl = g.progs[sd.prog].structs[sd.index]
+    }
     t := ast.Type(kind: "struct", name: sd.name, module: sd.module)
     st := llty(g, t)
     named := names.len > 0 && names[0].len > 0
@@ -2767,7 +3079,7 @@ fn construct(ptr[Gen] g, int si, []ast.Node args, []str names, ast.Node at) -> V
         fv := Val()
         if given[k] >= 0 {
             fv = coerce(g, exprWant(g, args[given[k]], ft), ft, args[given[k]], "the field '" + sd.fnames[k] + "'")
-        } else if decl.kids[k].kids.len > 0 {
+        } else if !sd.isC && decl.kids[k].kids.len > 0 {
             // a default value is evaluated where the struct is defined, without the caller's variables
             savedScopes := g.scopes
             savedModule := g.module
@@ -2781,7 +3093,7 @@ fn construct(ptr[Gen] g, int si, []ast.Node args, []str names, ast.Node at) -> V
         } else {
             continue
         }
-        v = op(g, "insertvalue " + st + " " + v + ", " + llty(g, ft) + " " + own(g, fv) + ", " + str(k))
+        v = op(g, "insertvalue " + st + " " + v + ", " + llty(g, ft) + " " + own(g, fv) + ", " + str(sd.lidx[k]))
     }
     return Val(v: v, ty: t, fresh: owning(g, t))
 }
@@ -3210,14 +3522,15 @@ fn runtimeDecls() -> str {
         "declare i32 @finch_delete_file(ptr)",
         "declare i32 @printf(ptr, ...)",
         "declare i32 @fflush(ptr)",
+        "declare void @finch_str_from_c(ptr, ptr)",
         "declare void @exit(i32) noreturn",
         "declare void @free(ptr)",
     ]
     return decls.join("\n") + "\n"
 }
 
-fn generate([]ast.Program progs, []str files) -> str {
-    gen := Gen(progs: progs, files: files)
+fn generate([]ast.Program progs, []str files, cimport.CImports ci) -> str {
+    gen := Gen(progs: progs, files: files, ci: ci)
     g := addr(gen)
     declare(g)
     main := findFn(g, "", "main")

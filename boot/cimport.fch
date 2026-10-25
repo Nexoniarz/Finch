@@ -24,6 +24,7 @@ struct CConst {         // enum values and simple #define numbers
     bool isFloat
     int i
     float f
+    str text            // a float as written, so no digits are lost: 3.14159265358979323846
 }
 
 struct CField {
@@ -399,7 +400,7 @@ fn macroValue(ptr[Importer] imp, CXCursor c) -> Number {
         if neg {
             v = 0.0 - v
         }
-        return Number(c: CConst(isFloat: true, f: v), ok: true)
+        return Number(c: CConst(isFloat: true, f: v, text: body), ok: true)
     }
     r := parseInt(lit)
     if r.ok && neg {

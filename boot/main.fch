@@ -9,6 +9,7 @@ import lexer
 import ast
 import parser
 import gen
+import cimport
 
 fn dirOf(str path) -> str {
     i := path.len - 1
@@ -64,6 +65,20 @@ fn load(ptr[Loader] l, str path, str module) {
     }
 }
 
+// -lname, or whatever pkg-config says the library needs
+fn libFlags(str name) -> str {
+    tmp := "/tmp/finch_pkg_flags.txt"
+    code := shell("pkg-config --libs '" + name + "' > '" + tmp + "' 2> /dev/null")
+    if code == 0 && file_exists(tmp) {
+        flags := read_file(tmp).trim()
+        shell("rm -f '" + tmp + "'")
+        if flags.len > 0 {
+            return flags
+        }
+    }
+    return "-l" + name
+}
+
 fn usage() {
     print("finch-boot - the Finch compiler written in Finch")
     print("usage: finch-boot build <file.fch> [-o name]")
@@ -89,7 +104,36 @@ fn main([]str args) -> int {
 
     loader := Loader()
     load(addr(loader), file, "")
-    ir := gen.generate(loader.progs, loader.files)
+
+    // C headers, from every file; their folders are searched first for "local.h"
+    []cimport.Header headers
+    []str seen
+    []str dirs
+    []str libs
+    for prog in loader.progs {
+        d := dirOf(prog.path)
+        if !dirs.contains(d) {
+            dirs.push(d)
+        }
+        for i in 0..prog.cimports.len {
+            if !seen.contains(prog.cimports[i]) {
+                seen.push(prog.cimports[i])
+                headers.push(cimport.Header(path: prog.cimports[i], where: prog.cwhere[i]))
+            }
+        }
+        for l in prog.links {
+            if l.ends_with(".c") {
+                libs.push("'" + d + "/" + l + "'")
+            } else {
+                libs.push(libFlags(l))
+            }
+        }
+    }
+    ci := cimport.importHeaders(headers, dirs) or {
+        print(err)
+        return 1
+    }
+    ir := gen.generate(loader.progs, loader.files, ci)
     if cmd == "ir" {
         print(ir)
         return 0
@@ -106,7 +150,7 @@ fn main([]str args) -> int {
     }
     llPath := out + ".ll"
     write_file(llPath, ir)
-    code := shell("clang -O2 -w '" + llPath + "' '" + rt + "' -o '" + out + "' -lm")
+    code := shell("clang -O2 -w '" + llPath + "' '" + rt + "' -o '" + out + "' -lm " + libs.join(" "))
     shell("rm -f '" + llPath + "'")
     if code != 0 {
         print("error: clang failed")
