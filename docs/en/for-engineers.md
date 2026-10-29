@@ -1,6 +1,6 @@
 # Finch for Engineers
 
-**The internals of Finch 2.4, whose compiler is written in Finch.** How source becomes tokens, an AST and LLVM IR *as text*,
+**The internals of Finch 2.5, whose compiler is written in Finch.** How source becomes tokens, an AST and LLVM IR *as text*,
 which `clang` compiles and links with a small C runtime; how C headers are read with libclang from Finch itself and how
 the C calling conventions are reproduced by hand; the type and ownership rules; how the compiler builds itself from a
 seed; and the language server.
@@ -69,18 +69,20 @@ Design decisions that shape the rest:
 
 | File | Lines | Responsibility |
 |---|---|---|
-| `src/lexer.fch` | 220 | Tokens, positions, indentation-free layout |
+| `src/lexer.fch` | 470 | Tokens, positions, `"""` text, `"\(x)"` turned into `("…" + str(x) + "…")` tokens |
 | `src/ast.fch` | 120 | One `Node` struct with a `kind` string, children, type names, positions (`line`, `endLine`) |
-| `src/parser.fch` | 780 | Recursive descent: declarations, statements, expressions, generics (`[T]`), `enum`, `match`, `export`, `link` |
-| `src/gen.fch` | 5200 | Type check + IR: structs, functions, methods, scopes and drops, statements, expressions, built-ins, maps, errors as values, generics (monomorphisation), enums and `match`, `-g` debug metadata, the `index` mode |
-| `src/cimport.fch` | 560 | libclang: functions, structs (fields, offsets, padding), enums, constants, globals, macros |
+| `src/parser.fch` | 910 | Recursive descent: declarations, statements, expressions, generics (`[T]`), `enum`, `match`, `export`, `link`, `const`, `test "…" { }` |
+| `src/gen.fch` | 6450 | Type check + IR: structs, functions, methods, scopes and drops, statements, expressions, built-ins, maps, errors as values, generics (monomorphisation), enums and `match`, `-g` debug metadata, the `index` mode |
+| `src/cimport.fch` | 790 | libclang: functions, structs and unions (fields, offsets, padding), enums, constants, globals, macros (also struct-valued) |
 | `src/platform.fch` | 90 | `Target`: triple, data layout, C compiler, signedness of `char` per system |
-| `src/linker.fch` | 300 | The cache, runtime object, libraries (`link`, pkg-config), link-error advice |
-| `src/main.fch` | 310 | Driver: CLI, loader with module lookup and overlays, `build/run/ir/index/lsp` |
-| `src/lsp.fch` | 875 | The language server (§11) |
+| `src/linker.fch` | 430 | The cache (runtime, program object, C/C++ files), libraries (`link`, pkg-config), link-error advice |
+| `src/main.fch` | 515 | Driver: CLI, loader with module lookup and overlays, `build/run/test/fmt/ir/index/lsp` |
+| `src/manifest.fch` | 240 | `finch.toml`: a small TOML reader, per-target lists |
+| `src/fmt.fch` | 225 | `finch fmt` and LSP formatting |
+| `src/lsp.fch` | 910 | The language server (§11) |
 | `src/docs.fch` | 110 | One description of the built-ins, shared by hover and completion |
-| `std/*.fch` | 900 | `json`, `path`, `time` (+`_windows`), `proc` (+`_windows`) |
-| `runtime/finch_rt.c` | 760 | The C runtime |
+| `std/*.fch` | 1040 | `json`, `path`, `time` (+`_windows`), `proc` (+`_windows`), `fs`, `thread` |
+| `runtime/finch_rt.c` | 1150 | The C runtime: text, arrays, maps, files, float printing, fs, threads, the test runner, the call chain |
 | `bootstrap/` | | `build.sh`, `install.sh`, the seeds (§10) |
 
 ---
@@ -166,7 +168,7 @@ offset 0, and a field is read through memory. They can't be passed by value to C
 `ir` prints the IR; `index` prints the records the language server uses (§11); `--shared` makes a shared library of the
 `export fn`s.
 
-`--target windows|linux|arm64|macos|<triple>` changes the triple and data layout, the C `char` signedness, the ABI rules
+`--target windows|linux|arm64|macos|android|<triple>` changes the triple and data layout, the C `char` signedness, the ABI rules
 above, the OS variant of modules (`name_windows.fch`), and the C compiler: `FINCH_CC` or `clang --target=…`. Linking
 asks `pkg-config` for flags for `link "lib"`; when the linker fails the output is analysed and the likely missing
 `link "…"` is suggested. The runtime object is keyed by a hash of its source and the target.
@@ -176,6 +178,38 @@ compiled by `clang`, never by `CC`), `FINCH_LIBCLANG` (for `bootstrap/build.sh`)
 
 The compiler finds `runtime/` and `std/` next to itself (`../`, `./`) or under `../share/finch/` (`bootstrap/install.sh`).
 
+**The build cache** (`host.cacheDir()`: `$XDG_CACHE_HOME/finch`, `~/.cache/finch`, `%LOCALAPPDATA%\finch`):
+
+- `ir/<hash of main file + target + flags>.o` with a `.key` holding a hash of clang, the flags and the whole IR. One slot
+  per program, so the cache does not grow with every edit; the same IR gives the same object without running clang.
+- `c/<hash of source + compiler + flags + target>.o` for `link "x.c"` / `.cpp`, built with `-MMD`; the `.key` is a hash of
+  every file the `.d` lists (the source and its headers). Any change in one of them rebuilds it.
+- Objects are written to a `.part<pid>` file and renamed, so two builds at once don't see half a file.
+  Hashes are two independent 32-bit ones (FNV-1a and djb2), 64 bits in all.
+
+**`finch.toml`** (`src/manifest.fch`) is searched from the main file's folder (or the working folder) upwards. It is read
+into `values["section.key"]` and `lists["section.key"]`; `list(key, targets)` concatenates the top-level list and those of
+`[target.<os>]` and `[target.<os>-<cpu>]`. Paths are resolved against the manifest's folder. Entries feed the same
+places as the command line: `paths` → the loader, `include` → `-I` (libclang and C files), `links` → `link`, `libdirs`
+and `ldflags` → the link command, `cflags` → C/C++ files.
+
+**C++ files**: a `.cpp`/`.cc`/`.cxx` in `links` is compiled by `cxxFor(cc)` (`FINCH_CXX`, or `clang` → `clang++`,
+`…gcc` → `…g++`, `cc` → `c++`), and then that driver links, which brings in the C++ standard library.
+
+**Android**: `--target android` is `aarch64-linux-android24`; the C compiler is the NDK's
+`toolchains/llvm/prebuilt/<host>/bin/aarch64-linux-android24-clang` (from `ANDROID_NDK_HOME`/`ANDROID_NDK_ROOT`), the link
+adds `-llog` and no `-lpthread` (bionic has it in libc). The OS variant of modules is `linux`.
+
+**`finch test`** compiles like `run`, with `Options.test`: every function is still defined, but `@main` calls
+`finch_test_run(name, fn)` for each `test` block of the user's modules (`__test_<n>`, a `void` function made by the
+parser), then `finch_test_summary()`. The runtime runs each test under `setjmp`; `fatal()` (every runtime error and a
+failed `assert`) `longjmp`s back through `fatal_hook`, so one test failing doesn't end the run. Memory the failed test
+owned at that point is not freed.
+
+**`finch fmt`** is line-based: it tracks `{ }`, `( )`/`[ ]`, strings (with `\( )`), `'…'`, `"""` and `/* */` per line.
+A line that starts at bracket depth 0 and doesn't continue a line ending in an operator or `,` is re-indented to
+4 × brace depth; other lines (continuations, `"""` bodies) are shifted by the same amount as the line that started the
+statement, so their shape (and the `"""` dedent) is kept.
 ---
 
 ## 7. Type system
@@ -440,6 +474,41 @@ test (22 checks).
 
 ---
 
+### The chain of calls on runtime errors
+
+With `Options.trace` (default for `run`, `test`, `-g`, `-O0`; `--trace`/`--no-trace`; never with `--shared`) every Finch
+function gets a frame on its stack:
+
+```llvm
+%frame = alloca { ptr, ptr, ptr, i64 }          ; caller's frame, name, file, line
+store ptr (load @finch_trace), ...field 0
+store ptr @"name", ...field 1 ; ptr @"file", field 2 ; i64 <line>, field 3
+store ptr %frame, ptr @finch_trace
+```
+
+`@finch_trace` is a `thread_local` global in the program's module (initial-exec model unless shared or Windows);
+each statement stores its line into field 3. After every call to a Finch function the caller stores its own frame back
+into `@finch_trace`, which also undoes frames left by a callee that returned early, so no epilogue is needed on the many
+return paths. C-callable wrappers (`addr(fn)` thunks, `export fn`) save and restore `@finch_trace` around their call.
+`main` calls `finch_trace_init(top, set)` with two tiny functions that read and write it, which is how the runtime
+(`print_trace()` in `fatal()`, and the test runner) gets at a thread-local it cannot name. Cost: about 3x on `fib(40)`,
+which is nothing but calls; that is why a plain `finch build` leaves it out.
+
+### Threads and atomics
+
+`std/thread.fch` is a thin wrapper over the runtime (`finch_thread_spawn/join`, `finch_mutex_*`: pthreads, or
+`CreateThread` and `CRITICAL_SECTION` on Windows). The thread function is any `fn f(ptr)`, passed with `addr(f)`, which
+makes the C-callable thunk. `atomic_add/sub/swap` lower to `atomicrmw add/sub/xchg … seq_cst`, `atomic_load/store` to
+`load/store atomic … seq_cst, align <size>`, and `atomic_cas` to `cmpxchg … seq_cst seq_cst` returning the `i1`. They
+take a `ptr[T]` to any integer type. Finch's arrays, text and maps are not synchronised; sharing one between threads
+needs a mutex.
+
+### Struct arguments by address
+
+`argWant()` (call arguments only, not assignments): when a parameter is `ptr[S]` and the argument is a plain variable
+of type `S`, the argument is the variable's address, as if `addr(x)` had been written. Only variables, so nothing is
+evaluated twice and temporaries are never pointed to.
+
 ## 13. Known limitations
 
 - The compiler runs on Linux x86-64 and ARM64 only (no seed for macOS or Windows yet). Programs can be built for all three.
@@ -449,4 +518,6 @@ test (22 checks).
 - The driver uses `sh` utilities (`rm`, `mkdir`), so it needs a POSIX shell.
 - Generics are monomorphised (code size grows with instantiations); there are no trait bounds, a wrong use is an error
   inside the instantiated body.
+- A failed test's owned memory is not freed (the test runner `longjmp`s out of it).
+- `--target android` is checked to the object file only; linking needs the NDK and has not been run on a device.
 

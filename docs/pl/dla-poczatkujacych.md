@@ -76,7 +76,7 @@ Jeśli ostatnia linijka skończy się bez słowa `error`, Finch jest gotowy.
 ./build/finch version
 ```
 
-Powinieneś zobaczyć coś w stylu `finch 2.4.0`.
+Powinieneś zobaczyć coś w stylu `finch 2.5.0`.
 
 ---
 

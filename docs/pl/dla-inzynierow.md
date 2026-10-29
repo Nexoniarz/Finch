@@ -1,6 +1,6 @@
 # Finch dla inżynierów
 
-**Wnętrze Fincha 2.4, którego kompilator jest napisany w Finchu.** Jak kod źródłowy staje się tokenami, drzewem AST i
+**Wnętrze Fincha 2.5, którego kompilator jest napisany w Finchu.** Jak kod źródłowy staje się tokenami, drzewem AST i
 LLVM IR *jako tekstem*, który `clang` kompiluje i linkuje z małym runtime'em w C; jak nagłówki C czyta libclang wywoływany
 z samego Fincha i jak ręcznie odtwarzane są konwencje wywołań C; reguły typów i własności; jak kompilator buduje sam siebie
 z ziarna; oraz serwer języka.
@@ -68,18 +68,20 @@ Decyzje projektowe:
 
 | Plik | Linie | Zadanie |
 |---|---|---|
-| `src/lexer.fch` | 220 | Tokeny i pozycje |
+| `src/lexer.fch` | 470 | Tokeny i pozycje, tekst `"""`, `"\(x)"` zamienione na tokeny `("…" + str(x) + "…")` |
 | `src/ast.fch` | 120 | Jedna struktura `Node` z napisem `kind`, dziećmi, nazwami typów, pozycjami (`line`, `endLine`) |
-| `src/parser.fch` | 780 | Zejście rekurencyjne: deklaracje, instrukcje, wyrażenia, generyki (`[T]`), `enum`, `match`, `export`, `link` |
-| `src/gen.fch` | 5200 | Kontrola typów + IR: struktury, funkcje, metody, zakresy i zwolnienia, instrukcje, wyrażenia, wbudowane, mapy, błędy jako wartości, generyki (monomorfizacja), enumy i `match`, metadane `-g`, tryb `index` |
-| `src/cimport.fch` | 560 | libclang: funkcje, struktury (pola, offsety, wypełnienie), enumy, stałe, globalne, makra |
+| `src/parser.fch` | 910 | Zejście rekurencyjne: deklaracje, instrukcje, wyrażenia, generyki (`[T]`), `enum`, `match`, `export`, `link`, `const`, `test "…" { }` |
+| `src/gen.fch` | 6450 | Kontrola typów + IR: struktury, funkcje, metody, zakresy i zwolnienia, instrukcje, wyrażenia, wbudowane, mapy, błędy jako wartości, generyki (monomorfizacja), enumy i `match`, metadane `-g`, tryb `index` |
+| `src/cimport.fch` | 790 | libclang: funkcje, struktury i unie (pola, offsety, wypełnienie), enumy, stałe, globalne, makra (także będące strukturą) |
 | `src/platform.fch` | 90 | `Target`: triple, układ danych, kompilator C, znak `char` zależnie od systemu |
-| `src/linker.fch` | 300 | Pamięć podręczna, obiekt runtime'u, biblioteki (`link`, pkg-config), podpowiedzi przy błędach linkera |
-| `src/main.fch` | 310 | Sterownik: CLI, loader z wyszukiwaniem modułów i nakładkami, `build/run/ir/index/lsp` |
-| `src/lsp.fch` | 875 | Serwer języka (§11) |
+| `src/linker.fch` | 430 | Pamięć podręczna (runtime, obiekt programu, pliki C/C++), biblioteki (`link`, pkg-config), podpowiedzi przy błędach linkera |
+| `src/main.fch` | 515 | Sterownik: CLI, loader z wyszukiwaniem modułów i nakładkami, `build/run/test/fmt/ir/index/lsp` |
+| `src/manifest.fch` | 240 | `finch.toml`: mały czytnik TOML, listy zależne od celu |
+| `src/fmt.fch` | 225 | `finch fmt` i formatowanie w LSP |
+| `src/lsp.fch` | 910 | Serwer języka (§11) |
 | `src/docs.fch` | 110 | Jeden opis wbudowanych funkcji dla podpowiedzi i uzupełniania |
-| `std/*.fch` | 900 | `json`, `path`, `time` (+`_windows`), `proc` (+`_windows`) |
-| `runtime/finch_rt.c` | 760 | Runtime w C |
+| `std/*.fch` | 1040 | `json`, `path`, `time` (+`_windows`), `proc` (+`_windows`), `fs`, `thread` |
+| `runtime/finch_rt.c` | 1150 | Runtime w C: tekst, tablice, mapy, pliki, wypisywanie liczb, fs, wątki, uruchamianie testów, łańcuch wywołań |
 | `bootstrap/` | | `build.sh`, `install.sh`, ziarna (§10) |
 
 ---
@@ -159,7 +161,7 @@ Ten sam kod pozwala kompilatorowi wołać libclang, którego API przekazuje `CXC
 `finch build|run|ir|index plik.fch [-o wyjście] [-O0] [-g] [-l biblioteka] [-I katalog] [--target cel] [--shared] [--overlay ścieżka=plik]`.
 `ir` wypisuje IR; `index` wypisuje rekordy dla serwera języka (§11); `--shared` robi bibliotekę współdzieloną z `export fn`.
 
-`--target windows|linux|arm64|macos|<triple>` zmienia triple i układ danych, znak `char`, reguły ABI powyżej, wariant OS
+`--target windows|linux|arm64|macos|android|<triple>` zmienia triple i układ danych, znak `char`, reguły ABI powyżej, wariant OS
 modułów (`nazwa_windows.fch`) i kompilator C: `FINCH_CC` albo `clang --target=…`. Przy linkowaniu `pkg-config` podaje flagi
 dla `link "biblioteka"`; gdy linker zawiedzie, wynik jest analizowany i podpowiadane jest brakujące `link "…"`. Obiekt
 runtime'u jest kluczowany skrótem jego źródła i celu.
@@ -169,6 +171,38 @@ zawsze kompiluje `clang`, nigdy `CC`), `FINCH_LIBCLANG` (dla `bootstrap/build.sh
 
 Kompilator znajduje `runtime/` i `std/` obok siebie (`../`, `./`) albo w `../share/finch/` (`bootstrap/install.sh`).
 
+**Pamięć podręczna budowania** (`host.cacheDir()`: `$XDG_CACHE_HOME/finch`, `~/.cache/finch`, `%LOCALAPPDATA%\finch`):
+
+- `ir/<skrót pliku głównego + celu + flag>.o` z plikiem `.key`, w którym jest skrót clanga, flag i całego IR. Jedno miejsce
+  na program, więc cache nie rośnie z każdą zmianą; to samo IR daje ten sam obiekt bez uruchamiania clanga.
+- `c/<skrót źródła + kompilatora + flag + celu>.o` dla `link "x.c"` / `.cpp`, budowane z `-MMD`; `.key` to skrót każdego
+  pliku z listy `.d` (źródła i jego nagłówków). Zmiana któregokolwiek przebudowuje obiekt.
+- Obiekty są zapisywane do pliku `.part<pid>` i przemianowywane, więc dwa budowania naraz nie widzą pół pliku.
+  Skróty to dwa niezależne 32-bitowe (FNV-1a i djb2), razem 64 bity.
+
+**`finch.toml`** (`src/manifest.fch`) jest szukany od folderu pliku głównego (albo bieżącego) w górę. Trafia do
+`values["sekcja.klucz"]` i `lists["sekcja.klucz"]`; `list(klucz, cele)` skleja listę z najwyższego poziomu i te z
+`[target.<os>]` oraz `[target.<os>-<cpu>]`. Ścieżki liczą się od folderu manifestu. Wpisy trafiają tam, gdzie opcje
+z linii poleceń: `paths` → loader, `include` → `-I` (libclang i pliki C), `links` → `link`, `libdirs` i `ldflags` →
+polecenie linkowania, `cflags` → pliki C/C++.
+
+**Pliki C++**: `.cpp`/`.cc`/`.cxx` w `links` kompiluje `cxxFor(cc)` (`FINCH_CXX` albo `clang` → `clang++`,
+`…gcc` → `…g++`, `cc` → `c++`), a potem ten sam sterownik linkuje, co dokłada standardową bibliotekę C++.
+
+**Android**: `--target android` to `aarch64-linux-android24`; kompilator C to clang z NDK,
+`toolchains/llvm/prebuilt/<host>/bin/aarch64-linux-android24-clang` (z `ANDROID_NDK_HOME`/`ANDROID_NDK_ROOT`), linkowanie
+dodaje `-llog` i nie dodaje `-lpthread` (bionic ma go w libc). Wariant OS modułów to `linux`.
+
+**`finch test`** kompiluje jak `run`, z `Options.test`: wszystkie funkcje są dalej definiowane, ale `@main` wywołuje
+`finch_test_run(nazwa, fn)` dla każdego bloku `test` z modułów użytkownika (`__test_<n>`, funkcja `void` zrobiona przez
+parser), a na końcu `finch_test_summary()`. Runtime uruchamia każdy test pod `setjmp`; `fatal()` (każdy błąd w czasie
+działania i nieudany `assert`) wraca przez `longjmp` z `fatal_hook`, więc jeden nieudany test nie kończy całości.
+Pamięć, którą test miał w tym momencie, nie jest zwalniana.
+
+**`finch fmt`** działa na liniach: śledzi `{ }`, `( )`/`[ ]`, teksty (z `\( )`), `'…'`, `"""` i `/* */`. Linia, która
+zaczyna się na głębokości nawiasów 0 i nie ciągnie linii zakończonej operatorem albo `,`, dostaje wcięcie 4 × głębokość
+klamer; pozostałe (ciągi dalsze, wnętrza `"""`) przesuwa się o tyle samo co linię, która zaczęła instrukcję, więc ich
+kształt (i ucinanie wcięcia `"""`) zostaje.
 ---
 
 ## 7. System typów
@@ -433,6 +467,41 @@ serwer podpowiada dalej z ostatniej wersji, która się skompilowała. Test akce
 
 ---
 
+### Łańcuch wywołań przy błędach w czasie działania
+
+Z `Options.trace` (domyślnie dla `run`, `test`, `-g`, `-O0`; `--trace`/`--no-trace`; nigdy z `--shared`) każda funkcja
+Fincha ma ramkę na swoim stosie:
+
+```llvm
+%frame = alloca { ptr, ptr, ptr, i64 }          ; ramka wywołującego, nazwa, plik, linia
+store ptr (load @finch_trace), ...pole 0
+store ptr @"nazwa", ...pole 1 ; ptr @"plik", pole 2 ; i64 <linia>, pole 3
+store ptr %frame, ptr @finch_trace
+```
+
+`@finch_trace` to globalna `thread_local` w module programu (model initial-exec, chyba że biblioteka albo Windows);
+każda instrukcja zapisuje swoją linię do pola 3. Po każdym wywołaniu funkcji Fincha wywołujący wpisuje z powrotem swoją
+ramkę do `@finch_trace`, co sprząta też ramki funkcji, która wróciła wcześniej, więc wiele ścieżek `return` nie
+potrzebuje epilogu. Opakowania wołane z C (thunki `addr(fn)`, `export fn`) zapamiętują i przywracają `@finch_trace`.
+`main` woła `finch_trace_init(top, set)` z dwiema małymi funkcjami do czytania i zapisu, i tak runtime (`print_trace()`
+w `fatal()` oraz uruchamianie testów) dostaje się do zmiennej wątku, której nie zna z nazwy. Koszt: ok. 3 razy na
+`fib(40)`, który jest samymi wywołaniami; dlatego zwykły `finch build` go pomija.
+
+### Wątki i operacje atomowe
+
+`std/thread.fch` to cienka warstwa nad runtime'em (`finch_thread_spawn/join`, `finch_mutex_*`: pthreads albo
+`CreateThread` i `CRITICAL_SECTION` na Windowsie). Funkcja wątku to dowolna `fn f(ptr)` podana przez `addr(f)`, co robi
+thunk wołany z C. `atomic_add/sub/swap` to `atomicrmw add/sub/xchg … seq_cst`, `atomic_load/store` to
+`load/store atomic … seq_cst, align <rozmiar>`, a `atomic_cas` to `cmpxchg … seq_cst seq_cst` zwracające `i1`. Biorą
+`ptr[T]` do dowolnej liczby całkowitej. Tablice, teksty i mapy Fincha nie są synchronizowane; dzielenie ich między
+wątkami wymaga mutexu.
+
+### Struktura jako argument przez adres
+
+`argWant()` (tylko argumenty wywołań, nie przypisania): gdy parametr to `ptr[S]`, a argument to zwykła zmienna typu `S`,
+argumentem jest adres zmiennej, jakby napisano `addr(x)`. Tylko zmienne, więc nic nie jest liczone dwa razy, a na
+wartości tymczasowe nic nie wskazuje.
+
 ## 13. Znane ograniczenia
 
 - Kompilator działa tylko na Linuksie x86-64 i ARM64 (brak ziarna dla macOS i Windowsa). Programy można budować na wszystkie trzy.
@@ -442,4 +511,6 @@ serwer podpowiada dalej z ostatniej wersji, która się skompilowała. Test akce
 - Sterownik używa narzędzi `sh` (`rm`, `mkdir`), więc wymaga powłoki POSIX.
 - Generyki są monomorfizowane (kod rośnie z liczbą instancji); nie ma ograniczeń na typy, błędne użycie to błąd wewnątrz
   wygenerowanego ciała.
+- Pamięć nieudanego testu nie jest zwalniana (uruchamianie testów wychodzi z niego przez `longjmp`).
+- `--target android` jest sprawdzany do pliku obiektowego; linkowanie wymaga NDK i nie było uruchamiane na urządzeniu.
 

@@ -26,6 +26,9 @@ const code = [
   '    self.x += dx',
   '    return error("no")',
   '}',
+  'test "lives \\(hp + f(1)) left" {',
+  '    assert(clamp(x, 0, 9) == 3)',
+  '}',
 ];
 const expect = [  // [line, token text, scope that must be present]
   [0, 'import', 'keyword.control.import'], [0, '"stdio.h"', 'string.quoted.double'],
@@ -43,6 +46,9 @@ const expect = [  // [line, token text, scope that must be present]
   [13, 'try', 'keyword.control'], [13, 'or', 'keyword.control'],
   [14, 'self', 'variable.language.self'],
   [15, 'error', 'support.function.builtin'],
+  [17, 'test', 'keyword.other.test'], [17, '\\(', 'punctuation.section.embedded.begin'], [17, 'hp', 'meta.embedded.line'],
+  [17, 'f', 'meta.embedded.line'], [17, 'left', 'string.quoted.double'],
+  [18, 'assert', 'support.function.builtin'], [18, 'clamp', 'support.function.builtin'],
 ];
 registry.loadGrammar('source.finch').then((g) => {
   let state = vsctm.INITIAL, toks = [];

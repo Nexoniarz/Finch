@@ -98,15 +98,17 @@ Pick the guide that fits you:
 | Arrays | `nums := [1, 2, 3]`, `nums.push(4)`, `nums[0]`, `nums.len`, `for i, n in nums { }` |
 | Maps | `ages := ["ann": 31]`, `ages["bob"] = 25`, `ages.has("cy")`, `counts[w] += 1`, `for k, v in ages { }` |
 | Errors | `fn parse(str s) -> int! { … return error("bad") }` → `parse(s) or 0`, `parse(s) or { … }`, `try parse(s)` |
-| Text | `"a" + "b"`, `str(42)`, `int("42")`, `s.split(",")`, `s.upper()`, `s[0]` |
+| Text | `"hp \(hp)"`, `"a" + "b"`, `str(42)`, `int("42")`, `s.split(",")`, `s.upper()`, `s[0]` |
 | Control | `if` / `else if` / `else` (also as a value), `while`, `for i in 0..10`, `break`, `continue`, `defer` |
 | Memory | automatic for arrays, text and structs; `new(...)` / `free(...)` for your own heap structures |
 | Enums, match | `enum Color { Red, Green }`, `match c { Red -> ... else -> ... }` (also as a value) |
 | Generics | `fn max[T](T a, T b) -> T`, `struct Stack[T]`, `Stack[int]()` |
-| Modules | `import shapes` → `shapes.area(b)`; the standard library: `json`, `path`, `time`, `proc`, `fs` |
-| C interop | `import "stdio.h"`, `link "glfw"`, `link "mine.c"`, `addr(fn)` for callbacks |
+| Modules | `import shapes` → `shapes.area(b)`, `import ui/button as btn`; the standard library: `json`, `path`, `time`, `proc`, `fs`, `thread` |
+| Threads | `thread.spawn(addr(work), addr(data))`, `t.join()`, `thread.mutex()`, `atomic_add(addr(n), 1)` |
+| Tests | `test "name" { assert(x == 3) }` next to the code, run with `finch test` |
+| C interop | `import "stdio.h"`, `link "glfw"`, `link "mine.c"` / `"glue.cpp"`, unions, `#define`s (also `(Color){…}`), `addr(fn)` for callbacks |
 | I/O | `print(...)`, `input("? ")`, `read_file`, `write_file`, `shell` |
-| Tools | `finch run/build/ir/lsp`, `--target windows/arm64/macos`, `-g` for gdb/lldb, `-O0` |
+| Tools | `finch run/build/test/fmt/ir/lsp`, `finch.toml` for a project, a build cache, `--target windows/arm64/macos/android`, `-g` for gdb/lldb, `-O0`, the chain of calls on runtime errors |
 
 ## Examples
 
@@ -147,6 +149,9 @@ Pick the guide that fits you:
 - [x] Methods on structs, maps, errors as values (`!`, `or`, `try`)
 - [x] Generics (`fn max[T]`, `struct Stack[T]`), `match`, enums
 - [x] A standard library in Finch: `json`, `path`, `time`, `proc`, `fs`
+- [x] `const`, `if` as a value, `"\(x)"` in text, `"""` text, C unions and `#define` expressions
+- [x] `test` blocks and `finch test`, `finch fmt`, `finch.toml`, a build cache, the chain of calls on runtime errors
+- [x] Threads (`import thread`) and atomics; C++ files; `--target android` (built, not yet tried on a device)
 
 ## Layout
 

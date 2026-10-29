@@ -98,15 +98,17 @@ Wybierz przewodnik dla siebie:
 | Tablice | `liczby := [1, 2, 3]`, `liczby.push(4)`, `liczby[0]`, `liczby.len`, `for i, n in liczby { }` |
 | Mapy | `wiek := ["ania": 31]`, `wiek["bob"] = 25`, `wiek.has("cy")`, `ile[s] += 1`, `for k, v in wiek { }` |
 | Błędy | `fn parsuj(str s) -> int! { … return error("zły") }` → `parsuj(s) or 0`, `parsuj(s) or { … }`, `try parsuj(s)` |
-| Tekst | `"a" + "b"`, `str(42)`, `int("42")`, `s.split(",")`, `s.upper()`, `s[0]` |
+| Tekst | `"hp \(hp)"`, `"a" + "b"`, `str(42)`, `int("42")`, `s.split(",")`, `s.upper()`, `s[0]` |
 | Sterowanie | `if` / `else if` / `else` (też jako wartość), `while`, `for i in 0..10`, `break`, `continue`, `defer` |
 | Pamięć | automatyczna dla tablic, tekstów i struktur; `new(...)` / `free(...)` dla własnych struktur na stercie |
 | Enumy, match | `enum Kolor { Czerwony, Zielony }`, `match k { Czerwony -> ... else -> ... }` (także jako wartość) |
 | Generyki | `fn max[T](T a, T b) -> T`, `struct Stos[T]`, `Stos[int]()` |
-| Moduły | `import ksztalty` → `ksztalty.pole(p)`; biblioteka standardowa: `json`, `path`, `time`, `proc`, `fs` |
-| Współpraca z C | `import "stdio.h"`, `link "glfw"`, `link "moje.c"`, `addr(fn)` dla callbacków |
+| Moduły | `import ksztalty` → `ksztalty.pole(p)`, `import ui/button as btn`; biblioteka standardowa: `json`, `path`, `time`, `proc`, `fs`, `thread` |
+| Wątki | `thread.spawn(addr(praca), addr(dane))`, `t.join()`, `thread.mutex()`, `atomic_add(addr(n), 1)` |
+| Testy | `test "nazwa" { assert(x == 3) }` obok kodu, uruchamiane przez `finch test` |
+| Współpraca z C | `import "stdio.h"`, `link "glfw"`, `link "moje.c"` / `"glue.cpp"`, unie, `#define` (też `(Color){…}`), `addr(fn)` dla callbacków |
 | Wejście/wyjście | `print(...)`, `input("? ")`, `read_file`, `write_file`, `shell` |
-| Narzędzia | `finch run/build/ir/lsp`, `--target windows/arm64/macos`, `-g` dla gdb/lldb, `-O0` |
+| Narzędzia | `finch run/build/test/fmt/ir/lsp`, `finch.toml` dla projektu, cache budowania, `--target windows/arm64/macos/android`, `-g` dla gdb/lldb, `-O0`, łańcuch wywołań przy błędach w czasie działania |
 
 ## Przykłady
 
@@ -147,6 +149,9 @@ Wybierz przewodnik dla siebie:
 - [x] Metody w strukturach, mapy, błędy jako wartości (`!`, `or`, `try`)
 - [x] Typy generyczne (`fn max[T]`, `struct Stos[T]`), `match`, enumy
 - [x] Biblioteka standardowa w Finchu: `json`, `path`, `time`, `proc`, `fs`
+- [x] `const`, `if` jako wartość, `"\(x)"` w tekście, tekst `"""`, unie C i wyrażenia `#define`
+- [x] Bloki `test` i `finch test`, `finch fmt`, `finch.toml`, cache budowania, łańcuch wywołań przy błędach
+- [x] Wątki (`import thread`) i operacje atomowe; pliki C++; `--target android` (budowane, jeszcze nie sprawdzone na urządzeniu)
 
 ## Struktura
 

@@ -13,15 +13,36 @@ Everything in Finch on one page. For explanations, see the [guides](../../README
 | `finch run file.fch [args…]` | compile and run (args go to the program) |
 | `finch build file.fch [-o name]` | make a program (`name.exe` on Windows) |
 | `finch build file.fch --shared [-I dir]` | make a library (`libfile.so`, `file.dll`) that a C program loads; its `export fn`s are its C functions (numbers, bool, char, pointers) |
+| `finch test file.fch` | run its `test "…" { }` blocks, each on its own (and those of the modules it imports) |
+| `finch fmt [--check] [files/folders]` | indent by `{ }` with 4 spaces, no spaces at line ends, at most one empty line (`--check`: only list what it would change) |
+| `finch run` / `build` / `test` with no file | in a folder with a `finch.toml`: its `entry` |
 | `finch ir file.fch` | print the LLVM IR |
 | `finch lsp` | the language server (editors use it) |
 | `finch version` | version |
 | `-l lib` | link a C library (like `link "lib"`) |
-| `--target windows` / `linux` / `arm64` / `macos` / triple | build for another system |
+| `--target windows` / `linux` / `arm64` / `macos` / `android` / triple | build for another system (`android`: the NDK's clang from `ANDROID_NDK_HOME`, usually with `--shared`) |
 | `-g` | debug info (gdb, lldb, Visual Studio) |
 | `-O0` | no optimizations |
+| `--trace` / `--no-trace` | runtime errors show the chain of calls; on for `run`, `test`, `-g`, `-O0`, off for a plain `build` (it costs speed) |
 
-Environment: `FINCH_PATH` (folders with modules), `FINCH_CC` / `CC` (the C compiler that links).
+Environment: `FINCH_PATH` (folders with modules), `FINCH_CC` (the C compiler that links), `FINCH_CXX` (for `.cpp` files).
+A program's compiled code and its `link "x.c"` files are kept in the cache (`~/.cache/finch`) until they or their headers change.
+
+`finch.toml` (next to the code; `finch run` there needs no file and no flags):
+
+```toml
+name = "game"                       # what finch build makes
+entry = "src/main.fch"
+paths = ["src"]                     # folders with modules
+include = ["vendor/SDL3/include"]   # C headers
+links = ["SDL3", "native/glue.cpp"] # libraries and your own .c / .cpp / .o / .a
+libdirs = ["vendor/SDL3/lib"]
+cflags = ["-DFAST"]                 # for your .c / .cpp files
+ldflags = ["-Wl,-rpath,."]
+
+[target.windows]                    # only when building for that system (also linux, macos, android, linux-arm64)
+links = ["ws2_32"]
+```
 
 ---
 
@@ -68,7 +89,7 @@ One statement per line, no semicolons, `{` on the same line, no brackets around 
 | `float` (= `f64`) | `3.14`, `1e9`, `2.5e-3` |
 | `bool` | `true`, `false` |
 | `char` | `'A'`, `'\n'` |
-| `str` | `"text\t\"quoted\""`, `"""` several lines `"""` (the closing quotes' indentation is removed) |
+| `str` | `"text\t\"quoted\""`, `"hp \(hp), speed \(v, 2)"` (code in the text; `, 2` = two digits after the point), `"""` several lines `"""` (the closing quotes' indentation is removed) |
 | `i8 i16 i32 i64` | signed, sized |
 | `u8 u16 u32 u64` | unsigned, sized |
 | `f32 f64` | floats |
@@ -226,6 +247,7 @@ Fallible built-ins: `int(s)`, `float(s)`, `read_file`, `write_file`, `delete_fil
 | `s.len` | bytes |
 | `s[i]`, `s[i] = 'x'` | char |
 | `a + b` | joined text |
+| `"x = \(x)"` | the value of any code in the text (`\(x, 2)`: a float with 2 digits) |
 | `s.sub(a, b)` | part a … b-1 |
 | `s.find(t)` | position or -1 |
 | `s.contains(t)` | bool |
@@ -280,6 +302,8 @@ Automatic only when nothing is lost: smaller → bigger number, any int → floa
 | `min(a, b, …)`, `max(a, b, …)`, `abs(x)`, `clamp(x, lo, hi)` | for any numbers (your own function of that name wins) |
 | `error(message)` | `return error("…")` in a `-> T!` function |
 | `addr(x)` | pointer to x; `addr(fn)` = C callback |
+| `assert(cond)`, `assert(cond, "why")` | stop with a runtime error when cond is false (in a `test` block: that test fails) |
+| `atomic_add(p, n)`, `atomic_sub`, `atomic_load(p)`, `atomic_store(p, n)`, `atomic_swap(p, n)`, `atomic_cas(p, old, new)` | a whole number other threads change too, through its `ptr` (`addr(count)`) |
 | `new(value)` | value on the heap → `ptr[T]` |
 | `free(p)` | give it back |
 
@@ -290,7 +314,7 @@ Automatic only when nothing is lost: smaller → bigger number, any int → floa
 | Finch | C |
 |---|---|
 | `ptr[int] p` | `int *p` |
-| `addr(x)` | `&x` |
+| `addr(x)` | `&x` (a struct variable given where `ptr[ThatStruct]` goes: `push(body)` = `push(addr(body))`) |
 | `p.value` | `*p` |
 | `p.field` | `p->field` |
 | `p[i]` | `p[i]` |
@@ -303,6 +327,7 @@ Automatic only when nothing is lost: smaller → bigger number, any int → floa
 
 - Arrays, text and structs free themselves at the end of their block. No `free` needed.
 - `b := a` copies; a call's result moves; `return x` moves.
+- Passing a struct: `fn f(Body b)` works on its own copy (the caller's stays as it was), `fn f(ptr[Body] b)` changes the caller's (`f(body)` or `f(addr(body))`), a method gets `self` by address, never a copy.
 - `new(...)` + `free(...)` (often with `defer`) for linked lists, trees, sharing.
 - C memory: C's own functions (`malloc` / `free`, `fclose`, …).
 
@@ -327,7 +352,7 @@ import ui/button as btn  // another name: btn.draw()
 |---|---|
 | `import "x.h"` | functions, structs, enums, `#define` numbers, globals |
 | `link "name"` | libname.so / name.lib (pkg-config first) |
-| `link "file.c"` | compile your own C file |
+| `link "file.c"`, `link "glue.cpp"` | compile your own C or C++ file (C++: functions in `extern "C"`) |
 | `addr(myFn)` | pass a Finch function as a callback |
 
 | C type | Finch |
@@ -342,6 +367,10 @@ import ui/button as btn  // another name: btn.draw()
 | `T x[N]` (in a struct) | `[N]T` |
 | `union U` | `U`: `U u`, `u.field`, `U(field: v)`, by pointer to C (not by value) |
 | `#define N 4`, `"text"`, `(1u << 3)`, `((Uint64)2)` | constants (not function-like macros) |
+| `#define RAYWHITE (Color){ 245, 245, 245, 255 }` | a `Color` |
+
+**`char *` is `str`**: a C function that takes or returns `char *` takes or gives a Finch `str` (no `.ptr`, no conversion); only a `char *` field or a `char **` stays `ptr[char]`.
+C++ and Rust: through a C header. C++ with `extern "C"` (and `link "x.cpp"`), Rust with `#[no_mangle] pub extern "C" fn` built as a `staticlib` (`link "target/release/libgame.a"`) and a header (cbindgen writes one).
 
 A C function's `char *` result is a `str` already; structs by value work with the System V, Windows x64 and ARM64 Linux calling conventions (tested in emulators; macOS by CI).
 
@@ -358,6 +387,26 @@ A C function's `char *` result is a `str` already; structs by value work with th
 | `can't turn "x" into int` | `int("x")` |
 | `can't read the file "…"` | `read_file` (without `or`) |
 | `the key "x" is not in the map` | `m["x"]` |
+| `assert failed: why` | `assert(cond, "why")` |
+
+Below the message, the calls that led there (`finch run`, `finch test`, `-g`, `-O0`, `--trace`):
+
+```
+game.fch:6: runtime error: index 3 is out of range (the length is 2)
+  in Enemy.next (game.fch:6)
+  in step (game.fch:10)
+  in main (game.fch:15)
+```
+
+## Tests
+
+```c
+test "jump height" {            // next to the code; finch test file.fch runs them, finch run/build leave them out
+    p := Player()
+    p.jump()
+    assert(p.y > 0.0, "y is \(p.y)")
+}
+```
 
 ---
 
@@ -407,10 +456,12 @@ s := Stack[int]()     Stack[int] t     Pair[str, int]("age", 31)         //   ne
 | `path` | `join(a, b)` `base(p)` `dir(p)` `ext(p)` `stem(p)` `parts(p)` `clean(p)` `is_abs(p)` |
 | `time` | `now()` `millis()` `sleep(ms)` `date(t)` `local(t)` `format(t, fmt)` `days_in_month(y, m)` |
 | `proc` | `run(cmd)` `output(cmd)` (fails with its output) `env(name, fallback)` `pid()` `cwd()` |
+| `thread` | `spawn(addr(work), addr(data))` → `t.join()`; `mutex()` → `m.lock()` `m.unlock()` `m.close()`; `cpus()` (a thread's function: `fn work(ptr arg)`) |
 | `fs` | `read_bytes(p)` `write_bytes(p, data)` `exists(p)` `is_dir(p)` `mkdir(p)` `list(dir)` `remove_dir(p)` `data_dir(app)` |
 | `json` | `parse(text)` `stringify(v)` `pretty(v)` `new_text/number/bool/null/list/object` `v.get(k)` `v.at(i)` `v.set(k, x)` `v.push(x)` `v.has(k)` `v.str_or(d)` `v.int_or(d)` `v.float_or(d)` `v.bool_or(d)` |
 
 ## Keywords
 
 `fn return if else while for in break continue true false null import link struct enum match defer or try const export`
+(`test` and `as` only where they mean something: `test "name" { }`, `import x as y`)
 (and `self` inside methods)

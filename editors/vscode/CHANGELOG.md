@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.5.0
+
+- Highlighting for code inside text (`"hp \(hp)"`), `test "…" { }` blocks, `const`, `"""` text, `1e9`.
+- Built-ins `min`, `max`, `abs`, `clamp`, `assert` and `atomic_…` highlighted and described on hover.
+- Format Document (the language server runs `finch fmt` on the open file).
+
 ## 2.4.0
 
 - Highlighting for methods (`fn Point.move`), maps (`map[K]V`), `or`, `try`, `self` and `error(...)`.

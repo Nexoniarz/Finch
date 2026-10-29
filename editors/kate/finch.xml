@@ -5,7 +5,7 @@
   Install: copy to ~/.local/share/org.kde.syntax-highlighting/syntax/finch.xml
   (or run editors/kate/install.sh), then restart Kate.
 -->
-<language name="Finch" version="3" kateversion="5.0" section="Sources" extensions="*.fch"
+<language name="Finch" version="4" kateversion="5.0" section="Sources" extensions="*.fch"
           mimetype="text/x-finch" indenter="cstyle" author="The Finch authors" license="Apache-2.0">
   <highlighting>
     <list name="keywords">
@@ -71,6 +71,17 @@
       <item>new</item>
       <item>free</item>
       <item>error</item>
+      <item>min</item>
+      <item>max</item>
+      <item>abs</item>
+      <item>clamp</item>
+      <item>assert</item>
+      <item>atomic_add</item>
+      <item>atomic_sub</item>
+      <item>atomic_load</item>
+      <item>atomic_store</item>
+      <item>atomic_swap</item>
+      <item>atomic_cas</item>
     </list>
 
     <contexts>
@@ -85,6 +96,8 @@
         <DetectChar char="'" attribute="Char" context="Char"/>
 
         <WordDetect String="fn" attribute="Keyword" context="FunctionName"/>
+        <RegExpr String="\btest(?=\s*&quot;)" attribute="Keyword"/>
+        <RegExpr String="(?&lt;=\s)as(?=\s+[A-Za-z_])" attribute="Import"/>
         <WordDetect String="struct" attribute="Keyword" context="StructName"/>
         <keyword String="control" attribute="Control Flow"/>
         <keyword String="imports" attribute="Import"/>
@@ -134,14 +147,28 @@
       </context>
 
       <context name="String" attribute="String" lineEndContext="#pop">
+        <RegExpr String="\\\(" attribute="Escape" context="Interpolation"/>
         <RegExpr String="\\[ntr0\\&quot;']" attribute="Escape"/>
         <RegExpr String="\\." attribute="Error"/>
         <DetectChar char="&quot;" attribute="String" context="#pop"/>
       </context>
 
       <context name="LongString" attribute="String" lineEndContext="#stay">
+        <RegExpr String="\\\(" attribute="Escape" context="Interpolation"/>
         <RegExpr String="\\[ntr0\\&quot;']" attribute="Escape"/>
         <StringDetect String="&quot;&quot;&quot;" attribute="String" context="#pop" endRegion="LongString"/>
+      </context>
+
+      <!-- "hp \(hp + 1)": code inside text, up to the ) that closes \( -->
+      <context name="Interpolation" attribute="Normal Text" lineEndContext="#stay">
+        <DetectChar char=")" attribute="Escape" context="#pop"/>
+        <DetectChar char="(" attribute="Symbol" context="InterpolationParen"/>
+        <IncludeRules context="Normal"/>
+      </context>
+      <context name="InterpolationParen" attribute="Normal Text" lineEndContext="#stay">
+        <DetectChar char=")" attribute="Symbol" context="#pop"/>
+        <DetectChar char="(" attribute="Symbol" context="InterpolationParen"/>
+        <IncludeRules context="Normal"/>
       </context>
 
       <context name="Char" attribute="Char" lineEndContext="#pop">

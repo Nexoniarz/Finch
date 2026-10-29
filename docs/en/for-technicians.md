@@ -37,6 +37,10 @@ compiler works inside. For that, see the [guide for engineers](for-engineers.md)
 24. [Generics](#24-generics)
 25. [The standard library](#25-the-standard-library)
 26. [Current limits](#26-current-limits)
+27. [Tests: test blocks and finch test](#27-tests-test-blocks-and-finch-test)
+28. [A project: finch.toml](#28-a-project-finchtoml)
+29. [Threads](#29-threads)
+30. [C++, Rust and Android](#30-c-rust-and-android)
 
 ---
 
@@ -137,16 +141,30 @@ kept in `~/.cache/finch`. `FINCH_CC` names a different compiler to link with; `F
 ```
 finch run   <file.fch> [args...]    compile and run right away
 finch build <file.fch> [-o name]    compile into a program (default name: the file's name)
+finch test  <file.fch>              run its test "..." { } blocks (section 27)
+finch fmt   [--check] [files/dirs]  tidy the indentation of .fch files (all under here by default)
 finch ir    <file.fch>              print the LLVM IR (for the curious)
 finch lsp                          the language server, for editors
 finch version                      show the version
 
 options:
   -l <lib>          link a C library, same as  link "lib"  in the file
-  --target <name>   build for another system: windows, linux, arm64, macos, or an LLVM triple
+  -I <dir>          look for C headers there too
+  --target <name>   build for another system: windows, linux, arm64, macos, android, or an LLVM triple
   -g                add debug info (for gdb / lldb / Visual Studio)
   -O0               skip optimizations
+  --trace           runtime errors show the chain of calls (on anyway for run, test, -g and -O0)
+  --no-trace        they don't (a plain finch build doesn't: keeping the chain makes calls slower)
 ```
+
+In a folder with a `finch.toml` (section 28), `finch run`, `finch build` and `finch test` need no file name.
+
+The compiled program and the C files it builds (`link "x.c"`) are kept in a cache (`~/.cache/finch`, or
+`%LOCALAPPDATA%` on Windows). The second build of the same code, or of code whose C files did not change, skips that work.
+
+`finch fmt` changes only the layout: four spaces per `{ }` level, no spaces at line ends, at most one empty line in a row.
+Lines that continue an expression (inside `( )` or after a `+`) and `"""` text keep their shape. `finch fmt --check`
+changes nothing and fails if a file would change (for CI). Editors with the language server format on request.
 
 Examples:
 
@@ -503,6 +521,13 @@ s[0] = 'J'                // change a character
 | `s.bytes()` | `[]u8` with the bytes |
 | `s.ptr` | a `ptr[char]` for C (valid while `s` lives) |
 
+Values go into text with `\(...)`: any code, and `, 2` after a number for two digits after the point.
+A `\` before the `(` you want to keep: `"\\(not code)"`.
+
+```c
+print("hp \(hp) of \(max_hp), speed \(v, 2), name \(p.name.upper())")
+```
+
 `str` keeps its length, so `.len` is instant, and it is always NUL-terminated, so passing it
 to C as `char*` works. The other way round, a C function that gives back a `char *` gives you a `str`
 (a copy is made when you keep it), and `str(p)` reads a `ptr[char]` you got some other way.
@@ -779,8 +804,8 @@ Both work directly; `examples/opengl.fch` and `examples/vulkan.fch` are complete
 
 - C **unions** and structs with **bit fields** passed to or returned from a C function **by value** (pointers to them
   work, and so do unions as variables: `SDL_Event e`, `e.type`, `e.key.key`, `SDL_PollEvent(addr(e))`).
-- **Function-like macros** (`#define MAX(a, b) ...`) and macros that make a struct (raylib's `RAYWHITE`).
-  Macros that are a number, a text or an expression of them (`(1u << 3)`, `((Uint64)1)`, `(A | B)`) work.
+- **Function-like macros** (`#define MAX(a, b) ...`). Macros that are a number, a text, an expression of them
+  (`(1u << 3)`, `((Uint64)1)`, `(A | B)`) or a struct of numbers (raylib's `RAYWHITE`, `(Color){ 245, 245, 245, 255 }`) work.
 - `long double`, 128-bit integers.
 
 ---
@@ -860,6 +885,19 @@ Instead of undefined behavior (as in C), Finch stops with a message and exit cod
 | `runtime error: can't read the file "…"` | `read_file` on a missing or unreadable file (handle it with `or`) |
 | `runtime error: the key "x" is not in the map …` | `m["x"]` when the map has no such key (use `.has` or `.get`) |
 | `runtime error: called .f() on a null pointer` | a method called through a `null` `ptr[T]` |
+| `runtime error: assert failed: …` | `assert(cond, "…")` with a false `cond` |
+
+Under the message comes the chain of calls that led there, the innermost first:
+
+```
+game.fch:6: runtime error: index 3 is out of range (the length is 2)
+  in Enemy.next (game.fch:6)
+  in step (game.fch:10)
+  in main (game.fch:15)
+```
+
+`finch run`, `finch test`, `-g` and `-O0` builds keep it; a plain `finch build` leaves it out because keeping it costs
+time in every call (about 3x in a program that is nothing but tiny calls, much less in a real one). `--trace` puts it in.
 
 ---
 
@@ -939,13 +977,14 @@ Visual Studio debugger and WinDbg read.
 ```
 Finch/
 ├── src/            the compiler, in Finch (lexer, parser, gen: LLVM IR as text, cimport: libclang, lsp, main ...)
-├── std/            the standard library, in Finch: json, path, time, proc
+├── std/            the standard library, in Finch: json, path, time, proc, fs, thread
 ├── runtime/        finch_rt.c: the small runtime (text, arrays, maps, input, files)
 ├── bootstrap/      build.sh, install.sh and the seeds (the compiler's own IR, one per system)
 ├── examples/       hello, tour, types, structs, todo, guess, c_import, window, opengl, vulkan, raylib, llvm
 ├── tests/
 │   ├── run/ new/   programs + the exact output they must print (.out), input (.in)
 │   ├── fail/ new/fail/   programs that must fail, with the expected error in line 1
+│   ├── tool/       finch test, finch fmt, the chain of calls, a finch.toml project
 │   ├── run.sh      the test runner (MEMCHECK=1 also checks memory with valgrind)
 │   ├── cross.sh    every test built for Windows / ARM64 and run under Wine / QEMU
 │   └── lsp_test.py the language server, talked to like an editor does
@@ -1073,6 +1112,7 @@ library's second, so your own file of the same name wins.
 | `proc` | `run(cmd)` (the exit code), `output(cmd)` (what it printed; an error if it failed), `env(name, fallback)`, `pid()`, `cwd()` |
 | `json` | `parse(text)`, `stringify(v)`, `pretty(v)`, and the value type `Json` with `get`, `at`, `set`, `push`, `has`, `str_or`, `int_or` ... |
 | `fs` | `read_bytes(p)` / `write_bytes(p, data)` (`[]u8`, any bytes), `exists`, `is_dir`, `mkdir` (with the folders above), `list` (sorted names), `remove_dir`, `data_dir(app)` (a folder for the user's saves) |
+| `thread` | `spawn(addr(work), addr(data))`, `t.join()`, `mutex()` with `lock`, `unlock`, `close`, `cpus()` (section 29) |
 
 `min(a, b, ...)`, `max(a, b, ...)`, `abs(x)` and `clamp(x, lo, hi)` work on any numbers without an import (a function of
 your own with the same name wins).
@@ -1093,7 +1133,155 @@ Not there yet:
 
 - Interfaces.
 - Unicode-aware text: `.len`, `s[i]` and `upper()` work on bytes / ASCII.
-- Threads.
-- Windows on ARM64, 32-bit systems, WebAssembly.
+- Checks that stop two threads from changing the same array at once (use a mutex).
+- Windows on ARM64, 32-bit systems, WebAssembly. Android is built (`--target android`) but not yet tried on a device.
+
+On purpose, not planned: a warning for every big struct that gets copied. A copy in Finch is always visible in the
+code (`b := a`, passing a struct to a `Body b` parameter), a method never copies `self`, and `ptr[Body]` (or passing
+the variable to a `ptr[Body]` parameter) shares instead. A warning that fires on ordinary code would be noise.
 
 See the [roadmap in the README](../../README.md#roadmap).
+
+## 27. Tests: test blocks and finch test
+
+Tests go next to the code they test:
+
+```c
+fn damage(int hp, int hit) -> int {
+    return max(hp - hit, 0)
+}
+
+test "damage never goes below zero" {
+    assert(damage(5, 10) == 0)
+    assert(damage(5, 2) == 3, "got \(damage(5, 2))")
+}
+```
+
+`finch test game.fch` runs every `test` block of the file and of the modules it imports (not of the standard library),
+each on its own: a failed `assert` or any runtime error ends only that test, and the next one runs.
+
+```
+ok   damage never goes below zero
+FAIL loading a level
+     level.fch:31: runtime error: can't read the file "levels/1.txt"
+
+1 passed, 1 failed
+```
+
+The exit code is 1 when a test failed, so CI can use it. `finch run` and `finch build` leave test blocks out.
+`assert(cond)` also works outside tests: it stops the program with `assert failed` when `cond` is false.
+
+## 28. A project: finch.toml
+
+A `finch.toml` next to the code says once what would otherwise go on every command line:
+
+```toml
+name = "game"                        # the program finch build makes (from the entry)
+entry = "src/main.fch"               # used when finch run / build / test get no file
+paths = ["src", "lib"]               # folders with Finch modules
+include = ["vendor/SDL3/include"]    # folders with C headers (also for your .c / .cpp files)
+links = ["SDL3", "native/glue.cpp"]  # libraries, and your own .c / .cpp / .o / .a files
+libdirs = ["vendor/SDL3/lib"]        # folders with libraries
+cflags = ["-DFAST"]                  # for your .c / .cpp files
+ldflags = ["-Wl,-rpath,$ORIGIN"]     # for the linker
+
+[target.windows]                     # added only when building for Windows
+links = ["ws2_32"]
+libdirs = ["vendor/SDL3/lib/x64"]
+
+[target.linux-arm64]                 # system and CPU: windows, linux, macos, android, and -x86_64 / -arm64
+libdirs = ["vendor/SDL3/lib/arm64"]
+```
+
+Folders are relative to `finch.toml`. Finch looks for it in the file's folder and the folders above, so
+`finch run src/tools/editor.fch` inside the project uses it too. Only this much of TOML is read: `[sections]`,
+`key = "text"`, `key = ["a", "b"]` (over several lines too), numbers, `true`/`false` and `#` comments.
+
+## 29. Threads
+
+```c
+import thread
+
+struct Chunk {
+    []float samples
+    float peak
+}
+
+fn analyse(ptr arg) {               // a thread's function takes one ptr
+    ptr[Chunk] c = arg
+    for s in c.samples {
+        c.peak = max(c.peak, abs(s))
+    }
+}
+
+fn main() {
+    []Chunk chunks = load_chunks()
+    []thread.Thread running
+    for i in 0..chunks.len {
+        running.push(thread.spawn(addr(analyse), addr(chunks[i])) or {
+            print(err)
+            exit(1)
+        })
+    }
+    for i in 0..running.len {
+        running[i].join()            // wait for all of them
+    }
+}
+```
+
+What a thread gets is shared, not copied, so:
+
+- it must live until `join()` (here `chunks` lives to the end of `main`);
+- don't change the array the threads point into (no `push`) until they are joined;
+- what more than one thread changes goes under a lock, or is a number changed with `atomic_...`.
+
+```c
+m := thread.mutex()
+defer m.close()
+m.lock()
+log.push("done")                    // one thread at a time between lock and unlock
+m.unlock()
+
+atomic_add(addr(done), 1)           // done is an int shared by the threads
+n := atomic_load(addr(done))
+```
+
+`atomic_add`, `atomic_sub`, `atomic_swap` give back the old value; `atomic_cas(p, old, new)` puts `new` only if `old`
+is there and says whether it did. `thread.cpus()` says how many threads the machine runs at once.
+
+## 30. C++, Rust and Android
+
+Finch talks to other languages through C, the way every language does.
+
+**C++**: put what Finch calls behind a C header, with `extern "C"` on the C++ side:
+
+```cpp
+// glue.h
+#ifdef __cplusplus
+extern "C" {
+#endif
+int physics_step(float dt);
+#ifdef __cplusplus
+}
+#endif
+```
+
+and `import "glue.h"` with `link "glue.cpp"` (or `links = ["glue.cpp"]` in `finch.toml`). The `.cpp` file is built with
+the C++ compiler (`clang++` or `g++`, or `FINCH_CXX`), which then also links, so the C++ library comes along.
+A C++ library that has a C API (Box2D 3, Jolt's JoltC, PhysX's C wrapper) is imported like any C library.
+
+**Rust**: make a `staticlib` and export C functions:
+
+```rust
+// Cargo.toml: [lib] crate-type = ["staticlib"]
+#[no_mangle]
+pub extern "C" fn path_len(x: f32, y: f32) -> f32 { (x * x + y * y).sqrt() }
+```
+
+Write the header (`float path_len(float x, float y);`, or let `cbindgen` write it), then `import "pathfind.h"` and
+`link "target/release/libpathfind.a"`. On Linux a Rust static library also needs `links = ["dl", "pthread"]`.
+
+**Android**: `finch build game.fch --target android --shared` makes `libgame.so` for 64-bit ARM Android (API 24 and
+up) with the NDK's clang, found through `ANDROID_NDK_HOME` (or `FINCH_CC`). Load it from an app, for example through
+SDL3's Android project (the library's `SDL_main` is an `export fn`). This is new: it is built and checked here, but not
+yet tried on a device.

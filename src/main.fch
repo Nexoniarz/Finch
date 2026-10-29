@@ -243,7 +243,7 @@ fn format([]str args) -> int {
 
 fn main([]str args) -> int {
     if args.len == 2 && (args[1] == "version" || args[1] == "--version") {
-        print("Finch 2.4.0 (the compiler is written in Finch)")
+        print("Finch 2.5.0 (the compiler is written in Finch)")
         return 0
     }
     if args.len >= 2 && args[1] == "fmt" {
@@ -274,7 +274,8 @@ fn main([]str args) -> int {
         print(err)
         return 1
     }
-    if file.len == 0 {
+    isEntry := file.len == 0
+    if isEntry {
         entry := man.value("entry", "")
         if !man.found || entry.len == 0 {
             print("error: which file? (finch " + cmd + " <file.fch>, or a finch.toml with  entry = \"main.fch\")")
@@ -283,7 +284,7 @@ fn main([]str args) -> int {
         file = man.resolve(entry)
     }
     out := stem(file)
-    if man.found && man.value("name", "").len > 0 {
+    if isEntry && man.value("name", "").len > 0 {      // another file of the project keeps its own name
         out = man.value("name", "")
     }
     outGiven := false

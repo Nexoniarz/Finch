@@ -37,6 +37,10 @@ kompilator działa w środku. Do tego służy [przewodnik dla inżynierów](dla-
 24. [Typy generyczne](#24-typy-generyczne)
 25. [Biblioteka standardowa](#25-biblioteka-standardowa)
 26. [Obecne ograniczenia](#26-obecne-ograniczenia)
+27. [Testy: bloki test i finch test](#27-testy-bloki-test-i-finch-test)
+28. [Projekt: finch.toml](#28-projekt-finchtoml)
+29. [Wątki](#29-wątki)
+30. [C++, Rust i Android](#30-c-rust-i-android)
 
 ---
 
@@ -138,16 +142,30 @@ katalogi, w których szukać modułów.
 ```
 finch run   <plik.fch> [argumenty...]   skompiluj i od razu uruchom
 finch build <plik.fch> [-o nazwa]       skompiluj do programu (domyślna nazwa: nazwa pliku)
+finch test  <plik.fch>                  uruchom jego bloki test "..." { } (rozdział 27)
+finch fmt   [--check] [pliki/foldery]   uporządkuj wcięcia plików .fch (domyślnie wszystkich stąd w dół)
 finch ir    <plik.fch>                  pokaż LLVM IR (dla ciekawskich)
 finch lsp                              serwer języka, dla edytorów
 finch version                          pokaż wersję
 
 opcje:
   -l <lib>          dolinkuj bibliotekę C, to samo co  link "lib"  w pliku
-  --target <nazwa>  zbuduj na inny system: windows, linux, arm64, macos albo triple LLVM
+  -I <folder>       szukaj nagłówków C także tam
+  --target <nazwa>  zbuduj na inny system: windows, linux, arm64, macos, android albo triple LLVM
   -g                dodaj informacje dla debuggera (gdb / lldb / Visual Studio)
   -O0               bez optymalizacji
+  --trace           błędy w czasie działania pokazują łańcuch wywołań (i tak włączone dla run, test, -g i -O0)
+  --no-trace        nie pokazują (zwykły finch build go nie ma: pilnowanie łańcucha spowalnia wywołania)
 ```
+
+W folderze z plikiem `finch.toml` (rozdział 28) `finch run`, `finch build` i `finch test` nie potrzebują nazwy pliku.
+
+Skompilowany program i pliki C, które buduje (`link "x.c"`), zostają w cache (`~/.cache/finch`, na Windowsie
+`%LOCALAPPDATA%`). Drugie budowanie tego samego kodu albo kodu, którego pliki C się nie zmieniły, pomija tę pracę.
+
+`finch fmt` zmienia tylko układ: cztery spacje na poziom `{ }`, bez spacji na końcach linii, najwyżej jedna pusta linia
+z rzędu. Linie, które ciągną wyrażenie (w `( )` albo po `+`), i tekst `"""` zachowują swój kształt. `finch fmt --check`
+niczego nie zmienia i kończy się błędem, gdy jakiś plik by się zmienił (dla CI). Edytory z serwerem języka formatują na żądanie.
 
 Przykłady:
 
@@ -505,6 +523,13 @@ s[0] = 'D'                // zmiana znaku
 | `s.bytes()` | `[]u8` z bajtami |
 | `s.ptr` | `ptr[char]` dla C (ważny, dopóki żyje `s`) |
 
+Wartości wstawia się do tekstu przez `\(...)`: dowolny kod, a `, 2` po liczbie daje dwie cyfry po przecinku.
+`\` przed `(`, które ma zostać zwykłym znakiem: `"\\(to nie kod)"`.
+
+```c
+print("hp \(hp) z \(max_hp), prędkość \(v, 2), imię \(p.imie.upper())")
+```
+
 `str` pamięta swoją długość, więc `.len` działa natychmiast. Zawsze kończy się zerem, więc
 przekazanie go do C jako `char*` działa. W drugą stronę: funkcja C, która zwraca `char *`, daje ci `str`
 (kopia powstaje, gdy go zachowujesz), a `str(p)` czyta `ptr[char]` zdobyty inaczej.
@@ -781,8 +806,8 @@ Oba działają bezpośrednio; `examples/opengl.fch` i `examples/vulkan.fch` to k
 
 - **Unie** C i struktury z **polami bitowymi** przekazywane do funkcji C albo zwracane z niej **przez wartość**
   (wskaźniki do nich działają, unie jako zmienne też: `SDL_Event e`, `e.type`, `e.key.key`, `SDL_PollEvent(addr(e))`).
-- **Makra-funkcje** (`#define MAX(a, b) ...`) i makra, które tworzą strukturę (`RAYWHITE` z raylib).
-  Makra będące liczbą, tekstem albo wyrażeniem z nich (`(1u << 3)`, `((Uint64)1)`, `(A | B)`) działają.
+- **Makra-funkcje** (`#define MAX(a, b) ...`). Makra będące liczbą, tekstem, wyrażeniem z nich
+  (`(1u << 3)`, `((Uint64)1)`, `(A | B)`) albo strukturą z liczb (`RAYWHITE` z raylib, `(Color){ 245, 245, 245, 255 }`) działają.
 - `long double`, liczby 128-bitowe.
 
 ---
@@ -863,6 +888,19 @@ Zamiast niezdefiniowanego zachowania (jak w C) Finch zatrzymuje się z komunikat
 | `runtime error: can't read the file "…"` | `read_file` na brakującym albo nieczytelnym pliku (obsłuż to przez `or`) |
 | `runtime error: the key "x" is not in the map …` | `m["x"]`, gdy mapa nie ma takiego klucza (użyj `.has` albo `.get`) |
 | `runtime error: called .f() on a null pointer` | metoda wywołana przez `null` w `ptr[T]` |
+| `runtime error: assert failed: …` | `assert(warunek, "…")` z fałszywym warunkiem |
+
+Pod komunikatem jest łańcuch wywołań, które do niego doprowadziły, od najgłębszego:
+
+```
+gra.fch:6: runtime error: index 3 is out of range (the length is 2)
+  in Enemy.next (gra.fch:6)
+  in step (gra.fch:10)
+  in main (gra.fch:15)
+```
+
+`finch run`, `finch test` oraz budowanie z `-g` i `-O0` go mają; zwykły `finch build` go pomija, bo pilnowanie go kosztuje
+czas w każdym wywołaniu (ok. 3 razy w programie złożonym z samych drobnych wywołań, dużo mniej w prawdziwym). `--trace` go dodaje.
 
 ---
 
@@ -943,13 +981,14 @@ CodeView, który czyta debugger Visual Studio i WinDbg.
 ```
 Finch/
 ├── src/            kompilator, w Finchu (lekser, parser, gen: LLVM IR jako tekst, cimport: libclang, lsp, main ...)
-├── std/            biblioteka standardowa, w Finchu: json, path, time, proc
+├── std/            biblioteka standardowa, w Finchu: json, path, time, proc, fs, thread
 ├── runtime/        finch_rt.c: mała biblioteka uruchomieniowa (teksty, tablice, mapy, wejście, pliki)
 ├── bootstrap/      build.sh, install.sh i ziarna (własny IR kompilatora, po jednym na system)
 ├── examples/       hello, tour, types, structs, todo, guess, c_import, window, opengl, vulkan, raylib, llvm
 ├── tests/
 │   ├── run/ new/   programy + dokładny wynik (.out) i wejście (.in)
 │   ├── fail/ new/fail/   programy, które muszą się nie udać, z oczekiwanym błędem w 1. linijce
+│   ├── tool/       finch test, finch fmt, łańcuch wywołań, projekt z finch.toml
 │   ├── run.sh      uruchamia testy (MEMCHECK=1 sprawdza też pamięć valgrindem)
 │   ├── cross.sh    każdy test zbudowany na Windows / ARM64 i uruchomiony w Wine / QEMU
 │   └── lsp_test.py serwer języka, obsługiwany jak przez edytor
@@ -1077,6 +1116,7 @@ bibliotece — więc Twój własny plik o tej nazwie ma pierwszeństwo.
 | `proc` | `run(cmd)` (kod wyjścia), `output(cmd)` (co wypisało; błąd, jeśli się nie udało), `env(nazwa, domyślna)`, `pid()`, `cwd()` |
 | `json` | `parse(tekst)`, `stringify(v)`, `pretty(v)` oraz typ wartości `Json` z `get`, `at`, `set`, `push`, `has`, `str_or`, `int_or` ... |
 | `fs` | `read_bytes(p)` / `write_bytes(p, dane)` (`[]u8`, dowolne bajty), `exists`, `is_dir`, `mkdir` (z folderami wyżej), `list` (posortowane nazwy), `remove_dir`, `data_dir(app)` (folder na zapisy użytkownika) |
+| `thread` | `spawn(addr(praca), addr(dane))`, `t.join()`, `mutex()` z `lock`, `unlock`, `close`, `cpus()` (rozdział 29) |
 
 `min(a, b, ...)`, `max(a, b, ...)`, `abs(x)` i `clamp(x, od, do)` działają na dowolnych liczbach bez importu (twoja
 własna funkcja o tej samej nazwie wygrywa).
@@ -1097,7 +1137,156 @@ Jeszcze nie ma:
 
 - Interfejsów.
 - Tekstu świadomego Unicode: `.len`, `s[i]` i `upper()` działają na bajtach / ASCII.
-- Wątków.
-- Windowsa na ARM64, systemów 32-bitowych, WebAssembly.
+- Pilnowania, żeby dwa wątki nie zmieniały tej samej tablicy naraz (do tego mutex).
+- Windowsa na ARM64, systemów 32-bitowych, WebAssembly. Android jest budowany (`--target android`), ale jeszcze nie
+  sprawdzony na urządzeniu.
+
+Celowo nie planowane: ostrzeżenie przy każdym kopiowaniu dużej struktury. Kopię w Finchu zawsze widać w kodzie
+(`b := a`, struktura podana do parametru `Cialo c`), metoda nigdy nie kopiuje `self`, a `ptr[Cialo]` (albo zmienna
+podana do parametru `ptr[Cialo]`) współdzieli zamiast kopiować. Ostrzeżenie przy zwykłym kodzie byłoby szumem.
 
 Plan rozwoju jest w [README](../../README.pl.md#plan-rozwoju).
+
+## 27. Testy: bloki test i finch test
+
+Testy stoją obok kodu, który sprawdzają:
+
+```c
+fn obrazenia(int hp, int cios) -> int {
+    return max(hp - cios, 0)
+}
+
+test "obrażenia nigdy nie schodzą poniżej zera" {
+    assert(obrazenia(5, 10) == 0)
+    assert(obrazenia(5, 2) == 3, "wyszło \(obrazenia(5, 2))")
+}
+```
+
+`finch test gra.fch` uruchamia każdy blok `test` z pliku i z modułów, które importuje (bez biblioteki standardowej),
+każdy osobno: nieudany `assert` albo dowolny błąd w czasie działania kończy tylko ten test, a następny rusza dalej.
+
+```
+ok   obrażenia nigdy nie schodzą poniżej zera
+FAIL wczytanie poziomu
+     poziom.fch:31: runtime error: can't read the file "levels/1.txt"
+
+1 passed, 1 failed
+```
+
+Kod wyjścia to 1, gdy jakiś test nie przeszedł, więc CI może z tego korzystać. `finch run` i `finch build` pomijają bloki test.
+`assert(warunek)` działa też poza testami: zatrzymuje program z `assert failed`, gdy warunek jest fałszywy.
+
+## 28. Projekt: finch.toml
+
+`finch.toml` obok kodu mówi raz to, co inaczej trzeba by podawać w każdym poleceniu:
+
+```toml
+name = "gra"                         # program, który robi finch build (z entry)
+entry = "src/main.fch"               # gdy finch run / build / test nie dostaną pliku
+paths = ["src", "lib"]               # foldery z modułami Fincha
+include = ["vendor/SDL3/include"]    # foldery z nagłówkami C (też dla własnych .c / .cpp)
+links = ["SDL3", "native/glue.cpp"]  # biblioteki i własne pliki .c / .cpp / .o / .a
+libdirs = ["vendor/SDL3/lib"]        # foldery z bibliotekami
+cflags = ["-DFAST"]                  # dla własnych plików .c / .cpp
+ldflags = ["-Wl,-rpath,$ORIGIN"]     # dla linkera
+
+[target.windows]                     # dodawane tylko przy budowaniu na Windowsa
+links = ["ws2_32"]
+libdirs = ["vendor/SDL3/lib/x64"]
+
+[target.linux-arm64]                 # system i procesor: windows, linux, macos, android oraz -x86_64 / -arm64
+libdirs = ["vendor/SDL3/lib/arm64"]
+```
+
+Foldery liczą się od `finch.toml`. Finch szuka go w folderze pliku i w folderach wyżej, więc
+`finch run src/narzedzia/edytor.fch` wewnątrz projektu też z niego korzysta. Czytana jest tylko taka część TOML:
+`[sekcje]`, `klucz = "tekst"`, `klucz = ["a", "b"]` (także w kilku liniach), liczby, `true`/`false` i komentarze `#`.
+
+## 29. Wątki
+
+```c
+import thread
+
+struct Kawalek {
+    []float probki
+    float szczyt
+}
+
+fn analizuj(ptr arg) {              // funkcja wątku bierze jeden ptr
+    ptr[Kawalek] k = arg
+    for s in k.probki {
+        k.szczyt = max(k.szczyt, abs(s))
+    }
+}
+
+fn main() {
+    []Kawalek kawalki = wczytaj_kawalki()
+    []thread.Thread dzialajace
+    for i in 0..kawalki.len {
+        dzialajace.push(thread.spawn(addr(analizuj), addr(kawalki[i])) or {
+            print(err)
+            exit(1)
+        })
+    }
+    for i in 0..dzialajace.len {
+        dzialajace[i].join()         // poczekaj na wszystkie
+    }
+}
+```
+
+To, co dostaje wątek, jest współdzielone, nie kopiowane, więc:
+
+- musi żyć do `join()` (tu `kawalki` żyje do końca `main`);
+- nie zmieniaj tablicy, w którą wskazują wątki (bez `push`), dopóki się nie skończą;
+- to, co zmienia więcej niż jeden wątek, idzie pod blokadę albo jest liczbą zmienianą przez `atomic_...`.
+
+```c
+m := thread.mutex()
+defer m.close()
+m.lock()
+dziennik.push("gotowe")             // jeden wątek naraz między lock a unlock
+m.unlock()
+
+atomic_add(addr(gotowe), 1)         // gotowe to int wspólny dla wątków
+n := atomic_load(addr(gotowe))
+```
+
+`atomic_add`, `atomic_sub`, `atomic_swap` zwracają starą wartość; `atomic_cas(p, stara, nowa)` wstawia `nowa` tylko
+wtedy, gdy jest tam `stara`, i mówi, czy to zrobił. `thread.cpus()` mówi, ile wątków komputer wykonuje naraz.
+
+## 30. C++, Rust i Android
+
+Finch rozmawia z innymi językami przez C, jak każdy język.
+
+**C++**: to, co woła Finch, wystaw przez nagłówek C, z `extern "C"` po stronie C++:
+
+```cpp
+// glue.h
+#ifdef __cplusplus
+extern "C" {
+#endif
+int physics_step(float dt);
+#ifdef __cplusplus
+}
+#endif
+```
+
+i `import "glue.h"` z `link "glue.cpp"` (albo `links = ["glue.cpp"]` w `finch.toml`). Plik `.cpp` buduje kompilator C++
+(`clang++` albo `g++`, albo `FINCH_CXX`), który wtedy też linkuje, więc biblioteka C++ dochodzi sama.
+Bibliotekę C++ z API w C (Box2D 3, JoltC dla Jolt, wrapper C dla PhysX) importuje się jak każdą bibliotekę C.
+
+**Rust**: zrób `staticlib` i wystaw funkcje C:
+
+```rust
+// Cargo.toml: [lib] crate-type = ["staticlib"]
+#[no_mangle]
+pub extern "C" fn path_len(x: f32, y: f32) -> f32 { (x * x + y * y).sqrt() }
+```
+
+Napisz nagłówek (`float path_len(float x, float y);` albo niech napisze go `cbindgen`), potem `import "pathfind.h"` i
+`link "target/release/libpathfind.a"`. Na Linuksie statyczna biblioteka Rusta potrzebuje też `links = ["dl", "pthread"]`.
+
+**Android**: `finch build gra.fch --target android --shared` robi `libgra.so` dla 64-bitowego Androida na ARM (API 24
+i wyżej) clangiem z NDK, znalezionym przez `ANDROID_NDK_HOME` (albo `FINCH_CC`). Wczytaj go z aplikacji, na przykład
+przez projekt Androida z SDL3 (`SDL_main` biblioteki to `export fn`). To nowość: jest budowane i sprawdzane tutaj, ale
+jeszcze nie na urządzeniu.

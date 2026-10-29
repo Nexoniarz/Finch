@@ -104,6 +104,10 @@
     "statements": {
       "patterns": [
         {
+          "name": "keyword.other.test.finch",
+          "match": "\\btest(?=\\s*\")"
+        },
+        {
           "include": "#comments"
         },
         {
@@ -147,7 +151,7 @@
           "match": "\\b(int|float|bool|char|str|ptr|map|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64)\\b"
         },
         {
-          "match": "\\b(print|input|read_file|write_file|file_exists|delete_file|shell|exit|addr|new|free|error)\\s*(?=\\()",
+          "match": "\\b(print|input|read_file|write_file|file_exists|delete_file|shell|exit|addr|new|free|error|min|max|abs|clamp|assert|atomic_add|atomic_sub|atomic_load|atomic_store|atomic_swap|atomic_cas)\\s*(?=\\()",
           "captures": {
             "1": {
               "name": "support.function.builtin.finch"
@@ -218,6 +222,9 @@
       "end": "\"|$",
       "patterns": [
         {
+          "include": "#interpolation"
+        },
+        {
           "name": "constant.character.escape.finch",
           "match": "\\\\[ntr0\\\\\"']"
         },
@@ -260,8 +267,46 @@
       "end": "\"\"\"",
       "patterns": [
         {
+          "include": "#interpolation"
+        },
+        {
           "name": "constant.character.escape.finch",
           "match": "\\\\[ntr0\\\\\"']"
+        }
+      ]
+    },
+    "interpolation": {
+      "name": "meta.embedded.line.finch",
+      "begin": "\\\\\\(",
+      "end": "\\)",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.section.embedded.begin.finch"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.embedded.end.finch"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#interpolation-parens"
+        },
+        {
+          "include": "$self"
+        }
+      ]
+    },
+    "interpolation-parens": {
+      "begin": "\\(",
+      "end": "\\)",
+      "patterns": [
+        {
+          "include": "#interpolation-parens"
+        },
+        {
+          "include": "$self"
         }
       ]
     }
