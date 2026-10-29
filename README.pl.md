@@ -151,7 +151,7 @@ Wybierz przewodnik dla siebie:
 - [x] Biblioteka standardowa w Finchu: `json`, `path`, `time`, `proc`, `fs`
 - [x] `const`, `if` jako wartość, `"\(x)"` w tekście, tekst `"""`, unie C i wyrażenia `#define`
 - [x] Bloki `test` i `finch test`, `finch fmt`, `finch.toml`, cache budowania, łańcuch wywołań przy błędach
-- [x] Wątki (`import thread`) i operacje atomowe; pliki C++; `--target android` (budowane, jeszcze nie sprawdzone na urządzeniu)
+- [x] Wątki (`import thread`) i operacje atomowe; pliki C++; `--target android` (kompiluje się; linkowanie z NDK i urządzenia niesprawdzone)
 
 ## Struktura
 

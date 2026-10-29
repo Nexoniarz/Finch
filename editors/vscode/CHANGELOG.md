@@ -5,6 +5,7 @@
 - Highlighting for code inside text (`"hp \(hp)"`), `test "…" { }` blocks, `const`, `"""` text, `1e9`.
 - Built-ins `min`, `max`, `abs`, `clamp`, `assert` and `atomic_…` highlighted and described on hover.
 - Format Document (the language server runs `finch fmt` on the open file).
+- Warnings in yellow: a big struct copied on every call or in `for x in list`.
 
 ## 2.4.0
 

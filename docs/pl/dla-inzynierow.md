@@ -496,6 +496,13 @@ thunk wołany z C. `atomic_add/sub/swap` to `atomicrmw add/sub/xchg … seq_cst`
 `ptr[T]` do dowolnej liczby całkowitej. Tablice, teksty i mapy Fincha nie są synchronizowane; dzielenie ich między
 wątkami wymaga mutexu.
 
+### Ostrzeżenia
+
+`warn()` wypisuje `plik:linia:kolumna: warning: …` na stderr (więc `finch ir` daje samo IR) albo, w trybie `index`,
+rekord `@W`, który serwer języka publikuje z ważnością 2. Jedno na miejsce w kodzie. Są dwa: parametr-struktura oraz
+element `for x in lista`, gdy ich zwykłe dane (`byteSize()`: liczby, zagnieżdżone struktury, `[N]T` z C; `str`, tablice
+i mapy liczą się jako 0, bo kopiowany jest tylko ich uchwyt) mają 256 bajtów lub więcej.
+
 ### Struktura jako argument przez adres
 
 `argWant()` (tylko argumenty wywołań, nie przypisania): gdy parametr to `ptr[S]`, a argument to zwykła zmienna typu `S`,

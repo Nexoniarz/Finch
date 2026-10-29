@@ -83,6 +83,7 @@ struct Analysis {
     []str imports
     []str importKeys    // the module each import is: btn -> ui/button
     Diag diag
+    []Diag warnings     // shown in yellow; the program still builds
 }
 
 struct Server {
@@ -324,6 +325,8 @@ fn parseOutput(str output) -> Analysis {
                 a.structs[k].types.push(f[4])
             } else if tag == "@E" && f.len >= 7 {
                 a.enums.push(EnumRec(module: f[1], name: f[2], file: f[3], line: intOf(f[4]), col: intOf(f[5]), variants: f[6].split(",")))
+            } else if tag == "@W" && f.len >= 5 {
+                a.warnings.push(Diag(has: true, file: f[1], line: intOf(f[2]), col: intOf(f[3]), message: f[4]))
             } else if tag == "@I" && f.len >= 2 {
                 a.imports.push(f[1])
                 if f.len >= 3 {
@@ -398,6 +401,27 @@ fn Server.publish(str path, Analysis a) {
             d.set("message", json.new_text(a.diag.message))
             list.push(d)
             now.push(f)
+        }
+        for w in a.warnings {
+            if w.file == f {
+                d := json.new_object()
+                wl := w.line - 1
+                if wl < 0 {
+                    wl = 0
+                }
+                wc := w.col - 1
+                if wc < 0 {
+                    wc = 0
+                }
+                d.set("range", range(wl, wc, wc + 1))
+                d.set("severity", num(2))
+                d.set("source", json.new_text("finch"))
+                d.set("message", json.new_text(w.message))
+                list.push(d)
+                if !now.contains(f) {
+                    now.push(f)
+                }
+            }
         }
         p := json.new_object()
         p.set("uri", json.new_text(pathToUri(f)))

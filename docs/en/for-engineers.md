@@ -503,6 +503,13 @@ makes the C-callable thunk. `atomic_add/sub/swap` lower to `atomicrmw add/sub/xc
 take a `ptr[T]` to any integer type. Finch's arrays, text and maps are not synchronised; sharing one between threads
 needs a mutex.
 
+### Warnings
+
+`warn()` prints `file:line:col: warning: …` to stderr (so `finch ir` stays pure IR) or, with `index`, an `@W` record the
+language server publishes with severity 2. One per source position. Two are given: a struct parameter, and the element of
+`for x in list`, whose plain data (`byteSize()`: numbers, nested structs, C `[N]T`; `str`/arrays/maps count 0, as only
+their handle is copied) is 256 bytes or more.
+
 ### Struct arguments by address
 
 `argWant()` (call arguments only, not assignments): when a parameter is `ptr[S]` and the argument is a plain variable

@@ -7,6 +7,7 @@ import ast
 import docs
 import cimport
 import platform
+import "stdio.h"
 
 struct Var {
     str name
@@ -166,6 +167,7 @@ struct Ref {
 
 struct Gen {
     []ast.Program progs
+    []str warned        // file:line:col of the warnings given
     bool trace          // each function keeps a frame { prev, name, file, line } in @finch_trace
     str frame           // the current function's frame ("" in helpers)
     str frameLine       // where its line goes
@@ -335,6 +337,58 @@ fn fail(ptr[Gen] g, ast.Node n, str msg) {
     }
     print(g.files[n.file] + ":" + str(n.line) + ":" + str(n.col) + ": error: " + msg + g.instNote)
     exit(1)
+}
+
+// A warning: the program is still built. On stderr (finch ir's output stays the IR); an @W record for editors.
+fn warn(ptr[Gen] g, ast.Node n, str msg) {
+    where := g.files[n.file] + ":" + str(n.line) + ":" + str(n.col)
+    if g.warned.contains(where) {
+        return                      // once per place (a generic function is built more than once)
+    }
+    g.warned.push(where)
+    if g.index {
+        g.idx.push("@W\t" + g.files[n.file] + "\t" + str(n.line) + "\t" + str(n.col) + "\t" + msg)
+        return
+    }
+    fputs(where + ": warning: " + msg + "\n", stderr)
+}
+
+// About how many bytes of plain data (numbers, structs of them, C's [N]T) a value has, for the copy warnings
+fn byteSize(ptr[Gen] g, ast.Type t) -> int {
+    k := t.kind
+    if k == "struct" {
+        sd := g.structs[findStruct(g, t.module, t.name)]
+        if sd.isC && sd.csize > 0 {
+            return sd.csize
+        }
+        n := 0
+        for ft in sd.ftypes {
+            n += byteSize(g, ft)
+        }
+        return n
+    }
+    if k == "fixed" && t.elem.len > 0 {
+        return t.count * byteSize(g, t.elem[0])
+    }
+    if k == "str" || k == "array" || k == "map" {
+        return 0                    // only its { ptr, len, cap } is copied when it is passed: not counted
+    }
+    if k == "ptr" || k == "enum" || k == "int" || k == "float" {
+        return 8
+    }
+    return bitsOf(t) / 8 + int(bitsOf(t) == 1)
+}
+
+// a struct this big passed or looped over by value is copied byte by byte each time
+fn bigCopy(ptr[Gen] g, ast.Type t) -> int {
+    if t.kind != "struct" {
+        return 0
+    }
+    n := byteSize(g, t)
+    if n >= 256 {
+        return n
+    }
+    return 0
 }
 
 fn emit(ptr[Gen] g, str line) {
@@ -2306,6 +2360,10 @@ fn define(ptr[Gen] g, int si) {
     }
     for k in 0..g.cur.params.len {
         pt := g.cur.params[k]
+        big := bigCopy(g, pt)
+        if big > 0 {
+            warn(g, f.kids[k], "'" + g.cur.pnames[k] + "' is a " + ast.show(pt) + " (" + str(big) + " bytes), copied on every call to " + f.name + "; take ptr[" + ast.show(pt) + "] to share it instead (callers can still pass the variable as it is)")
+        }
         params.push(llty(g, pt) + " %p" + str(k))
         v := "%p" + str(k)
         if owning(g, pt) && !g.cur.borrow[k] {
@@ -2714,6 +2772,14 @@ fn eachStmt(ptr[Gen] g, ast.Node s) {
         et = lt.elem[0]
     }
     copyElems := r.isPlace && owning(g, et) && mutates(g, rootVar(s.kids[0]), s.kids[1])
+    big := bigCopy(g, et)
+    if big > 0 && s.text.len == 0 {
+        list := "list"
+        if s.kids[0].kind == "var" {
+            list = s.kids[0].name
+        }
+        warn(g, s, "each " + ast.show(et) + " (" + str(big) + " bytes) is copied into '" + s.name + "'; for i in 0.." + list + ".len with " + list + "[i] works on it in place")
+    }
     iv := alloca(g, "i64")
     store(g, "i64", "0", iv)
     cond := newLabel(g, "each.cond")

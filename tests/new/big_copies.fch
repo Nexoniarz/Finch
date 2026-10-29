@@ -1,0 +1,52 @@
+// a struct of 256 bytes or more copied without the code saying so: a warning (the program still builds)
+struct M4 {
+    float a0
+    float a1
+    float a2
+    float a3
+    float b0
+    float b1
+    float b2
+    float b3
+    float c0
+    float c1
+    float c2
+    float c3
+    float d0
+    float d1
+    float d2
+    float d3
+}
+
+struct Body {
+    M4 world
+    M4 local
+    int id
+}
+
+fn weight(Body b) -> float {            // warned: 264 bytes copied on every call
+    return b.world.a0 + float(b.id)
+}
+
+fn nudge(ptr[Body] b) {                 // shared: no warning
+    b.world.a0 += 1.0
+}
+
+fn small(M4 m) -> float {               // 128 bytes: no warning
+    return m.a0
+}
+
+fn main() {
+    b := Body(id: 2)
+    nudge(b)
+    print(weight(b), small(b.world))
+    bodies := [b, b]
+    total := 0.0
+    for x in bodies {                   // warned: each element copied into x
+        total += x.world.a0
+    }
+    for i in 0..bodies.len {            // in place: no warning
+        total += bodies[i].world.a0
+    }
+    print(total)
+}

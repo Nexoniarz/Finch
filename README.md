@@ -151,7 +151,7 @@ Pick the guide that fits you:
 - [x] A standard library in Finch: `json`, `path`, `time`, `proc`, `fs`
 - [x] `const`, `if` as a value, `"\(x)"` in text, `"""` text, C unions and `#define` expressions
 - [x] `test` blocks and `finch test`, `finch fmt`, `finch.toml`, a build cache, the chain of calls on runtime errors
-- [x] Threads (`import thread`) and atomics; C++ files; `--target android` (built, not yet tried on a device)
+- [x] Threads (`import thread`) and atomics; C++ files; `--target android` (compiles; NDK linking and devices untried)
 
 ## Layout
 

@@ -193,6 +193,15 @@ c.notify("textDocument/didChange", {"textDocument": {"uri": uri2, "version": 4},
 diags = c.diagnostics(uri2)
 check("error: unhandled failure", diags and "can fail" in diags[0]["message"], diags)
 
+# a big struct copied on every call: a warning (yellow), not an error
+src4 = "struct V {\n" + "".join("    float f%d\n" % i for i in range(40)) + "}\n\nfn len2(V v) -> float {\n    return v.f0\n}\n\nfn main() {\n    print(len2(V()))\n}\n"
+path4 = os.path.join(d, "big.fch")
+open(path4, "w").write(src4)
+uri4 = pathlib.Path(path4).resolve().as_uri()
+c.notify("textDocument/didOpen", {"textDocument": {"uri": uri4, "languageId": "finch", "version": 1, "text": src4}})
+w4 = c.diagnostics(uri4)
+check("warning for a big copy", w4 and len(w4) == 1 and w4[0]["severity"] == 2 and "copied on every call" in w4[0]["message"] and w4[0]["range"]["start"]["line"] == 43, w4)
+
 # a module imported under another name: completion after its name
 src3 = "import path as pt\n\nfn main() {\n    print(pt.base(\"a/b\"))\n}\n"
 path3 = os.path.join(d, "alias.fch")

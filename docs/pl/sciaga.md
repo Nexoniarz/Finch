@@ -327,7 +327,7 @@ Automatycznie tylko wtedy, gdy nic nie ginie: mniejsza → większa liczba, dowo
 
 - Tablice, teksty i struktury zwalniają się same na końcu swojego bloku. Bez `free`.
 - `b := a` kopiuje; wynik wywołania jest przenoszony; `return x` przenosi.
-- Przekazywanie struktury: `fn f(Cialo c)` pracuje na własnej kopii (ta u wywołującego się nie zmienia), `fn f(ptr[Cialo] c)` zmienia tę u wywołującego (`f(cialo)` albo `f(addr(cialo))`), metoda dostaje `self` przez adres, nigdy kopię.
+- Przekazywanie struktury: `fn f(Cialo c)` pracuje na własnej kopii (ta u wywołującego się nie zmienia), `fn f(ptr[Cialo] c)` zmienia tę u wywołującego (`f(cialo)` albo `f(addr(cialo))`), metoda dostaje `self` przez adres, nigdy kopię. Struktura z 256+ bajtami liczb przekazana przez wartość albo w `for x in lista` dostaje ostrzeżenie.
 - `new(...)` + `free(...)` (często z `defer`) do list wiązanych, drzew, współdzielenia.
 - Pamięć z C: funkcjami z C (`malloc` / `free`, `fclose`, …).
 

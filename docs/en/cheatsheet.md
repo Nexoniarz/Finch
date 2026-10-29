@@ -327,7 +327,7 @@ Automatic only when nothing is lost: smaller → bigger number, any int → floa
 
 - Arrays, text and structs free themselves at the end of their block. No `free` needed.
 - `b := a` copies; a call's result moves; `return x` moves.
-- Passing a struct: `fn f(Body b)` works on its own copy (the caller's stays as it was), `fn f(ptr[Body] b)` changes the caller's (`f(body)` or `f(addr(body))`), a method gets `self` by address, never a copy.
+- Passing a struct: `fn f(Body b)` works on its own copy (the caller's stays as it was), `fn f(ptr[Body] b)` changes the caller's (`f(body)` or `f(addr(body))`), a method gets `self` by address, never a copy. A struct with 256+ bytes of numbers passed by value or in `for x in list` gets a warning.
 - `new(...)` + `free(...)` (often with `defer`) for linked lists, trees, sharing.
 - C memory: C's own functions (`malloc` / `free`, `fclose`, …).
 

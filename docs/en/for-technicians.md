@@ -1134,11 +1134,20 @@ Not there yet:
 - Interfaces.
 - Unicode-aware text: `.len`, `s[i]` and `upper()` work on bytes / ASCII.
 - Checks that stop two threads from changing the same array at once (use a mutex).
-- Windows on ARM64, 32-bit systems, WebAssembly. Android is built (`--target android`) but not yet tried on a device.
+- Windows on ARM64, 32-bit systems, WebAssembly. `--target android` makes code for Android, but linking with the NDK and running on a device are untried.
 
-On purpose, not planned: a warning for every big struct that gets copied. A copy in Finch is always visible in the
-code (`b := a`, passing a struct to a `Body b` parameter), a method never copies `self`, and `ptr[Body]` (or passing
-the variable to a `ptr[Body]` parameter) shares instead. A warning that fires on ordinary code would be noise.
+### Warnings about big copies
+
+A struct with 256 bytes or more of plain data (numbers, structs of numbers, C's `[N]T`) is copied byte by byte when it
+is a parameter (`fn f(Body b)`) and in `for x in bodies`. Finch says so, and still builds the program:
+
+```
+game.fch:27:11: warning: 'b' is a Body (264 bytes), copied on every call to weight; take ptr[Body] to share it instead (callers can still pass the variable as it is)
+game.fch:45:5: warning: each Body (264 bytes) is copied into 'x'; for i in 0..bodies.len with bodies[i] works on it in place
+```
+
+Text, arrays and maps inside a struct don't count: passing the struct copies only their handles, not what they hold.
+`b := a` is not warned about: it says "copy" in the code. A method never copies `self`. Editors show the warnings in yellow.
 
 See the [roadmap in the README](../../README.md#roadmap).
 
@@ -1283,5 +1292,6 @@ Write the header (`float path_len(float x, float y);`, or let `cbindgen` write i
 
 **Android**: `finch build game.fch --target android --shared` makes `libgame.so` for 64-bit ARM Android (API 24 and
 up) with the NDK's clang, found through `ANDROID_NDK_HOME` (or `FINCH_CC`). Load it from an app, for example through
-SDL3's Android project (the library's `SDL_main` is an `export fn`). This is new: it is built and checked here, but not
-yet tried on a device.
+SDL3's Android project (the library's `SDL_main` is an `export fn`). This is new and only partly checked: Finch's
+output compiles for Android (thread-local data goes through the emulated TLS older Android needs), but linking with the
+NDK and running on a device have not been tried yet.

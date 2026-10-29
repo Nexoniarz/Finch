@@ -1138,12 +1138,22 @@ Jeszcze nie ma:
 - Interfejsów.
 - Tekstu świadomego Unicode: `.len`, `s[i]` i `upper()` działają na bajtach / ASCII.
 - Pilnowania, żeby dwa wątki nie zmieniały tej samej tablicy naraz (do tego mutex).
-- Windowsa na ARM64, systemów 32-bitowych, WebAssembly. Android jest budowany (`--target android`), ale jeszcze nie
-  sprawdzony na urządzeniu.
+- Windowsa na ARM64, systemów 32-bitowych, WebAssembly. `--target android` robi kod dla Androida, ale linkowanie
+  z NDK i uruchomienie na urządzeniu nie były jeszcze próbowane.
 
-Celowo nie planowane: ostrzeżenie przy każdym kopiowaniu dużej struktury. Kopię w Finchu zawsze widać w kodzie
-(`b := a`, struktura podana do parametru `Cialo c`), metoda nigdy nie kopiuje `self`, a `ptr[Cialo]` (albo zmienna
-podana do parametru `ptr[Cialo]`) współdzieli zamiast kopiować. Ostrzeżenie przy zwykłym kodzie byłoby szumem.
+### Ostrzeżenia o dużych kopiach
+
+Struktura z 256 lub więcej bajtami zwykłych danych (liczby, struktury z liczb, `[N]T` z C) jest kopiowana bajt po bajcie,
+gdy jest parametrem (`fn f(Cialo c)`) i w `for x in ciala`. Finch o tym mówi, a program i tak buduje:
+
+```
+gra.fch:27:11: warning: 'c' is a Cialo (264 bytes), copied on every call to waga; take ptr[Cialo] to share it instead (callers can still pass the variable as it is)
+gra.fch:45:5: warning: each Cialo (264 bytes) is copied into 'x'; for i in 0..ciala.len with ciala[i] works on it in place
+```
+
+Teksty, tablice i mapy w strukturze się nie liczą: przekazanie struktury kopiuje tylko ich uchwyty, nie zawartość.
+`b := a` nie dostaje ostrzeżenia: w kodzie widać, że to kopia. Metoda nigdy nie kopiuje `self`. Edytory pokazują
+ostrzeżenia na żółto.
 
 Plan rozwoju jest w [README](../../README.pl.md#plan-rozwoju).
 
@@ -1288,5 +1298,6 @@ Napisz nagłówek (`float path_len(float x, float y);` albo niech napisze go `cb
 
 **Android**: `finch build gra.fch --target android --shared` robi `libgra.so` dla 64-bitowego Androida na ARM (API 24
 i wyżej) clangiem z NDK, znalezionym przez `ANDROID_NDK_HOME` (albo `FINCH_CC`). Wczytaj go z aplikacji, na przykład
-przez projekt Androida z SDL3 (`SDL_main` biblioteki to `export fn`). To nowość: jest budowane i sprawdzane tutaj, ale
-jeszcze nie na urządzeniu.
+przez projekt Androida z SDL3 (`SDL_main` biblioteki to `export fn`). To nowość, sprawdzona tylko częściowo: kod Fincha
+kompiluje się dla Androida (dane wątków idą przez emulowane TLS, którego wymaga starszy Android), ale linkowanie z NDK
+i uruchomienie na urządzeniu nie były jeszcze próbowane.

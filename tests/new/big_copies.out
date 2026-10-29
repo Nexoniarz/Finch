@@ -1,0 +1,4 @@
+new/big_copies.fch:27:11: warning: 'b' is a Body (264 bytes), copied on every call to weight; take ptr[Body] to share it instead (callers can still pass the variable as it is)
+new/big_copies.fch:45:5: warning: each Body (264 bytes) is copied into 'x'; for i in 0..bodies.len with bodies[i] works on it in place
+3 1
+4

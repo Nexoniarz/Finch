@@ -34,7 +34,8 @@ for f in run/*.fch new/*.fch; do
         failed=$((failed + 1)); echo "FAIL (build) $f"; head -5 "$tmp/err"; continue
     fi
     got=$(run_exe "$exe" "$input")
-    if [ "$got" == "$(tr -d '\r' < "${f%.fch}.out")" ]; then
+    # (warnings come from the build, which is not part of what the program prints)
+    if [ "$got" == "$(tr -d '\r' < "${f%.fch}.out" | grep -v ': warning: ')" ]; then
         pass=$((pass + 1))
     else
         failed=$((failed + 1)); echo "FAIL $f"; diff <(echo "$got") "${f%.fch}.out" | head -10
