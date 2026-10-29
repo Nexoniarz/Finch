@@ -1,0 +1,5 @@
+// expect: Event is a C union: give one field by name
+import "../cunion.h"
+fn main() {
+    e := Event(1, 2)
+}

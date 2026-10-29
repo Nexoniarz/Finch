@@ -1,0 +1,30 @@
+// C unions and #define constants that are expressions (tests/new/c_unions_macros.fch)
+#include <stdint.h>
+
+typedef struct { uint32_t type; float x, y; } Motion;
+typedef struct { uint32_t type; int32_t key; } Key;
+typedef union {
+    uint32_t type;
+    Motion motion;
+    Key key;
+    uint8_t padding[64];
+} Event;
+
+typedef struct { int kind; union { int i; float f; } as; } Tagged;
+
+#define EV_MOTION 0x400u
+#define EV_KEY (EV_MOTION + 1)
+#define FLAG_BIG ((uint64_t)1 << 40)
+#define FLAG_GL 0x2ULL
+#define FLAGS_BOTH (FLAG_BIG | FLAG_GL)
+#define HALF (1.0 / 2)
+#define GREETING "hi\tthere"
+#define LONG_NAME "a" "b"
+#define NOT_A_CONSTANT do { } while (0)
+
+static inline int fill_key(Event *e, int key) {
+    e->key.type = EV_KEY;
+    e->key.key = key;
+    return 1;
+}
+int poll_event(Event *e);

@@ -140,6 +140,7 @@ struct StructDef {
     int index
     int state      // 0 new, 1 resolving, 2 done
     bool owning
+    bool isUnion   // C: a union, every field at byte 0
 }
 
 struct Val {
@@ -1857,6 +1858,10 @@ fn genericCall(ptr[Gen] g, ast.Node c, int ti, int first, str shown) -> Val {
 fn resolveCStruct(ptr[Gen] g, int i) {
     cs := g.ci.structs[g.structs[i].name]
     g.structs[i].state = 1
+    if cs.isUnion {
+        resolveCUnion(g, i, cs)
+        return
+    }
     cur := 0
     []str elems
     for f in cs.fields {
@@ -1888,6 +1893,37 @@ fn resolveCStruct(ptr[Gen] g, int i) {
     g.structs[i].calign = cs.align
     g.structs[i].state = 2
     g.head.push("%S.C." + cs.name + " = type { " + elems.join(", ") + " }")
+}
+
+// A C union: room for its biggest field, aligned like C aligns it; every field is at byte 0.
+fn resolveCUnion(ptr[Gen] g, int i, cimport.CStruct cs) {
+    for f in cs.fields {
+        if f.hidden {
+            continue
+        }
+        t := resolve(g, f.ty, ast.Node())
+        if t.kind == "struct" {
+            resolveStruct(g, findStruct(g, t.module, t.name))
+        }
+        g.structs[i].fnames.push(f.name)
+        g.structs[i].ftypes.push(t)
+        g.structs[i].lidx.push(0)
+        g.structs[i].offs.push(0)
+    }
+    a := cs.align
+    if a > 8 {
+        a = 8
+    }
+    if a < 1 {
+        a = 1
+    }
+    n := (cs.size + a - 1) / a
+    g.structs[i].unsupported = cs.unsupported
+    g.structs[i].isUnion = true
+    g.structs[i].csize = cs.size
+    g.structs[i].calign = cs.align
+    g.structs[i].state = 2
+    g.head.push("%S.C." + cs.name + " = type { [" + str(n) + " x i" + str(a * 8) + "] }")
 }
 
 fn resolveStruct(ptr[Gen] g, int i) {
@@ -3567,6 +3603,14 @@ fn arith(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
                 panicIf(g, op(g, "icmp eq " + lt + " " + r.v + ", 0"), "division by zero", at)
             }
         }
+        if l.lit && r.lit && l.ty.kind == "int" {
+            // numbers written in the code stay such a number: FLAG_A | FLAG_B fits a u64 or a u32
+            a := int(l.v) or 0
+            b := int(r.v) or 0
+            if (o != "<<" && o != ">>") || (b >= 0 && b < 63) {
+                return Val(v: str(foldInt(o, a, b)), ty: l.ty, lit: true)
+            }
+        }
         return Val(v: op(g, insts[k] + " " + lt + " " + l.v + ", " + r.v), ty: l.ty)
     }
     if isFloat(l.ty) {
@@ -3580,6 +3624,29 @@ fn arith(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
     }
     badOperands(g, o, l, r, at)
     return l
+}
+
+fn foldInt(str o, int a, int b) -> int {
+    if o == "+" {
+        return a + b
+    } else if o == "-" {
+        return a - b
+    } else if o == "*" {
+        return a * b
+    } else if o == "/" {
+        return a / b
+    } else if o == "%" {
+        return a % b
+    } else if o == "&" {
+        return a & b
+    } else if o == "|" {
+        return a | b
+    } else if o == "^" {
+        return a ^ b
+    } else if o == "<<" {
+        return a << b
+    }
+    return a >> b
 }
 
 fn compare(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
@@ -3747,6 +3814,9 @@ fn ref(ptr[Gen] g, ast.Node e, bool write) -> Ref {
         id := lookup(g, e.name)
         if id < 0 && g.ci.consts.has(e.name) {
             c := g.ci.consts[e.name]
+            if c.isStr {
+                return Ref(isPlace: false, val: strConst(g, c.s))
+            }
             if c.isFloat {
                 return Ref(isPlace: false, val: Val(v: llFloat(c.text), ty: T("float"), lit: true))
             }
@@ -4016,6 +4086,10 @@ fn member(ptr[Gen] g, ast.Node m, bool write) -> Ref {
     if obj.isPlace {
         fp := op(g, "getelementptr inbounds " + llty(g, t) + ", ptr " + obj.pl.addr + ", i32 0, i32 " + str(sd.lidx[k]))
         return Ref(isPlace: true, pl: Place(addr: fp, ty: ft))
+    }
+    if sd.isUnion {
+        u := spill(g, obj.val)
+        return Ref(isPlace: false, val: Val(v: load(g, llty(g, ft), u), ty: ft))
     }
     fv := op(g, "extractvalue " + llty(g, t) + " " + obj.val.v + ", " + str(sd.lidx[k]))
     out := Val(v: fv, ty: ft)
@@ -5197,6 +5271,21 @@ fn construct(ptr[Gen] g, int si, []ast.Node args, []str names, ast.Node at) -> V
     t := ast.Type(kind: "struct", name: sd.name, module: sd.module)
     st := llty(g, t)
     named := names.len > 0 && names[0].len > 0
+    if sd.isUnion && args.len > 0 {
+        // a union holds one field at a time: Ev(key: k)
+        if args.len != 1 || !named {
+            fail(g, at, sd.name + " is a C union: give one field by name, like " + sd.name + "(" + sd.fnames[0] + ": ...), or none")
+        }
+        k := sd.fnames.find(names[0])
+        if k < 0 {
+            fail(g, args[0], sd.name + " has no field '" + names[0] + "'")
+        }
+        u := alloca(g, st)
+        store(g, st, "zeroinitializer", u)
+        fv := coerce(g, exprWant(g, args[0], sd.ftypes[k]), sd.ftypes[k], args[0], "the field '" + names[0] + "'")
+        store(g, llty(g, sd.ftypes[k]), fv.v, u)
+        return Val(v: load(g, st, u), ty: t)
+    }
     []int given
     for k in 0..sd.fnames.len {
         given.push(-1)

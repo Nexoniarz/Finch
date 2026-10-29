@@ -1,0 +1,25 @@
+// C unions (SDL_Event-style) and #defines that are expressions, strings or casts
+import "cunion.h"
+link "cunion.c"
+
+fn main() {
+    print(EV_MOTION, EV_KEY, FLAG_BIG, FLAGS_BOTH, HALF, GREETING, LONG_NAME)
+    u64 flags = FLAG_BIG | FLAG_GL
+    u32 small = EV_KEY
+    print(flags, small)
+
+    Event e
+    if poll_event(addr(e)) != 0 && e.type == EV_MOTION {
+        print("motion", e.motion.x, e.motion.y)
+    }
+    k := Event(key: Key(type: EV_KEY, key: 32))
+    print(k.type == EV_KEY, k.key.key)
+    []Event queue
+    queue.push(e)
+    queue.push(k)
+    print(queue[1].key.key, queue.len)
+
+    Tagged t
+    t.as.f = 0.5
+    print(t.as.f)
+}
