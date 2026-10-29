@@ -89,6 +89,14 @@ jobs:
           build/finch version
       - name: Tests
         run: tests/run.sh
+      - name: Package
+        run: |
+          mkdir -p dist/finch && cp build/finch README.md LICENSE dist/finch/ && cp -r runtime std examples dist/finch/
+          tar -czf finch-macos-arm64.tar.gz -C dist finch
+      - uses: actions/upload-artifact@v4
+        with:
+          name: finch-macos-arm64
+          path: finch-macos-arm64.tar.gz
 
   windows:
     runs-on: windows-2022
@@ -116,6 +124,16 @@ jobs:
           export PATH="/c/llvm-mingw-20251216-ucrt-x86_64/bin:$PATH"
           export FINCH_LDFLAGS="-LC:/llvm/bin"
           FINCH=../build/finch.exe tests/run.sh
+      - name: Package
+        run: |
+          mkdir -p dist/finch
+          cp build/finch.exe build/libclang.dll README.md LICENSE dist/finch/
+          cp -r runtime std examples dist/finch/
+          cd dist && 7z a -tzip finch-windows-x64.zip finch > /dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: finch-windows-x64
+          path: dist/finch-windows-x64.zip
 
   vscode:
     runs-on: ubuntu-24.04
