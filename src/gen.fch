@@ -3458,6 +3458,19 @@ fn orElse(ptr[Gen] g, ast.Node e, bool discard) -> Val {
     return Val(v: op(g, "phi " + llty(g, v.ty) + " [ " + fv + ", %" + badEnd + " ], [ " + v.v + ", %" + ok + " ]"), ty: v.ty, fresh: owning(g, v.ty))
 }
 
+// An argument: a struct variable given where a ptr to that struct goes is passed by its address,
+// as if it were addr(x) (worldDef for b2CreateWorld(const b2WorldDef*), body for move(ptr[Body] b))
+fn argWant(ptr[Gen] g, ast.Node a, ast.Type want) -> Val {
+    if a.kind == "var" && want.kind == "ptr" && want.elem.len == 1 && want.elem[0].kind == "struct" {
+        id := lookup(g, a.name)
+        if id >= 0 && ast.same(varAt(g, id).ty, want.elem[0]) {
+            pl := place(g, a, true)
+            return Val(v: pl.addr, ty: ast.ptrTo(pl.ty))
+        }
+    }
+    return exprWant(g, a, want)
+}
+
 fn exprWant(ptr[Gen] g, ast.Node e, ast.Type want) -> Val {
     if e.kind == "array" {
         return arrayLit(g, e, want)
@@ -3900,6 +3913,21 @@ fn ref(ptr[Gen] g, ast.Node e, bool write) -> Ref {
         id := lookup(g, e.name)
         if id < 0 && g.ci.consts.has(e.name) {
             c := g.ci.consts[e.name]
+            if c.structName.len > 0 {
+                // RAYWHITE: Color(245, 245, 245, 255)
+                si := findStruct(g, "C", c.structName)
+                []ast.Node args
+                []str names
+                for i in 0..c.fields.len {
+                    kind := "int"
+                    if c.fieldFloat[i] {
+                        kind = "float"
+                    }
+                    args.push(ast.Node(kind: kind, text: c.fields[i], line: e.line, col: e.col, file: e.file))
+                    names.push(g.structs[si].fnames[i])         // by name: C leaves the fields not given at 0
+                }
+                return Ref(isPlace: false, val: construct(g, si, args, names, e))
+            }
             if c.isStr {
                 return Ref(isPlace: false, val: strConst(g, c.s))
             }
@@ -4986,7 +5014,7 @@ fn callC(ptr[Gen] g, ast.Node c, cimport.CFunc f) -> Val {
         if i < f.params.len {
             pt := ptypes[i]
             a := pl.params[i]
-            v := coerce(g, exprWant(g, c.kids[i], pt), pt, c.kids[i], "argument " + str(i + 1) + " of " + f.name)
+            v := coerce(g, argWant(g, c.kids[i], pt), pt, c.kids[i], "argument " + str(i + 1) + " of " + f.name)
             temps.push(v)
             hold(g, v)
             if a.kind == "memory" {
@@ -5391,6 +5419,9 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     if n == "assert" {
         return assertCall(g, c)
     }
+    if ["atomic_add", "atomic_sub", "atomic_load", "atomic_store", "atomic_swap", "atomic_cas"].contains(n) {
+        return atomicCall(g, c)
+    }
     if lookup(g, n) >= 0 {
         fail(g, c, "'" + n + "' is a variable, not a function")
     }
@@ -5502,6 +5533,55 @@ fn mathCall(ptr[Gen] g, ast.Node c) -> Val {
     return out
 }
 
+fn atomicAlign(ptr[Gen] g, ast.Type t) -> str {
+    return str(bitsOf(t) / 8)
+}
+
+// atomic_add(p, n) and the rest: one step on a whole number that other threads see all at once.
+// p is a ptr[int] (or any whole number type) to it; add, sub and swap give back what was there before,
+// cas(p, old, new) puts new there only if old is there, and says whether it did.
+fn atomicCall(ptr[Gen] g, ast.Node c) -> Val {
+    n := c.name
+    if g.index {
+        noteRef(g, c, c.col, n.len, docs.hover(docs.find(docs.builtins(), n)), "", 0, 0)
+    }
+    want := 2
+    if n == "atomic_load" {
+        want = 1
+    } else if n == "atomic_cas" {
+        want = 3
+    }
+    checkArgs(g, c, 0, want, n)
+    p := expr(g, c.kids[0])
+    if p.ty.kind != "ptr" || p.ty.elem.len == 0 || !isInt(p.ty.elem[0]) {
+        fail(g, c.kids[0], n + "(...) works on a whole number through its address, like  " + n + "(addr(count), ...)  -- this is " + ast.show(p.ty))
+    }
+    t := p.ty.elem[0]
+    lt := llty(g, t)
+    []str vs
+    for i in 1..c.kids.len {
+        vs.push(coerce(g, exprWant(g, c.kids[i], t), t, c.kids[i], "the value").v)
+    }
+    if n == "atomic_load" {
+        return Val(v: op(g, "load atomic " + lt + ", ptr " + p.v + " seq_cst, align " + atomicAlign(g, t)), ty: t)
+    }
+    if n == "atomic_store" {
+        emit(g, "store atomic " + lt + " " + vs[0] + ", ptr " + p.v + " seq_cst, align " + atomicAlign(g, t))
+        return Val(ty: T("void"))
+    }
+    if n == "atomic_cas" {
+        r := op(g, "cmpxchg ptr " + p.v + ", " + lt + " " + vs[0] + ", " + lt + " " + vs[1] + " seq_cst seq_cst")
+        return Val(v: op(g, "extractvalue { " + lt + ", i1 } " + r + ", 1"), ty: T("bool"))
+    }
+    how := "add"
+    if n == "atomic_sub" {
+        how = "sub"
+    } else if n == "atomic_swap" {
+        how = "xchg"
+    }
+    return Val(v: op(g, "atomicrmw " + how + " ptr " + p.v + ", " + lt + " " + vs[0] + " seq_cst"), ty: t)
+}
+
 // the smaller (o "<") or bigger (o ">") of two numbers, in the type both fit
 fn pick(ptr[Gen] g, str o, Val a, Val b, ast.Node at) -> Val {
     l := a
@@ -5537,7 +5617,7 @@ fn callFn(ptr[Gen] g, int fi, ast.Node c, int first, str shown, str selfAddr, st
     mark := g.pending.len
     for k in 0..sig.params.len {
         a := c.kids[first + k]
-        v := coerce(g, exprWant(g, a, sig.params[k]), sig.params[k], a, "argument '" + sig.pnames[k] + "'")
+        v := coerce(g, argWant(g, a, sig.params[k]), sig.params[k], a, "argument '" + sig.pnames[k] + "'")
         // the argument lives inside the receiver (c.merge(c)): the method gets its own copy
         if owning(g, sig.params[k]) && !v.fresh && selfRoot.len > 0 && rootVar(a) == selfRoot {
             v = Val(v: copyValue(g, v.v, v.ty), ty: v.ty, fresh: true)

@@ -41,6 +41,33 @@ fn quote(str a) -> str {
     return host.quote(a)
 }
 
+// a file of the program's own (next to the .fch file), not a library's name
+fn isOwnCode(str l) -> bool {
+    return l.ends_with(".c") || l.ends_with(".o") || l.ends_with(".a") || l.ends_with(".lib") || isCpp(l)
+}
+
+fn isCpp(str l) -> bool {
+    return l.ends_with(".cpp") || l.ends_with(".cc") || l.ends_with(".cxx")
+}
+
+// the C++ compiler that goes with a C compiler: clang -> clang++, x86_64-w64-mingw32-gcc -> ...-g++, cc -> c++
+fn cxxFor(str cc) -> str {
+    if getenv("FINCH_CXX").len > 0 {
+        return getenv("FINCH_CXX")
+    }
+    words := cc.split(" ")
+    first := words[0]
+    if first.ends_with("clang") {
+        first = first + "++"
+    } else if first.ends_with("gcc") {
+        first = first.sub(0, first.len - 3) + "g++"
+    } else if first.ends_with("cc") {
+        first = first.sub(0, first.len - 2) + "c++"
+    }
+    words[0] = first
+    return words.join(" ")
+}
+
 // The files a C file was built from, as the compiler's -MMD wrote them: "x.o: x.c x.h \\n y.h"
 fn depFiles(str dep) -> []str {
     colon := dep.find(": ")
@@ -333,9 +360,21 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
         host.remove(log)
         return 1
     }
-    cmd := cc + " " + quote(obj) + " " + quote(rtobj) + " -o " + quote(b.out)
+    // with C++ files the C++ compiler links, so its library comes along
+    linkWith := cc
+    for l in b.links {
+        if isCpp(l) {
+            linkWith = cxxFor(cc)
+        }
+    }
+    cmd := linkWith + " " + quote(obj) + " " + quote(rtobj) + " -o " + quote(b.out)
     if !tg.msvc {
         cmd = cmd + " -lm"
+    }
+    if tg.android {
+        cmd = cmd + " -llog"                    // bionic has threads built in
+    } else if !tg.windows && !tg.darwin {
+        cmd = cmd + " -lpthread"                // std/thread (in glibc since 2.34, needed before)
     }
     if b.ldflags.len > 0 {
         cmd = cmd + b.ldflags                              // finch.toml: libdirs and ldflags
@@ -351,19 +390,23 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
         }
     }
     for l in b.links {
-        if l.ends_with(".c") {
-            // the program's own C file, built along with it (and kept in the cache until it changes)
+        if l.ends_with(".c") || isCpp(l) {
+            // the program's own C or C++ file, built along with it (and kept in the cache until it changes)
             pic := " -fPIC"
             if tg.windows {
                 pic = ""
             }
-            o := cObject(l, cc, " -O2" + pic + b.cflags, tg, log) or {
+            compiler := cc
+            if isCpp(l) {
+                compiler = cxxFor(cc)
+            }
+            o := cObject(l, compiler, " -O2" + pic + b.cflags, tg, log) or {
                 print(err)
                 host.remove(log)
                 return 1
             }
             cmd = cmd + " " + quote(o)
-        } else if l.ends_with(".o") || l.ends_with(".a") {
+        } else if l.ends_with(".o") || l.ends_with(".a") || l.ends_with(".lib") {
             cmd = cmd + " " + quote(l)
         } else {
             cmd = cmd + " " + libFlags(l, tg)

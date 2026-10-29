@@ -7,6 +7,7 @@
 import json
 import host
 import docs
+import fmt
 import "stdio.h"
 import "stdlib.h"
 
@@ -785,6 +786,7 @@ fn Server.answer(json.Json msg) {
             caps.set("hoverProvider", json.new_bool(true))
             caps.set("definitionProvider", json.new_bool(true))
             caps.set("documentSymbolProvider", json.new_bool(true))
+            caps.set("documentFormattingProvider", json.new_bool(true))
             comp := json.new_object()
             dot := json.new_list()
             dot.push(json.new_text("."))
@@ -838,6 +840,32 @@ fn Server.answer(json.Json msg) {
             empty.set("uri", json.new_text(pathToUri(path)))
             empty.set("diagnostics", json.new_list())
             notify("textDocument/publishDiagnostics", empty)
+        }
+        "textDocument/formatting" -> {
+            // finch fmt on the open text: one edit that puts the whole text in its place
+            path := pathOf(params)
+            edits := json.new_list()
+            if self.docs.has(path) {
+                old := self.docs[path]
+                neat := fmt.format(old)
+                if neat != old {
+                    lines := old.split("\n")
+                    whole := json.new_object()
+                    start := json.new_object()
+                    start.set("line", num(0))
+                    start.set("character", num(0))
+                    end := json.new_object()
+                    end.set("line", num(lines.len))
+                    end.set("character", num(0))
+                    whole.set("start", start)
+                    whole.set("end", end)
+                    edit := json.new_object()
+                    edit.set("range", whole)
+                    edit.set("newText", json.new_text(neat))
+                    edits.push(edit)
+                }
+            }
+            reply(id, edits)
         }
         "textDocument/hover", "textDocument/definition", "textDocument/completion", "textDocument/documentSymbol", "textDocument/signatureHelp" -> {
             path := pathOf(params)

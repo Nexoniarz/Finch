@@ -11,6 +11,7 @@ struct Target {
     bool darwin         // macOS
     bool arm64          // AAPCS64
     bool cross          // another system than the one the compiler runs on
+    bool android        // Android (bionic): a .so that an app loads
     str exe             // ".exe" or ""
     str cc              // the C compiler that links (the IR is always compiled by clang)
     str runner          // how to run a program for it here: "", "wine ", "qemu-aarch64 "
@@ -45,6 +46,8 @@ fn select(str name) -> Target {
         t = "x86_64-unknown-linux-gnu"
     } else if name == "arm64" || name == "aarch64" || name == "linux-arm64" {
         t = "aarch64-unknown-linux-gnu"
+    } else if name == "android" {
+        t = "aarch64-linux-android24"
     } else if name == "macos" {
         if hostName.starts_with("aarch64") || hostName.starts_with("arm64") {
             t = "arm64-apple-macosx14.0.0"
@@ -60,6 +63,7 @@ fn select(str name) -> Target {
     tg.msvc = t.contains("msvc")
     tg.darwin = t.contains("apple") || t.contains("darwin") || t.contains("macos")
     tg.arm64 = t.starts_with("aarch64") || t.starts_with("arm64")
+    tg.android = t.contains("android")
     hostArm := hostName.starts_with("aarch64") || hostName.starts_with("arm64")
     hostDarwin := hostName.contains("apple") || hostName.contains("darwin")
     hostWin := hostName.contains("windows") || hostName.contains("mingw") || hostName.contains("msvc")
@@ -72,6 +76,8 @@ fn select(str name) -> Target {
     fc := getenv("FINCH_CC")
     if fc.len > 0 {
         tg.cc = fc
+    } else if tg.android {
+        tg.cc = androidClang(t)
     } else if tg.cross && tg.windows {
         tg.cc = "x86_64-w64-mingw32-gcc"
     } else if tg.cross && tg.arm64 && !tg.darwin {
@@ -85,10 +91,28 @@ fn select(str name) -> Target {
     }
     if tg.cross && tg.windows {
         tg.runner = "wine "
-    } else if tg.cross && tg.arm64 && !tg.darwin {
+    } else if tg.cross && tg.arm64 && !tg.darwin && !tg.android {
         tg.runner = "qemu-aarch64 "
     }
     return tg
+}
+
+// The NDK's clang for this Android triple (ANDROID_NDK_HOME or ANDROID_NDK_ROOT says where the NDK is)
+fn androidClang(str triple) -> str {
+    ndk := getenv("ANDROID_NDK_HOME")
+    if ndk.len == 0 {
+        ndk = getenv("ANDROID_NDK_ROOT")
+    }
+    if ndk.len == 0 {
+        return triple + "-clang"
+    }
+    for h in ["linux-x86_64", "darwin-x86_64", "windows-x86_64"] {
+        cc := ndk + "/toolchains/llvm/prebuilt/" + h + "/bin/" + triple + "-clang"
+        if file_exists(cc) || file_exists(cc + ".cmd") {
+            return cc
+        }
+    }
+    return triple + "-clang"
 }
 
 // C's plain `char`: signed on x86 and Apple, not on ARM64 Linux

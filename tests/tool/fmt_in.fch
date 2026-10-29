@@ -1,0 +1,24 @@
+struct P {
+int x   
+	int y
+}
+
+
+
+fn main() {
+  p := P(x: 1,
+         y: 2)
+      msg := """
+          a {
+            b
+          """
+  if p.x > 0 {
+print("{ \(p.x) }") // } not counted
+  } else {
+ print(msg)
+    }
+  s := "a" +
+       "b"
+   print(s)
+}
+

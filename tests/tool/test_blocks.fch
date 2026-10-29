@@ -1,0 +1,30 @@
+// finch test: each test "..." block runs on its own; a failed assert or a runtime error fails only that one
+fn add(int a, int b) -> int {
+    return a + b
+}
+
+fn second([]int xs) -> int {
+    return xs[1]
+}
+
+test "add works" {
+    assert(add(2, 3) == 5)
+    assert(add(-1, 1) == 0, "zero")
+}
+
+test "a failing assert" {
+    x := add(1, 2)
+    assert(x == 4, "x is \(x), not 4")
+}
+
+test "a runtime error fails only this test" {
+    print(second([1]))
+}
+
+test "still runs after the others" {
+    assert("\(1.5, 2) and \(add(1, 1))" == "1.50 and 2")
+}
+
+fn main() {
+    print("main is not run by finch test")
+}

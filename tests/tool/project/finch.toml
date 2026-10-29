@@ -1,0 +1,14 @@
+# a project: finch run / build / test here need no file and no flags
+name = "mygame"
+entry = "src/main.fch"
+paths = ["src"]
+include = ["native"]
+links = [
+    "native/glue.cpp",     # C++, built with the C++ compiler
+]
+cflags = ["-DGLUE_BASE=40"]
+
+[target.linux]
+links = ["m"]
+[target.windows]
+links = ["ws2_32"]

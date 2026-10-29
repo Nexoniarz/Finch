@@ -20,9 +20,13 @@
 #include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
 #include <direct.h>
 #include <io.h>
 #else
+#include <pthread.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -879,6 +883,114 @@ const char *finch_fs_data_home(void) {
     else buf[0] = 0;
 #endif
     return buf;
+}
+
+// ---------- threads (std/thread.fch, through std/finch_thread.h) ----------
+
+typedef struct {
+    void (*fn)(void *);
+    void *arg;
+} ThreadStart;
+
+#ifdef _WIN32
+static DWORD WINAPI thread_main(LPVOID p) {
+    ThreadStart st = *(ThreadStart *)p;
+    free(p);
+    st.fn(st.arg);
+    return 0;
+}
+#else
+static void *thread_main(void *p) {
+    ThreadStart st = *(ThreadStart *)p;
+    free(p);
+    st.fn(st.arg);
+    return NULL;
+}
+#endif
+
+// run fn(arg) on a new thread; NULL if it couldn't start
+void *finch_thread_spawn(void (*fn)(void *), void *arg) {
+    ThreadStart *st = finch_alloc((int64_t)sizeof(ThreadStart));
+    st->fn = fn;
+    st->arg = arg;
+#ifdef _WIN32
+    HANDLE h = CreateThread(NULL, 0, thread_main, st, 0, NULL);
+    if (!h) {
+        free(st);
+        return NULL;
+    }
+    return h;
+#else
+    pthread_t *t = finch_alloc((int64_t)sizeof(pthread_t));
+    if (pthread_create(t, NULL, thread_main, st) != 0) {
+        free(st);
+        free(t);
+        return NULL;
+    }
+    return t;
+#endif
+}
+
+// wait for the thread to end; 1 if that worked
+int finch_thread_join(void *t) {
+    if (!t) return 0;
+#ifdef _WIN32
+    int ok = WaitForSingleObject((HANDLE)t, INFINITE) == WAIT_OBJECT_0;
+    CloseHandle((HANDLE)t);
+    return ok;
+#else
+    int ok = pthread_join(*(pthread_t *)t, NULL) == 0;
+    free(t);
+    return ok;
+#endif
+}
+
+void *finch_mutex_new(void) {
+#ifdef _WIN32
+    CRITICAL_SECTION *m = finch_alloc((int64_t)sizeof(CRITICAL_SECTION));
+    InitializeCriticalSection(m);
+#else
+    pthread_mutex_t *m = finch_alloc((int64_t)sizeof(pthread_mutex_t));
+    pthread_mutex_init(m, NULL);
+#endif
+    return m;
+}
+
+void finch_mutex_lock(void *m) {
+#ifdef _WIN32
+    EnterCriticalSection((CRITICAL_SECTION *)m);
+#else
+    pthread_mutex_lock((pthread_mutex_t *)m);
+#endif
+}
+
+void finch_mutex_unlock(void *m) {
+#ifdef _WIN32
+    LeaveCriticalSection((CRITICAL_SECTION *)m);
+#else
+    pthread_mutex_unlock((pthread_mutex_t *)m);
+#endif
+}
+
+void finch_mutex_free(void *m) {
+    if (!m) return;
+#ifdef _WIN32
+    DeleteCriticalSection((CRITICAL_SECTION *)m);
+#else
+    pthread_mutex_destroy((pthread_mutex_t *)m);
+#endif
+    free(m);
+}
+
+int finch_cpu_count(void) {
+#ifdef _WIN32
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return (int)si.dwNumberOfProcessors;
+#else
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n > 0 ? (int)n : 1;
+#endif
 }
 
 // ---------- maps ----------

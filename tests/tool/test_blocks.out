@@ -1,0 +1,8 @@
+ok   add works
+FAIL a failing assert
+     test_blocks.fch:17: runtime error: assert failed: x is 3, not 4
+FAIL a runtime error fails only this test
+     test_blocks.fch:7: runtime error: index 1 is out of range (the length is 1)
+ok   still runs after the others
+
+2 passed, 2 failed

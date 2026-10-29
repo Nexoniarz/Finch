@@ -102,3 +102,18 @@ fn move(str from, str to) {
     delete_file(to)
     rename(from, to)
 }
+
+// the files under dir (and its folders) whose names end with ext, like ".fch"
+fn listFiles(str dir, str ext) -> []str {
+    tmp := tempDir() + "/finch_files_" + str(pid()) + ".txt"
+    run("dir /s /b " + quote(dir.replace("/", "\\") + "\\*" + ext) + " > " + quote(tmp) + " 2> " + nullDevice())
+    text := read_file(tmp) or ""
+    remove(tmp)
+    []str out
+    for line in text.replace("\r", "").split("\n") {
+        if line.ends_with(ext) {
+            out.push(line)
+        }
+    }
+    return out
+}

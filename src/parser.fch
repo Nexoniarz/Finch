@@ -257,7 +257,7 @@ fn parseProgram(ptr[Parser] p) -> ast.Program {
         } else if at(p, "link") {
             lt := next(p)
             lib := expect(p, "string", "a library name in quotes, like link \"glfw\"").text
-            ownCode := lib.ends_with(".c") || lib.ends_with(".o") || lib.ends_with(".a")      // your own C code, next to the .fch file
+            ownCode := lib.ends_with(".c") || lib.ends_with(".o") || lib.ends_with(".a") || lib.ends_with(".cpp") || lib.ends_with(".cc") || lib.ends_with(".cxx") || lib.ends_with(".lib")      // your own C or C++ code, next to the .fch file
             if !ownCode && (lib.starts_with("lib") || lib.contains(".so") || lib.contains("/")) {
                 fail(p, lt, "write just the library's name: for libglfw.so that's  link \"glfw\"")
             }

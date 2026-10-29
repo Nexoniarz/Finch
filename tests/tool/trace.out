@@ -1,0 +1,4 @@
+trace.fch:6: runtime error: index 3 is out of range (the length is 2)
+  in Enemy.next (trace.fch:6)
+  in step (trace.fch:10)
+  in main (trace.fch:15)

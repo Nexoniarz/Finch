@@ -56,6 +56,24 @@ for f in fail/*.fch new/fail/*.fch; do
     fi
 done
 
+# the commands around the compiler: finch test, the chain of calls, finch fmt, a finch.toml project
+check_tool() {   # name, what it printed, the file with what it should print
+    if [ "$2" == "$(tr -d '\r' < "$3")" ]; then
+        pass=$((pass + 1))
+    else
+        failed=$((failed + 1))
+        echo "FAIL $1"
+        diff <(echo "$2") "$3" | head -20
+    fi
+}
+check_tool "finch test" "$(cd tool && "$FINCH" test test_blocks.fch 2>&1 | tr -d '\r')" tool/test_blocks.out
+check_tool "the chain of calls" "$(cd tool && "$FINCH" run trace.fch 2>&1 | tr -d '\r')" tool/trace.out
+cp tool/fmt_in.fch "$tmp/fmt.fch"
+"$FINCH" fmt "$tmp/fmt.fch"
+check_tool "finch fmt" "$(cat "$tmp/fmt.fch")" tool/fmt_out.fch
+check_tool "finch fmt (again)" "$("$FINCH" fmt --check tool/fmt_out.fch 2>&1)" /dev/null
+check_tool "finch.toml" "$(cd tool/project && "$FINCH" run 2>&1 | tr -d '\r')" tool/project/expected.out
+
 # the same programs with debug info (-g -O0): the metadata has to be valid for every kind of thing a program has
 for f in new/enums.fch new/generics.fch new/std_json.fch run/basics.fch run/methods_basic.fch run/maps.fch run/errors.fch \
          run/defer.fch run/c_structs.fch run/memory.fch; do

@@ -15,6 +15,8 @@ import linker
 import lsp
 import host
 import embedded
+import manifest
+import fmt
 import "stdlib.h"
 
 fn dirOf(str path) -> str {
@@ -160,6 +162,8 @@ fn usage() {
     print("  finch build <file.fch> [-o name]   build a program")
     print("  finch test <file.fch>              run its test \"...\" { } blocks (and those of the modules it imports)")
     print("  finch ir <file.fch>                print the LLVM IR")
+    print("  finch fmt [--check] [files/dirs]   indent .fch files by { }, 4 spaces (--check: only list those it would change)")
+    print("  (with a finch.toml, run, build and test can leave out the file: its entry is used)")
     print("  finch version                      show the version")
     print("  finch lsp                          the language server, for editors (VS Code, Kate, ...)")
     print("options:")
@@ -190,23 +194,98 @@ fn unpack() -> str {
     return dir
 }
 
+// finch fmt [--check] [files or folders]: the indentation and empty lines of .fch files (all under here by default)
+fn format([]str args) -> int {
+    check := false
+    []str targets
+    for i in 2..args.len {
+        if args[i] == "--check" {
+            check = true
+        } else {
+            targets.push(args[i])
+        }
+    }
+    if targets.len == 0 {
+        targets.push(".")
+    }
+    []str files
+    for t in targets {
+        if t.ends_with(".fch") {
+            files.push(t)
+        } else {
+            for f in host.listFiles(t, ".fch") {
+                files.push(f)
+            }
+        }
+    }
+    changed := 0
+    for f in files {
+        text := read_file(f) or {
+            print("error: can't read " + f)
+            return 1
+        }
+        neat := fmt.format(text)
+        if neat != text {
+            changed += 1
+            if check {
+                print(f)
+            } else {
+                write_file(f, neat)
+            }
+        }
+    }
+    if check && changed > 0 {
+        print(str(changed) + " file(s) are not formatted (finch fmt changes them)")
+        return 1
+    }
+    return 0
+}
+
 fn main([]str args) -> int {
     if args.len == 2 && (args[1] == "version" || args[1] == "--version") {
         print("Finch 2.4.0 (the compiler is written in Finch)")
         return 0
     }
+    if args.len >= 2 && args[1] == "fmt" {
+        return format(args)
+    }
     if args.len == 2 && args[1] == "lsp" {
         return lsp.run(args[0])             // the language server, for editors
     }
-    if args.len < 3 {
+    if args.len < 2 {
         usage()
     }
     cmd := args[1]
-    file := args[2]
     if cmd != "build" && cmd != "run" && cmd != "ir" && cmd != "index" && cmd != "test" {
         usage()
     }
+    file := ""
+    ai := 2
+    if args.len > 2 && !args[2].starts_with("-") {
+        file = args[2]
+        ai = 3
+    }
+    // finch.toml: next to the file, or above it (with no file: from here, and its entry is the file)
+    from := host.cwd()
+    if file.len > 0 {
+        from = dirOf(absolute(file))
+    }
+    man := manifest.find(from) or {
+        print(err)
+        return 1
+    }
+    if file.len == 0 {
+        entry := man.value("entry", "")
+        if !man.found || entry.len == 0 {
+            print("error: which file? (finch " + cmd + " <file.fch>, or a finch.toml with  entry = \"main.fch\")")
+            return 1
+        }
+        file = man.resolve(entry)
+    }
     out := stem(file)
+    if man.found && man.value("name", "").len > 0 {
+        out = man.value("name", "")
+    }
     outGiven := false
     shared := false
     debug := false
@@ -219,7 +298,6 @@ fn main([]str args) -> int {
     []str overlayPaths
     []str overlayFiles
     []str progArgs
-    ai := 3
     while ai < args.len {
         a := args[ai]
         if cmd == "run" && progArgs.len > 0 {          // after the first argument of the program, all of them are its
@@ -298,6 +376,48 @@ fn main([]str args) -> int {
     }
     loader.overlayPaths = overlayPaths
     loader.overlayFiles = overlayFiles
+    // what finch.toml adds, for every system and for this one
+    []str targets
+    sys := "linux"
+    if tg.windows {
+        sys = "windows"
+    } else if tg.darwin {
+        sys = "macos"
+    } else if tg.android {
+        sys = "android"
+    }
+    arch := "x86_64"
+    if tg.arm64 {
+        arch = "arm64"
+    }
+    targets.push(sys)
+    targets.push(sys + "-" + arch)
+    ldflags := ""
+    cflags := ""
+    if man.found {
+        for d in man.list("paths", targets) {
+            loader.paths.push(man.resolve(d))
+        }
+        for d in man.list("include", targets) {
+            extraDirs.push(man.resolve(d))
+        }
+        for l in man.list("links", targets) {
+            if l.ends_with(".c") || l.ends_with(".o") || l.ends_with(".a") || l.ends_with(".cpp") || l.ends_with(".cc") {
+                extraLibs.push(man.resolve(l))
+            } else {
+                extraLibs.push(l)
+            }
+        }
+        for d in man.list("libdirs", targets) {
+            ldflags = ldflags + " -L" + linker.quote(man.resolve(d))
+        }
+        for f in man.list("ldflags", targets) {
+            ldflags = ldflags + " " + linker.quote(f)
+        }
+        for f in man.list("cflags", targets) {
+            cflags = cflags + " " + linker.quote(f)
+        }
+    }
     for d in getenv("FINCH_PATH").split(host.pathSeparator()) {
         if d.len > 0 {
             loader.paths.push(d)
@@ -322,7 +442,7 @@ fn main([]str args) -> int {
             }
         }
         for l in prog.links {
-            if l.ends_with(".c") || l.ends_with(".o") || l.ends_with(".a") {
+            if linker.isOwnCode(l) {
                 links.push(d + "/" + l)             // the program's own C code, next to the .fch file
             } else {
                 links.push(l)
@@ -377,7 +497,8 @@ fn main([]str args) -> int {
     for d in extraDirs {
         cflagList.push(" -I" + linker.quote(d))
     }
-    if linker.build(linker.Build(out: out, ir: ir, rt: rt, opt: opt, extra: extra, shared: shared, links: links, name: absolute(file), cflags: cflagList.join("")), tg, ci) != 0 {
+    cflagList.push(cflags)
+    if linker.build(linker.Build(out: out, ir: ir, rt: rt, opt: opt, extra: extra, shared: shared, links: links, name: absolute(file), cflags: cflagList.join(""), ldflags: ldflags), tg, ci) != 0 {
         return 1
     }
     if cmd == "run" || cmd == "test" {

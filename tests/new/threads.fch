@@ -1,0 +1,55 @@
+import thread
+
+struct Shared {
+    []int seen
+}
+
+struct Job {
+    ptr[int] counter
+    int adds
+    ptr[thread.Mutex] lock
+    ptr[Shared] common
+    int id
+}
+
+fn work(ptr arg) {
+    ptr[Job] job = arg
+    for i in 0..job.adds {
+        atomic_add(job.counter, 1)
+    }
+    job.lock.lock()
+    job.common.seen.push(job.id)
+    job.lock.unlock()
+}
+
+fn main() {
+    count := 0
+    m := thread.mutex()
+    defer m.close()
+    both := Shared()
+    []Job jobs
+    for i in 0..4 {
+        jobs.push(Job(counter: addr(count), adds: 100000, lock: addr(m), common: addr(both), id: i))
+    }
+    []thread.Thread ts
+    for i in 0..4 {
+        ts.push(thread.spawn(addr(work), addr(jobs[i])) or {
+            print("can't start")
+            exit(1)
+        })
+    }
+    for i in 0..4 {
+        ts[i].join()
+    }
+    print(atomic_load(addr(count)))
+    print(both.seen.len)
+    print(thread.cpus() > 0)
+
+    u32 flags = 5
+    print(atomic_swap(addr(flags), 9))
+    print(atomic_cas(addr(flags), 9, 1))
+    print(atomic_cas(addr(flags), 9, 2))
+    atomic_store(addr(flags), 7)
+    print(atomic_sub(addr(flags), 2))
+    print(flags)
+}

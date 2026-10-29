@@ -1,0 +1,23 @@
+struct Body {
+    float x
+    float y
+}
+
+fn push(ptr[Body] b, float dx) {
+    b.x += dx
+}
+
+fn Body.moved(float dx) -> Body {
+    return Body(x: self.x + dx, y: self.y)
+}
+
+fn main() {
+    b := Body(x: 1.0, y: 2.0)
+    push(b, 0.5)                // the same as push(addr(b), 0.5)
+    push(addr(b), 0.5)
+    print(b.x)
+    p := addr(b)
+    push(p, 1.0)                // already a ptr: as it is
+    print(b.x)
+    print(b.moved(1.0).x)
+}

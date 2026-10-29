@@ -1,0 +1,21 @@
+// "\(x)" in text
+struct P {
+    int x
+    float y
+}
+
+fn main() {
+    name := "Ada"
+    hp := 7
+    p := P(x: 3, y: 0.25)
+    print("hi \(name), hp \(hp), next \(hp + 1)")
+    print("p = (\(p.x), \(p.y, 2)) \("nested \(name)")")
+    map[str]int m
+    m["k"] = 5
+    print("\(m["k"]) \(str(1.0 / 3.0, 3))")
+    print("no code here: \\(x) and \t tab")
+    long := """
+        speed \(p.y * 4.0)
+        """
+    print(long)
+}

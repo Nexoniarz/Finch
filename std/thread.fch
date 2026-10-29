@@ -1,0 +1,65 @@
+// Threads: run a function next to the rest of the program, and a lock for what they share.
+//
+//   import thread
+//   fn work(ptr arg) {                      a thread's function takes one ptr (to whatever it needs)
+//       ptr[Job] job = arg
+//       ...
+//   }
+//   t := try thread.spawn(addr(work), addr(job))
+//   t.join()                                wait for it; `job` must live until then
+//
+//   m := thread.mutex()
+//   defer m.close()
+//   m.lock()  ...  m.unlock()               one thread at a time in between
+//   atomic_add(addr(count), 1)              (built in) numbers changed by many threads at once
+//
+// What a thread is given is shared, not copied: don't let it outlive the block it comes from, and
+// change it only under a lock (or with atomic_...).
+import "finch_thread.h"
+
+struct Thread {
+    ptr handle
+}
+
+struct Mutex {
+    ptr handle
+}
+
+// start fn(arg) on a new thread; fn is addr(f) of a  fn f(ptr arg)
+fn spawn(ptr fn_, ptr arg) -> Thread! {
+    h := finch_thread_spawn(fn_, arg)
+    if h == null {
+        return error("can't start a thread")
+    }
+    return Thread(handle: h)
+}
+
+// wait until the thread has finished
+fn Thread.join() {
+    if self.handle != null {
+        finch_thread_join(self.handle)
+        self.handle = null
+    }
+}
+
+fn mutex() -> Mutex {
+    return Mutex(handle: finch_mutex_new())
+}
+
+fn Mutex.lock() {
+    finch_mutex_lock(self.handle)
+}
+
+fn Mutex.unlock() {
+    finch_mutex_unlock(self.handle)
+}
+
+fn Mutex.close() {
+    finch_mutex_free(self.handle)
+    self.handle = null
+}
+
+// how many threads the computer runs at the same time
+fn cpus() -> int {
+    return int(finch_cpu_count())
+}

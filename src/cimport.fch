@@ -28,6 +28,18 @@ struct CConst {         // enum values and #define constants
     str text            // a float as written, so no digits are lost: 3.14159265358979323846
     bool isStr          // #define NAME "text"
     str s
+    str structName      // #define RAYWHITE (Color){ 245, 245, 245, 255 }: the struct, and its fields in order
+    []str fields        // each as a Finch literal: 245, 0.5
+    []bool fieldFloat
+}
+
+// what visitMacroVar looks for inside (Color){ ... }
+struct InitFind {
+    bool found
+    CXCursor list
+    bool ok
+    []str fields
+    []bool floats
 }
 
 struct CField {
@@ -381,7 +393,7 @@ fn macroTokens(ptr[Importer] imp, CXCursor c) -> MacroTokens {
     u32 n = 0
     clang_tokenize(imp.tu, clang_getCursorExtent(c), addr(tokens), addr(n))
     out := MacroTokens(safe: true)
-    allowed := ["(", ")", "+", "-", "*", "/", "%", "<<", ">>", "|", "&", "^", "~", "!", "<", ">", "<=", ">=", "==", "!=", "&&", "||", "?", ":", ","]
+    allowed := ["(", ")", "+", "-", "*", "/", "%", "<<", ">>", "|", "&", "^", "~", "!", "<", ">", "<=", ">=", "==", "!=", "&&", "||", "?", ":", ",", "{", "}"]
     words := ["sizeof", "unsigned", "signed", "int", "long", "short", "char", "float", "double", "const", "_Bool"]
     depth := 0
     for k in 1..int(n) {            // token 0 is the macro's name
@@ -678,6 +690,72 @@ fn evalMacros(ptr[Importer] imp, ptr index, Header h, []ptr[char] argv) {
     clang_disposeTranslationUnit(tu)
 }
 
+// a float as a Finch literal: 2.0, not 2
+fn floatText(float v) -> str {
+    t := str(v)
+    if !t.contains(".") && !t.contains("e") {
+        t = t + ".0"
+    }
+    return t
+}
+
+// (Color){ 245, 245, 245, 255 }: a struct whose fields are all numbers, in order
+fn structMacro(ptr[Importer] imp, str name, CXCursor c, CXType t) {
+    sname := recordName(imp, t)
+    if !imp.out.structs.has(sname) {
+        return
+    }
+    find := InitFind(ok: true)
+    clang_visitChildren(c, addr(visitFindInit), addr(find))
+    if !find.found {
+        return
+    }
+    clang_visitChildren(find.list, addr(visitInitField), addr(find))
+    if !find.ok || find.fields.len == 0 || find.fields.len > imp.out.structs[sname].fields.len {
+        return
+    }
+    imp.out.consts[name] = CConst(structName: sname, fields: find.fields, fieldFloat: find.floats)
+}
+
+fn visitFindInit(CXCursor c, CXCursor parent, ptr data) -> i32 {
+    ptr[InitFind] f = data
+    if clang_getCursorKind(c) == CXCursor_InitListExpr {
+        f.found = true
+        f.list = c
+        return CXChildVisit_Break
+    }
+    return CXChildVisit_Recurse
+}
+
+fn visitInitField(CXCursor c, CXCursor parent, ptr data) -> i32 {
+    ptr[InitFind] f = data
+    r := clang_Cursor_Evaluate(c)
+    if r == null {
+        f.ok = false
+        return CXChildVisit_Break
+    }
+    k := clang_EvalResult_getKind(r)
+    if k == CXEval_Int {
+        f.fields.push(str(int(clang_EvalResult_getAsLongLong(r))))
+        f.floats.push(false)
+    } else if k == CXEval_Float {
+        v := clang_EvalResult_getAsDouble(r)
+        if v == v && v - v == 0.0 {
+            f.fields.push(floatText(v))
+            f.floats.push(true)
+        } else {
+            f.ok = false
+        }
+    } else {
+        f.ok = false            // a struct in the struct, a pointer, a text: not a simple constant
+    }
+    clang_EvalResult_dispose(r)
+    if !f.ok {
+        return CXChildVisit_Break
+    }
+    return CXChildVisit_Continue
+}
+
 fn visitMacroVar(CXCursor c, CXCursor parent, ptr data) -> i32 {
     ptr[Importer] imp = data
     if clang_getCursorKind(c) != CXCursor_VarDecl {
@@ -688,8 +766,16 @@ fn visitMacroVar(CXCursor c, CXCursor parent, ptr data) -> i32 {
         return CXChildVisit_Continue
     }
     name = name.sub(10, name.len)
+    if imp.out.consts.has(name) {
+        return CXChildVisit_Continue
+    }
+    t := clang_getCanonicalType(clang_getCursorType(c))
+    if t.kind == CXType_Record {
+        structMacro(imp, name, c, t)
+        return CXChildVisit_Continue
+    }
     r := clang_Cursor_Evaluate(c)
-    if r == null || imp.out.consts.has(name) {
+    if r == null {
         return CXChildVisit_Continue
     }
     k := clang_EvalResult_getKind(r)
@@ -698,7 +784,7 @@ fn visitMacroVar(CXCursor c, CXCursor parent, ptr data) -> i32 {
     } else if k == CXEval_Float {
         v := clang_EvalResult_getAsDouble(r)
         if v == v && v - v == 0.0 {         // not nan or inf
-            imp.out.consts[name] = CConst(isFloat: true, f: v, text: str(v))
+            imp.out.consts[name] = CConst(isFloat: true, f: v, text: floatText(v))
         }
     } else if k == CXEval_StrLiteral {
         imp.out.consts[name] = CConst(isStr: true, s: clang_EvalResult_getAsStr(r))

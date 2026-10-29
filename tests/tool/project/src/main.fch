@@ -1,0 +1,6 @@
+import "glue.h"
+import game/world
+
+fn main() {
+    print("hello \(world.hello()) \(glue_answer())")
+}

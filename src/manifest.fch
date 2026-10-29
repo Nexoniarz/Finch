@@ -1,0 +1,243 @@
+// finch.toml: what a project needs to build, in one file next to its code (instead of FINCH_PATH,
+// C_INCLUDE_PATH, -I, -l and linker flags on the command line).
+//
+//   name = "game"                        the program finch build makes
+//   entry = "src/main.fch"               what finch run / build / test use when no file is given
+//   paths = ["src", "lib"]               folders with modules
+//   include = ["vendor/SDL3/include"]    folders with C headers (also for link "x.c" files)
+//   links = ["SDL3"]                     libraries
+//   libdirs = ["vendor/SDL3/lib"]        folders with libraries
+//   cflags = ["-DFAST"]                  for the program's own C files
+//   ldflags = ["-Wl,-rpath,."]           for the linker
+//
+//   [target.windows]                     added only when building for that system:
+//   links = ["ws2_32"]                   windows, linux, macos, android, or with the CPU: linux-arm64
+//
+// Folders are relative to finch.toml. Only this part of TOML is read: [sections], key = "text",
+// key = ["a", "b"] (over several lines too), numbers, true/false and # comments.
+
+struct Manifest {
+    bool found
+    str path
+    str dir
+    map[str]str values      // "section.key" (top level: "key") -> a single value
+    map[str][]str lists     // "section.key" -> a list
+}
+
+fn dirOf(str path) -> str {
+    i := path.len - 1
+    while i >= 0 && path[i] != '/' && path[i] != '\\' {
+        i -= 1
+    }
+    if i < 0 {
+        return "."
+    }
+    if i == 0 {
+        return "/"
+    }
+    return path.sub(0, i)
+}
+
+// finch.toml in `dir` or the folders above it
+fn find(str dir) -> Manifest! {
+    d := dir
+    while true {
+        p := d + "/finch.toml"
+        if d == "/" {
+            p = "/finch.toml"
+        }
+        if file_exists(p) {
+            return try parse(p, try read_file(p))
+        }
+        up := dirOf(d)
+        if up == d || d == "." || d.len == 0 {
+            break
+        }
+        d = up
+    }
+    return Manifest()
+}
+
+struct Reader {
+    str text
+    int i
+    int line
+    str path
+}
+
+fn Reader.fail(str msg) -> str {
+    return self.path + ":" + str(self.line) + ": error: " + msg
+}
+
+fn Reader.at() -> char {
+    if self.i < self.text.len {
+        return self.text[self.i]
+    }
+    return char(0)
+}
+
+// past spaces, and past line ends and comments too when `lines`
+fn Reader.skip(bool lines) {
+    while self.i < self.text.len {
+        c := self.text[self.i]
+        if c == ' ' || c == '\t' || c == '\r' {
+            self.i += 1
+        } else if c == '#' {
+            while self.i < self.text.len && self.text[self.i] != '\n' {
+                self.i += 1
+            }
+        } else if c == '\n' && lines {
+            self.i += 1
+            self.line += 1
+        } else {
+            return
+        }
+    }
+}
+
+fn isKeyChar(char c) -> bool {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.'
+}
+
+fn Reader.word() -> str {
+    start := self.i
+    while self.i < self.text.len && isKeyChar(self.text[self.i]) {
+        self.i += 1
+    }
+    return self.text.sub(start, self.i)
+}
+
+// "text" (with \" \\ \n \t) or 'text' (as it is)
+fn Reader.quoted() -> str! {
+    q := self.at()
+    self.i += 1
+    []str out
+    while self.at() != q {
+        c := self.at()
+        if c == char(0) || c == '\n' {
+            return error(self.fail("this text is never closed"))
+        }
+        if c == '\\' && q == '"' {
+            self.i += 1
+            e := self.at()
+            if e == 'n' {
+                c = '\n'
+            } else if e == 't' {
+                c = '\t'
+            } else {
+                c = e
+            }
+        }
+        out.push(str(c))
+        self.i += 1
+    }
+    self.i += 1
+    return out.join("")
+}
+
+// a single value: text, a number, true or false (all kept as text)
+fn Reader.scalar() -> str! {
+    c := self.at()
+    if c == '"' || c == '\'' {
+        return try self.quoted()
+    }
+    w := self.word()
+    if w.len == 0 {
+        return error(self.fail("expected a value: \"text\", a number, true, false or a [list]"))
+    }
+    return w
+}
+
+fn parse(str path, str text) -> Manifest! {
+    m := Manifest(found: true, path: path, dir: dirOf(path))
+    r := Reader(text: text, i: 0, line: 1, path: path)
+    section := ""
+    while true {
+        r.skip(true)
+        if r.i >= r.text.len {
+            break
+        }
+        if r.at() == '[' {
+            r.i += 1
+            r.skip(false)
+            section = r.word()
+            r.skip(false)
+            if r.at() != ']' || section.len == 0 {
+                return error(r.fail("a section looks like [name] or [target.windows]"))
+            }
+            r.i += 1
+            continue
+        }
+        key := r.word()
+        if key.len == 0 {
+            return error(r.fail("expected a key, like  name = \"game\""))
+        }
+        r.skip(false)
+        if r.at() != '=' {
+            return error(r.fail("expected '=' after '" + key + "'"))
+        }
+        r.i += 1
+        r.skip(false)
+        full := key
+        if section.len > 0 {
+            full = section + "." + key
+        }
+        if r.at() == '[' {
+            r.i += 1
+            []str items
+            while true {
+                r.skip(true)
+                if r.at() == ']' {
+                    r.i += 1
+                    break
+                }
+                items.push(try r.scalar())
+                r.skip(true)
+                if r.at() == ',' {
+                    r.i += 1
+                } else if r.at() != ']' {
+                    return error(r.fail("expected ',' or ']' in the list of '" + key + "'"))
+                }
+            }
+            m.lists[full] = items
+        } else {
+            m.values[full] = try r.scalar()
+        }
+        r.skip(false)
+        if r.i < r.text.len && r.at() != '\n' {
+            return error(r.fail("one key per line"))
+        }
+    }
+    return m
+}
+
+fn Manifest.value(str key, str fallback) -> str {
+    return self.values.get(key, fallback)
+}
+
+// the list `key` from the top level and from the sections for this system, in that order
+fn Manifest.list(str key, []str targets) -> []str {
+    []str out
+    if self.lists.has(key) {
+        for x in self.lists[key] {
+            out.push(x)
+        }
+    }
+    for t in targets {
+        k := "target." + t + "." + key
+        if self.lists.has(k) {
+            for x in self.lists[k] {
+                out.push(x)
+            }
+        }
+    }
+    return out
+}
+
+// a folder or file of the manifest, from where finch.toml is
+fn Manifest.resolve(str p) -> str {
+    if p.starts_with("/") || (p.len > 2 && p[1] == ':') {
+        return p
+    }
+    return self.dir + "/" + p
+}

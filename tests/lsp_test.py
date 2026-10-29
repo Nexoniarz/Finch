@@ -124,6 +124,12 @@ syms = c.request("textDocument/documentSymbol", {"textDocument": td})
 names = sorted(s["name"] for s in syms)
 check("document symbols", names == ["Point", "add", "main"], names)
 
+messy = "fn main() {\n  x := 1   \n\n\n\tprint(x)\n}"
+c.notify("textDocument/didChange", {"textDocument": {"uri": uri, "version": 5}, "contentChanges": [{"text": messy}]})
+fm = c.request("textDocument/formatting", {"textDocument": td, "options": {"tabSize": 4, "insertSpaces": True}})
+check("formatting", fm and fm[0]["newText"] == "fn main() {\n    x := 1\n\n    print(x)\n}\n", fm)
+c.notify("textDocument/didChange", {"textDocument": {"uri": uri, "version": 5}, "contentChanges": [{"text": src}]})
+
 bad = src.replace("total := add(p.x, p.y)", 'total := add(p.x, "y")')
 c.notify("textDocument/didChange", {"textDocument": {"uri": uri, "version": 6}, "contentChanges": [{"text": bad}]})
 diags = c.diagnostics(uri)

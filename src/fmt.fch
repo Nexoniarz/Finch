@@ -1,0 +1,224 @@
+// finch fmt: the indentation by { }, 4 spaces a level; no spaces at line ends; at most one empty line
+// in a row; one line end at the end of the file. Nothing else is moved: lines that go on inside ( or [,
+// """ text and /* */ comments keep their shape, shifted along with the line they belong to.
+
+struct Scan {
+    int braces          // { } open at the start of the line
+    int parens          // ( [ open
+    bool inLong         // inside """ text
+    bool inBlock        // inside /* */
+    char last           // the last thing of code on the line ('"' for text): + or , means the next line goes on
+}
+
+// how deep a line's leading spaces go (a tab is 4)
+fn indentOf(str line) -> int {
+    n := 0
+    for c in line {
+        if c == ' ' {
+            n += 1
+        } else if c == '\t' {
+            n += 4
+        } else {
+            break
+        }
+    }
+    return n
+}
+
+// how many spaces and tabs a line starts with
+fn leading(str line) -> int {
+    i := 0
+    while i < line.len && (line[i] == ' ' || line[i] == '\t') {
+        i += 1
+    }
+    return i
+}
+
+fn trimEnd(str line) -> str {
+    n := line.len
+    while n > 0 && (line[n - 1] == ' ' || line[n - 1] == '\t' || line[n - 1] == '\r') {
+        n -= 1
+    }
+    return line.sub(0, n)
+}
+
+fn spaces(int n) -> str {
+    []str out
+    for i in 0..n {
+        out.push(" ")
+    }
+    return out.join("")
+}
+
+fn startsWith(str line, int i, str what) -> bool {
+    return i + what.len <= line.len && line.sub(i, i + what.len) == what
+}
+
+// past one line: what is open at its end
+fn scanLine(str line, ptr[Scan] s) {
+    s.last = ' '
+    i := 0
+    while i < line.len {
+        c := line[i]
+        if s.inLong {
+            if startsWith(line, i, "\"\"\"") {
+                s.inLong = false
+                i += 3
+            } else {
+                i += 1
+            }
+            continue
+        }
+        if s.inBlock {
+            if startsWith(line, i, "*/") {
+                s.inBlock = false
+                i += 2
+            } else {
+                i += 1
+            }
+            continue
+        }
+        if startsWith(line, i, "//") {
+            return
+        }
+        if startsWith(line, i, "/*") {
+            s.inBlock = true
+            i += 2
+            continue
+        }
+        if startsWith(line, i, "\"\"\"") {
+            s.inLong = true
+            i += 3
+            continue
+        }
+        if c == '"' {
+            i = pastString(line, i + 1)
+            s.last = '"'
+            continue
+        }
+        if c == '\'' {
+            i += 1
+            while i < line.len && line[i] != '\'' {
+                if line[i] == '\\' {
+                    i += 1
+                }
+                i += 1
+            }
+            i += 1
+            s.last = '"'
+            continue
+        }
+        if c != ' ' && c != '\t' && c != '\r' {
+            s.last = c
+        }
+        if c == '{' {
+            s.braces += 1
+        } else if c == '}' {
+            s.braces -= 1
+        } else if c == '(' || c == '[' {
+            s.parens += 1
+        } else if c == ')' || c == ']' {
+            s.parens -= 1
+        }
+        i += 1
+    }
+}
+
+// past "text" (i is just after the opening quote), with \(code) that may have its own "text" in it
+fn pastString(str line, int start) -> int {
+    i := start
+    while i < line.len {
+        c := line[i]
+        if c == '"' {
+            return i + 1
+        }
+        if c == '\\' && i + 1 < line.len && line[i + 1] == '(' {
+            depth := 1
+            i += 2
+            while i < line.len && depth > 0 {
+                if line[i] == '"' {
+                    i = pastString(line, i + 1)
+                    continue
+                }
+                if line[i] == '(' {
+                    depth += 1
+                } else if line[i] == ')' {
+                    depth -= 1
+                }
+                i += 1
+            }
+            continue
+        }
+        if c == '\\' {
+            i += 1
+        }
+        i += 1
+    }
+    return i
+}
+
+fn format(str text) -> str {
+    lines := text.replace("\r\n", "\n").split("\n")
+    []str out
+    s := Scan()
+    stmtWas := 0            // where the line that started the statement was, and where it is now
+    stmtNow := 0
+    blank := 0
+    for raw in lines {
+        goesOn := s.last == '+' || s.last == '-' || s.last == '*' || s.last == '/' || s.last == ',' || s.last == '=' || s.last == '|' || s.last == '&' || s.last == '%'
+        own := !s.inLong && !s.inBlock && s.parens <= 0 && !goesOn     // the line starts something of its own
+        if s.inLong {
+            // """ text as it is, moved with its statement (its closing line says how much is cut off)
+            out.push(shifted(raw, stmtNow - stmtWas))
+            scanLine(raw, addr(s))
+            continue
+        }
+        line := trimEnd(raw)
+        if line.len == 0 {
+            if s.inBlock {
+                out.push("")
+            } else {
+                blank += 1
+            }
+            continue
+        }
+        if blank > 0 && out.len > 0 {
+            out.push("")
+        }
+        blank = 0
+        body := line.sub(leading(line), line.len)
+        if own {
+            depth := s.braces
+            if body.starts_with("}") {
+                depth -= 1
+            }
+            if depth < 0 {
+                depth = 0
+            }
+            stmtWas = indentOf(line)
+            stmtNow = depth * 4
+            out.push(spaces(stmtNow) + body)
+        } else {
+            out.push(shifted(line, stmtNow - stmtWas))
+        }
+        scanLine(line, addr(s))
+    }
+    while out.len > 0 && out[out.len - 1].len == 0 {
+        out.pop()
+    }
+    return out.join("\n") + "\n"
+}
+
+// the line moved right (or left) by `by`, keeping what it has after its indentation
+fn shifted(str line, int by) -> str {
+    n := indentOf(line)
+    body := line.sub(leading(line), line.len)
+    if body.len == 0 {
+        return line
+    }
+    to := n + by
+    if to < 0 {
+        to = 0
+    }
+    return spaces(to) + body
+}

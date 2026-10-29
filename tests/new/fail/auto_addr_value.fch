@@ -1,0 +1,13 @@
+// expect: argument 'b' must be ptr[Body], but this is Body
+struct Body {
+    float x
+}
+fn push(ptr[Body] b) {
+    b.x += 1.0
+}
+fn make() -> Body {
+    return Body(x: 1.0)
+}
+fn main() {
+    push(make())
+}

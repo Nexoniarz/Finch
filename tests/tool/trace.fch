@@ -1,0 +1,16 @@
+struct Enemy {
+    []int path
+}
+
+fn Enemy.next(int i) -> int {
+    return self.path[i]
+}
+
+fn step(Enemy e) -> int {
+    return e.next(3)
+}
+
+fn main() {
+    e := Enemy(path: [1, 2])
+    print(step(e))
+}
