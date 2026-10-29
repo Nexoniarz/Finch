@@ -214,7 +214,19 @@ x += 1               // także -= *= /= %=
 - Nazwy: litery ASCII, cyfry i `_`, bez cyfry na początku. Polskie litery tylko w tekstach w cudzysłowie.
   Nazwy typów (`int`, `u8`, …), funkcji wbudowanych i słowa kluczowe są zarezerwowane.
 
-**Słowa kluczowe:** `fn return if else while for in break continue true false null import link struct defer`
+**Słowa kluczowe:** `fn return if else while for in break continue true false null import link struct enum match defer or try const export`
+
+### Stałe
+
+```c
+const SZEROKOSC = 640
+const WYSOKOSC = SZEROKOSC / 2    // z innych stałych
+const f32 GRAWITACJA = 9.8        // z typem
+const TYTUL = "Moja gra"
+```
+
+Stałą piszesz na najwyższym poziomie pliku, obok funkcji, i nie da się jej zmienić. Składa się z liczb, tekstu,
+`true`/`false`, znaków, innych stałych i operatorów; stała z modułu to `ksztalty.BOKI`.
 
 ---
 
@@ -315,6 +327,13 @@ Uwagi:
 ---
 
 ## 8. Sterowanie przebiegiem
+
+`if` może też dawać wartość; każda gałąź to jedna wartość, a `else` jest wymagane:
+
+```c
+opis := if wynik > 100 { "dużo" } else if wynik > 10 { "średnio" } else { "mało" }
+f32 predkosc = if biegnie { 2.5 } else { 1.0 }
+```
 
 ```c
 if x > 10 {
@@ -487,7 +506,21 @@ s[0] = 'D'                // zmiana znaku
 | `s.ptr` | `ptr[char]` dla C (ważny, dopóki żyje `s`) |
 
 `str` pamięta swoją długość, więc `.len` działa natychmiast. Zawsze kończy się zerem, więc
-przekazanie go do C jako `char*` działa.
+przekazanie go do C jako `char*` działa. W drugą stronę: funkcja C, która zwraca `char *`, daje ci `str`
+(kopia powstaje, gdy go zachowujesz), a `str(p)` czyta `ptr[char]` zdobyty inaczej.
+
+Tekst w kilku liniach piszesz między `"""`. Znak nowej linii zaraz po otwarciu znika, a z każdej linii znika
+wcięcie zamykających cudzysłowów, więc tekst może być wcięty razem z kodem:
+
+```c
+shader := """
+    #version 330
+    void main() { gl_Position = vec4(0.0); }
+    """
+```
+
+Liczby jako tekst: `str(x)` to najkrótszy tekst, który czyta się z powrotem jako ta sama liczba (`0.1`,
+`0.30000000000000004`, `1e+20`); `str(x, 2)` ma zawsze dwie cyfry po kropce (`3.14`).
 
 ---
 
@@ -644,6 +677,8 @@ fn main() {
 
 - Wszystkiego z modułu używasz z jego nazwą z przodu: `ksztalty.pole`, `ksztalty.Pudlo`.
 - Moduł nie ma `main`. Moduły mogą importować inne moduły.
+- Moduły w folderach: `import ui/przycisk` wczytuje `ui/przycisk.fch`, a używasz go jako `przycisk.rysuj()`.
+- Inna nazwa: `import ui/przycisk as p` → `p.rysuj()`. Dwa importy nie mogą mieć tej samej nazwy.
 
 ---
 
@@ -744,8 +779,10 @@ Oba działają bezpośrednio; `examples/opengl.fch` i `examples/vulkan.fch` to k
 
 ### Co jeszcze nie działa
 
-- **Unie** C przez wartość i struktury z **polami bitowymi** przez wartość (wskaźniki do nich działają).
-- **Makra-funkcje** i makra, które nie są pojedynczą liczbą.
+- **Unie** C i struktury z **polami bitowymi** przekazywane do funkcji C albo zwracane z niej **przez wartość**
+  (wskaźniki do nich działają, unie jako zmienne też: `SDL_Event e`, `e.type`, `e.key.key`, `SDL_PollEvent(addr(e))`).
+- **Makra-funkcje** (`#define MAX(a, b) ...`) i makra, które tworzą strukturę (`RAYWHITE` z raylib).
+  Makra będące liczbą, tekstem albo wyrażeniem z nich (`(1u << 3)`, `((Uint64)1)`, `(A | B)`) działają.
 - `long double`, liczby 128-bitowe.
 
 ---
@@ -1039,6 +1076,10 @@ bibliotece — więc Twój własny plik o tej nazwie ma pierwszeństwo.
 | `time` | `now()`, `millis()` (zegar do mierzenia), `sleep(ms)`, `date(t)`, `local(t)`, `format(t, "%Y-%m-%d")`, `days_in_month` |
 | `proc` | `run(cmd)` (kod wyjścia), `output(cmd)` (co wypisało; błąd, jeśli się nie udało), `env(nazwa, domyślna)`, `pid()`, `cwd()` |
 | `json` | `parse(tekst)`, `stringify(v)`, `pretty(v)` oraz typ wartości `Json` z `get`, `at`, `set`, `push`, `has`, `str_or`, `int_or` ... |
+| `fs` | `read_bytes(p)` / `write_bytes(p, dane)` (`[]u8`, dowolne bajty), `exists`, `is_dir`, `mkdir` (z folderami wyżej), `list` (posortowane nazwy), `remove_dir`, `data_dir(app)` (folder na zapisy użytkownika) |
+
+`min(a, b, ...)`, `max(a, b, ...)`, `abs(x)` i `clamp(x, od, do)` działają na dowolnych liczbach bez importu (twoja
+własna funkcja o tej samej nazwie wygrywa).
 
 ```
 import json

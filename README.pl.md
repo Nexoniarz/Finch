@@ -90,7 +90,7 @@ Wybierz przewodnik dla siebie:
 
 | | |
 |---|---|
-| Zmienne | `x := 5` (typ zgadnięty) albo `int x = 5` |
+| Zmienne | `x := 5` (typ zgadnięty) albo `int x = 5`; `const W = 640` |
 | Typy | `int` `float` `bool` `char` `str`, z rozmiarem `i8`…`i64` `u8`…`u64` `f32` `f64`, tablice `[]T`, mapy `map[K]V`, wskaźniki `ptr[T]` |
 | Funkcje | `fn add(int a, int b) -> int { return a + b }` |
 | Struktury | `struct Punkt { … }` z jednym polem na linijkę (`int x`, `int y = 0`); tworzenie przez `Punkt(1, 2)` albo `Punkt(x: 1)` |
@@ -99,11 +99,11 @@ Wybierz przewodnik dla siebie:
 | Mapy | `wiek := ["ania": 31]`, `wiek["bob"] = 25`, `wiek.has("cy")`, `ile[s] += 1`, `for k, v in wiek { }` |
 | Błędy | `fn parsuj(str s) -> int! { … return error("zły") }` → `parsuj(s) or 0`, `parsuj(s) or { … }`, `try parsuj(s)` |
 | Tekst | `"a" + "b"`, `str(42)`, `int("42")`, `s.split(",")`, `s.upper()`, `s[0]` |
-| Sterowanie | `if` / `else if` / `else`, `while`, `for i in 0..10`, `break`, `continue`, `defer` |
+| Sterowanie | `if` / `else if` / `else` (też jako wartość), `while`, `for i in 0..10`, `break`, `continue`, `defer` |
 | Pamięć | automatyczna dla tablic, tekstów i struktur; `new(...)` / `free(...)` dla własnych struktur na stercie |
 | Enumy, match | `enum Kolor { Czerwony, Zielony }`, `match k { Czerwony -> ... else -> ... }` (także jako wartość) |
 | Generyki | `fn max[T](T a, T b) -> T`, `struct Stos[T]`, `Stos[int]()` |
-| Moduły | `import ksztalty` → `ksztalty.pole(p)`; biblioteka standardowa: `json`, `path`, `time`, `proc` |
+| Moduły | `import ksztalty` → `ksztalty.pole(p)`; biblioteka standardowa: `json`, `path`, `time`, `proc`, `fs` |
 | Współpraca z C | `import "stdio.h"`, `link "glfw"`, `link "moje.c"`, `addr(fn)` dla callbacków |
 | Wejście/wyjście | `print(...)`, `input("? ")`, `read_file`, `write_file`, `shell` |
 | Narzędzia | `finch run/build/ir/lsp`, `--target windows/arm64/macos`, `-g` dla gdb/lldb, `-O0` |
@@ -146,14 +146,14 @@ Wybierz przewodnik dla siebie:
 - [x] macOS i ARM64 (Linux i Apple Silicon) z ich konwencjami wywołań C; obsługa Kate
 - [x] Metody w strukturach, mapy, błędy jako wartości (`!`, `or`, `try`)
 - [x] Typy generyczne (`fn max[T]`, `struct Stos[T]`), `match`, enumy
-- [x] Biblioteka standardowa w Finchu: `json`, `path`, `time`, `proc`
+- [x] Biblioteka standardowa w Finchu: `json`, `path`, `time`, `proc`, `fs`
 
 ## Struktura
 
 ```
 src/        kompilator, w Finchu: lekser, parser, AST, generowanie kodu (do LLVM IR jako tekst), import C (libclang)
             i konwencje wywołań C, serwer języka, sterownik
-std/        biblioteka standardowa, w Finchu: json, path, time, proc
+std/        biblioteka standardowa, w Finchu: json, path, time, proc, fs
 runtime/    mały runtime w C dołączany do każdego programu
 bootstrap/  build.sh i ziarna: własny LLVM IR kompilatora, po jednym na system
 examples/   przykładowe programy

@@ -52,9 +52,10 @@ Jedna instrukcja na linijkę, bez średników, `{` w tej samej linijce, bez nawi
 |---|---|
 | `x := 5` | nowa zmienna, typ zgadnięty |
 | `int x = 5` | nowa zmienna, typ podany |
-| `int x` | zero / `""` / `[]` / `null` / wartości domyślne struktury |
+| `int x` | zero / `""` / `[]` / `null` / wartości domyślne struktury (też struktur w niej) |
 | `x = 7` | przypisanie |
 | `x += 1` `-=` `*=` `/=` `%=` | zmiana |
+| `const W = 640`, `const f32 G = 9.8` | stała (na najwyższym poziomie pliku; `ksztalty.W` z modułu) |
 
 ---
 
@@ -63,10 +64,10 @@ Jedna instrukcja na linijkę, bez średników, `{` w tej samej linijce, bez nawi
 | Typ | Przykład |
 |---|---|
 | `int` (= `i64`) | `42`, `-7`, `0xFF`, `1_000_000` |
-| `float` (= `f64`) | `3.14` |
+| `float` (= `f64`) | `3.14`, `1e9`, `2.5e-3` |
 | `bool` | `true` (prawda), `false` (fałsz) |
 | `char` | `'A'`, `'\n'` |
-| `str` | `"tekst\t\"w cudzysłowie\""` |
+| `str` | `"tekst\t\"w cudzysłowie\""`, `"""` kilka linii `"""` (wcięcie zamykających cudzysłowów znika) |
 | `i8 i16 i32 i64` | ze znakiem, z rozmiarem |
 | `u8 u16 u32 u64` | bez znaku, z rozmiarem |
 | `f32 f64` | zmiennoprzecinkowe |
@@ -98,6 +99,7 @@ Znaki specjalne: `\n \t \r \0 \\ \" \'`.
 
 ```c
 if a > b { … } else if a == b { … } else { … }
+x := if a > b { a } else { b }  // jako wartość: jedna wartość na gałąź, else wymagane
 while x > 0 { … }
 for i in 0..10 { … }          // 0 … 9
 for el in lista { … }         // każdy element (albo znak str)
@@ -233,7 +235,7 @@ Funkcje wbudowane, które mogą się nie udać: `int(s)`, `float(s)`, `read_file
 | `s.replace(a, b)` | każde a → b |
 | `s.repeat(n)` | n razy |
 | `s.bytes()` | `[]u8` |
-| `s.ptr` | `ptr[char]` (dla C) |
+| `s.ptr` | `ptr[char]` (dla C; `str` trafia też do parametru `const char *` bez zmian) |
 | `==` `!=` `<` `>` | porównanie |
 
 ---
@@ -249,7 +251,8 @@ Funkcje wbudowane, które mogą się nie udać: `int(s)`, `float(s)`, `read_file
 | `u8(300)` | `44` (zostawia najniższe bity) |
 | `char(66)` | `'B'` |
 | `bool(0)` | `false` |
-| `str(42)`, `str(1.5)`, `str(true)`, `str('c')` | tekst |
+| `str(42)`, `str(1.5)`, `str(true)`, `str('c')` | tekst (float: najkrótszy tekst, który jest tą samą liczbą) |
+| `str(3.14159, 2)` | `"3.14"` (tyle cyfr po kropce) |
 | `str([1, 2])`, `str(m)`, `str(punkt)` | ten sam tekst, który pokazuje `print` |
 | `int("x") or 0`, `float(s) or 0.0` | liczba albo wartość zapasowa |
 | `str(bajty)` | `[]u8` → tekst |
@@ -272,7 +275,8 @@ Automatycznie tylko wtedy, gdy nic nie ginie: mniejsza → większa liczba, dowo
 | `file_exists(sciezka)` | czy plik istnieje |
 | `delete_file(sciezka)` | usuń plik |
 | `shell(polecenie)` | uruchom polecenie, jego kod wyjścia |
-| `exit(kod)` | zakończ program od razu |
+| `exit(kod)` | zakończ program od razu (kończy też blok `or { }`) |
+| `min(a, b, …)`, `max(a, b, …)`, `abs(x)`, `clamp(x, od, do)` | dla dowolnych liczb (twoja funkcja o tej nazwie wygrywa) |
 | `error(komunikat)` | `return error("…")` w funkcji `-> T!` |
 | `addr(x)` | wskaźnik na x; `addr(fn)` = callback dla C |
 | `new(wartosc)` | wartość na stercie → `ptr[T]` |
@@ -310,6 +314,8 @@ import ksztalty          // ksztalty.fch obok tego pliku (albo w FINCH_PATH)
 ksztalty.pole(b)         // jego funkcje
 ksztalty.Pudlo(2, 3)     // jego struktury
 ksztalty.Pudlo inne      // w deklaracjach
+import ui/przycisk       // ui/przycisk.fch: przycisk.rysuj()
+import ui/przycisk as p  // inna nazwa: p.rysuj()
 ```
 
 ---
@@ -333,6 +339,10 @@ ksztalty.Pudlo inne      // w deklaracjach
 | `T *` | `ptr[T]` |
 | `void *`, uchwyty | `ptr` |
 | `T x[N]` (w strukturze) | `[N]T` |
+| `union U` | `U`: `U u`, `u.pole`, `U(pole: v)`, przez wskaźnik do C (nie przez wartość) |
+| `#define N 4`, `"tekst"`, `(1u << 3)`, `((Uint64)2)` | stałe (bez makr-funkcji) |
+
+Wynik `char *` z funkcji C to od razu `str`; struktury przez wartość działają na każdym systemie (System V, Windows x64, ARM64).
 
 ---
 
@@ -396,6 +406,7 @@ s := Stos[int]()     Stos[int] t     Para[str, int]("wiek", 31)          //   ni
 | `path` | `join(a, b)` `base(p)` `dir(p)` `ext(p)` `stem(p)` `parts(p)` `clean(p)` `is_abs(p)` |
 | `time` | `now()` `millis()` `sleep(ms)` `date(t)` `local(t)` `format(t, fmt)` `days_in_month(r, m)` |
 | `proc` | `run(cmd)` `output(cmd)` (błąd z jego wyjściem) `env(nazwa, domyślna)` `pid()` `cwd()` |
+| `fs` | `read_bytes(p)` `write_bytes(p, dane)` `exists(p)` `is_dir(p)` `mkdir(p)` `list(folder)` `remove_dir(p)` `data_dir(app)` |
 | `json` | `parse(tekst)` `stringify(v)` `pretty(v)` `new_text/number/bool/null/list/object` `v.get(k)` `v.at(i)` `v.set(k, x)` `v.push(x)` `v.has(k)` `v.str_or(d)` `v.int_or(d)` `v.float_or(d)` `v.bool_or(d)` |
 
 ## Słowa kluczowe
@@ -416,5 +427,7 @@ s := Stos[int]()     Stos[int] t     Para[str, int]("wiek", 31)          //   ni
 | `defer` | odłóż (na koniec bloku) |
 | `or` | albo (co zrobić przy porażce) |
 | `try` | spróbuj (porażkę przekaż dalej) |
+| `const` | stała |
+| `export` | wystaw (funkcja dla programu w C) |
 | `self` | sam (w metodzie: struktura, na której ją wywołano) |
 | `map` | mapa |

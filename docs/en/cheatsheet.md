@@ -53,9 +53,10 @@ One statement per line, no semicolons, `{` on the same line, no brackets around 
 |---|---|
 | `x := 5` | new variable, type inferred |
 | `int x = 5` | new variable, type written |
-| `int x` | zero / `""` / `[]` / `null` / the struct's defaults |
+| `int x` | zero / `""` / `[]` / `null` / the struct's defaults (also of the structs inside it) |
 | `x = 7` | assign |
 | `x += 1` `-=` `*=` `/=` `%=` | update |
+| `const W = 640`, `const f32 G = 9.8` | a constant (top level of a file; `shapes.W` from a module) |
 
 ---
 
@@ -64,10 +65,10 @@ One statement per line, no semicolons, `{` on the same line, no brackets around 
 | Type | Example |
 |---|---|
 | `int` (= `i64`) | `42`, `-7`, `0xFF`, `1_000_000` |
-| `float` (= `f64`) | `3.14` |
+| `float` (= `f64`) | `3.14`, `1e9`, `2.5e-3` |
 | `bool` | `true`, `false` |
 | `char` | `'A'`, `'\n'` |
-| `str` | `"text\t\"quoted\""` |
+| `str` | `"text\t\"quoted\""`, `"""` several lines `"""` (the closing quotes' indentation is removed) |
 | `i8 i16 i32 i64` | signed, sized |
 | `u8 u16 u32 u64` | unsigned, sized |
 | `f32 f64` | floats |
@@ -99,6 +100,7 @@ Escapes: `\n \t \r \0 \\ \" \'`.
 
 ```c
 if a > b { … } else if a == b { … } else { … }
+x := if a > b { a } else { b }  // as a value: one value per branch, else needed
 while x > 0 { … }
 for i in 0..10 { … }          // 0 … 9
 for item in list { … }        // every element (or char of a str)
@@ -234,7 +236,7 @@ Fallible built-ins: `int(s)`, `float(s)`, `read_file`, `write_file`, `delete_fil
 | `s.replace(a, b)` | every a → b |
 | `s.repeat(n)` | n times |
 | `s.bytes()` | `[]u8` |
-| `s.ptr` | `ptr[char]` (for C) |
+| `s.ptr` | `ptr[char]` (for C; a `str` also goes to a `const char *` parameter as it is) |
 | `==` `!=` `<` `>` | compare |
 
 ---
@@ -250,7 +252,8 @@ Fallible built-ins: `int(s)`, `float(s)`, `read_file`, `write_file`, `delete_fil
 | `u8(300)` | `44` (keeps the low bits) |
 | `char(66)` | `'B'` |
 | `bool(0)` | `false` |
-| `str(42)`, `str(1.5)`, `str(true)`, `str('c')` | text |
+| `str(42)`, `str(1.5)`, `str(true)`, `str('c')` | text (a float: the shortest text that is the same number) |
+| `str(3.14159, 2)` | `"3.14"` (that many digits after the point) |
 | `str([1, 2])`, `str(m)`, `str(point)` | the same text `print` shows |
 | `int("x") or 0`, `float(s) or 0.0` | a number, or the fallback |
 | `str(bytes)` | `[]u8` → text |
@@ -273,7 +276,8 @@ Automatic only when nothing is lost: smaller → bigger number, any int → floa
 | `file_exists(path)` | bool |
 | `delete_file(path)` | bool |
 | `shell(command)` | run a command, its exit code |
-| `exit(code)` | stop the program now |
+| `exit(code)` | stop the program now (also ends an `or { }` block) |
+| `min(a, b, …)`, `max(a, b, …)`, `abs(x)`, `clamp(x, lo, hi)` | for any numbers (your own function of that name wins) |
 | `error(message)` | `return error("…")` in a `-> T!` function |
 | `addr(x)` | pointer to x; `addr(fn)` = C callback |
 | `new(value)` | value on the heap → `ptr[T]` |
@@ -311,6 +315,8 @@ import shapes            // shapes.fch next to this file (or in FINCH_PATH)
 shapes.area(b)           // its functions
 shapes.Box(2, 3)         // its structs
 shapes.Box other         // in declarations
+import ui/button         // ui/button.fch: button.draw()
+import ui/button as btn  // another name: btn.draw()
 ```
 
 ---
@@ -334,6 +340,10 @@ shapes.Box other         // in declarations
 | `T *` | `ptr[T]` |
 | `void *`, handles | `ptr` |
 | `T x[N]` (in a struct) | `[N]T` |
+| `union U` | `U`: `U u`, `u.field`, `U(field: v)`, by pointer to C (not by value) |
+| `#define N 4`, `"text"`, `(1u << 3)`, `((Uint64)2)` | constants (not function-like macros) |
+
+A C function's `char *` result is a `str` already; structs by value work on every target (System V, Windows x64, ARM64).
 
 ---
 
@@ -397,9 +407,10 @@ s := Stack[int]()     Stack[int] t     Pair[str, int]("age", 31)         //   ne
 | `path` | `join(a, b)` `base(p)` `dir(p)` `ext(p)` `stem(p)` `parts(p)` `clean(p)` `is_abs(p)` |
 | `time` | `now()` `millis()` `sleep(ms)` `date(t)` `local(t)` `format(t, fmt)` `days_in_month(y, m)` |
 | `proc` | `run(cmd)` `output(cmd)` (fails with its output) `env(name, fallback)` `pid()` `cwd()` |
+| `fs` | `read_bytes(p)` `write_bytes(p, data)` `exists(p)` `is_dir(p)` `mkdir(p)` `list(dir)` `remove_dir(p)` `data_dir(app)` |
 | `json` | `parse(text)` `stringify(v)` `pretty(v)` `new_text/number/bool/null/list/object` `v.get(k)` `v.at(i)` `v.set(k, x)` `v.push(x)` `v.has(k)` `v.str_or(d)` `v.int_or(d)` `v.float_or(d)` `v.bool_or(d)` |
 
 ## Keywords
 
-`fn return if else while for in break continue true false null import link struct enum match defer or try`
+`fn return if else while for in break continue true false null import link struct enum match defer or try const export`
 (and `self` inside methods)

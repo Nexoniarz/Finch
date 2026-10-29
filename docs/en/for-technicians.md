@@ -214,7 +214,19 @@ x += 1               // also -= *= /= %=
 - Names: ASCII letters, digits and `_`, not starting with a digit. Non-ASCII letters are allowed only inside strings.
   Type names (`int`, `u8`, …), built-in function names and keywords are reserved.
 
-**Keywords:** `fn return if else while for in break continue true false null import link struct defer`
+**Keywords:** `fn return if else while for in break continue true false null import link struct enum match defer or try const export`
+
+### Constants
+
+```c
+const WIDTH = 640
+const HEIGHT = WIDTH / 2          // from other constants
+const f32 GRAVITY = 9.8           // with a type
+const TITLE = "My game"
+```
+
+A constant is written at the top level of a file, next to the functions, and can't be changed. It is made of
+numbers, text, `true`/`false`, chars, other constants and operators; a module's constant is `shapes.SIDES`.
 
 ---
 
@@ -315,6 +327,13 @@ Notes:
 ---
 
 ## 8. Control flow
+
+`if` can also give a value; each branch holds one value, and the `else` is needed:
+
+```c
+label := if score > 100 { "high" } else if score > 10 { "mid" } else { "low" }
+f32 speed = if running { 2.5 } else { 1.0 }
+```
 
 ```c
 if x > 10 {
@@ -485,7 +504,21 @@ s[0] = 'J'                // change a character
 | `s.ptr` | a `ptr[char]` for C (valid while `s` lives) |
 
 `str` keeps its length, so `.len` is instant, and it is always NUL-terminated, so passing it
-to C as `char*` works.
+to C as `char*` works. The other way round, a C function that gives back a `char *` gives you a `str`
+(a copy is made when you keep it), and `str(p)` reads a `ptr[char]` you got some other way.
+
+Text over several lines goes between `"""`. The line break after the opening quotes is dropped, and so is the
+indentation of the closing quotes, from every line, so the text can be indented with your code:
+
+```c
+shader := """
+    #version 330
+    void main() { gl_Position = vec4(0.0); }
+    """
+```
+
+Numbers as text: `str(x)` is the shortest text that reads back as the same number (`0.1`, `0.30000000000000004`,
+`1e+20`); `str(x, 2)` always has two digits after the point (`3.14`).
 
 ---
 
@@ -642,6 +675,8 @@ fn main() {
 
 - Everything in a module is used with the module's name in front: `shapes.area`, `shapes.Box`.
 - A module doesn't have `main`. Modules can import other modules.
+- Modules in folders: `import ui/button` loads `ui/button.fch` and is used as `button.draw()`.
+- Another name: `import ui/button as btn` → `btn.draw()`. Two imports can't use the same name.
 
 ---
 
@@ -742,8 +777,10 @@ Both work directly; `examples/opengl.fch` and `examples/vulkan.fch` are complete
 
 ### What does not work yet
 
-- C **unions** by value, and structs with **bit fields** by value (pointers to them work).
-- **Function-like macros** and macros that are not a single number.
+- C **unions** and structs with **bit fields** passed to or returned from a C function **by value** (pointers to them
+  work, and so do unions as variables: `SDL_Event e`, `e.type`, `e.key.key`, `SDL_PollEvent(addr(e))`).
+- **Function-like macros** (`#define MAX(a, b) ...`) and macros that make a struct (raylib's `RAYWHITE`).
+  Macros that are a number, a text or an expression of them (`(1u << 3)`, `((Uint64)1)`, `(A | B)`) work.
 - `long double`, 128-bit integers.
 
 ---
@@ -1035,6 +1072,10 @@ library's second, so your own file of the same name wins.
 | `time` | `now()`, `millis()` (a clock for measuring), `sleep(ms)`, `date(t)`, `local(t)`, `format(t, "%Y-%m-%d")`, `days_in_month` |
 | `proc` | `run(cmd)` (the exit code), `output(cmd)` (what it printed; an error if it failed), `env(name, fallback)`, `pid()`, `cwd()` |
 | `json` | `parse(text)`, `stringify(v)`, `pretty(v)`, and the value type `Json` with `get`, `at`, `set`, `push`, `has`, `str_or`, `int_or` ... |
+| `fs` | `read_bytes(p)` / `write_bytes(p, data)` (`[]u8`, any bytes), `exists`, `is_dir`, `mkdir` (with the folders above), `list` (sorted names), `remove_dir`, `data_dir(app)` (a folder for the user's saves) |
+
+`min(a, b, ...)`, `max(a, b, ...)`, `abs(x)` and `clamp(x, lo, hi)` work on any numbers without an import (a function of
+your own with the same name wins).
 
 ```
 import json
