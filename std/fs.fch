@@ -1,0 +1,70 @@
+// Files and folders: bytes, folders, listing, and a place for a program's own files.
+//
+//   import fs
+//   data := try fs.read_bytes("atlas.png")      the whole file as []u8 (any bytes, NUL included)
+//   try fs.write_bytes("out.bin", data)
+//   try fs.mkdir("saves/slot1")                  with the folders above it
+//   names := try fs.list("saves")                the names in a folder, sorted
+//   fs.exists(p)   fs.is_dir(p)   try fs.remove_dir(p)
+//   dir := try fs.data_dir("MyGame")             a folder for this user's saves, made if needed
+import "finch_fs.h"
+
+fn read_bytes(str path) -> []u8! {
+    text := try read_file(path)
+    return text.bytes()
+}
+
+fn write_bytes(str path, []u8 data) -> ! {
+    try write_file(path, str(data))
+}
+
+fn exists(str path) -> bool {
+    return finch_fs_exists(path) != 0
+}
+
+fn is_dir(str path) -> bool {
+    return finch_fs_is_dir(path) != 0
+}
+
+fn mkdir(str path) -> ! {
+    if finch_fs_mkdir(path) == 0 {
+        return error("can't make the folder \"" + path + "\"")
+    }
+}
+
+// only an empty folder
+fn remove_dir(str path) -> ! {
+    if finch_fs_remove_dir(path) == 0 {
+        return error("can't remove the folder \"" + path + "\" (is it empty?)")
+    }
+}
+
+fn list(str path) -> []str! {
+    l := finch_fs_list_open(path)
+    if l == null {
+        return error("can't list the folder \"" + path + "\"")
+    }
+    []str names
+    while true {
+        name := finch_fs_list_next(l)
+        if name.len == 0 {
+            break
+        }
+        names.push(name)
+    }
+    finch_fs_list_close(l)
+    names.sort()
+    return names
+}
+
+// The folder where a program keeps this user's files (saves, settings), made if it isn't there:
+// ~/.local/share/<app> on Linux, ~/Library/Application Support/<app> on macOS, %APPDATA%\<app> on Windows.
+fn data_dir(str app) -> str! {
+    home := finch_fs_data_home()
+    if home.len == 0 {
+        return error("this system doesn't say where programs keep their files")
+    }
+    dir := home + "/" + app
+    try mkdir(dir)
+    return dir
+}

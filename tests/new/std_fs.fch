@@ -1,0 +1,23 @@
+// the fs module: bytes with NUL in them, folders, listing
+import fs
+
+fn main() -> ! {
+    root := "fs_test_dir"
+    try fs.mkdir(root + "/a/b")
+    print(fs.exists(root), fs.is_dir(root + "/a/b"), fs.is_dir("nope"))
+    data := [u8(0), u8(255), u8(13), u8(10), u8(65)]
+    try fs.write_bytes(root + "/a/blob.bin", data)
+    back := try fs.read_bytes(root + "/a/blob.bin")
+    print(back.len, back[0], back[1], back[4], str(back) == str(data))
+    write_file(root + "/z.txt", "z")
+    print(try fs.list(root))
+    print(try fs.list(root + "/a"))
+    print(fs.list("no_such_dir") or ["(none)"])
+    delete_file(root + "/a/blob.bin")
+    delete_file(root + "/z.txt")
+    try fs.remove_dir(root + "/a/b")
+    try fs.remove_dir(root + "/a")
+    try fs.remove_dir(root)
+    print(fs.exists(root))
+    fs.remove_dir(root) or { print("gone:", err) }
+}

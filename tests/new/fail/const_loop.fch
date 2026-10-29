@@ -1,0 +1,6 @@
+// expect: is worked out from itself
+const A = B + 1
+const B = A
+fn main() {
+    print(A)
+}

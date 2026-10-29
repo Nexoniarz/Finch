@@ -24,7 +24,7 @@ fn isHex(char c) -> bool {
 
 fn isKeyword(str w) -> bool {
     keywords := ["fn", "return", "if", "else", "while", "for", "in", "break", "continue", "true", "false",
-                 "null", "import", "link", "struct", "defer", "or", "try", "enum", "match", "export"]
+                 "null", "import", "link", "struct", "defer", "or", "try", "enum", "match", "export", "const"]
     return keywords.contains(w)
 }
 
@@ -76,6 +76,57 @@ fn operator(ptr[Lexer] lx) -> str {
         return c
     }
     return ""
+}
+
+// """ text over several lines """: the line break after the opening quotes is dropped, and so is
+// the indentation of the closing quotes, from every line (the text can be indented with the code).
+fn longString(ptr[Lexer] lx, Token t) -> str {
+    for k in 0..3 {
+        advance(lx)
+    }
+    []str parts
+    while !(peek(lx, 0) == '"' && peek(lx, 1) == '"' && peek(lx, 2) == '"') {
+        if lx.i >= lx.src.len {
+            fail(lx, t.line, t.col, "text is never closed (missing \"\"\")")
+        }
+        ch := peek(lx, 0)
+        advance(lx)
+        if ch == '\\' {
+            e := peek(lx, 0)
+            advance(lx)
+            ch = escape(lx, e)
+        } else if ch == '\r' {
+            continue
+        }
+        parts.push(str(ch))
+    }
+    for k in 0..3 {
+        advance(lx)
+    }
+    lx.nl = false                       // the line breaks inside were text, not the end of a statement
+    body := parts.join("")
+    if body.starts_with("\n") {
+        body = body.sub(1, body.len)
+    }
+    last := body.split("\n")
+    indent := last[last.len - 1]
+    if last.len > 1 && indent.trim().len == 0 {
+        // the closing quotes are on their own line: their indentation goes from every line
+        []str lines
+        for i in 0..last.len - 1 {
+            line := last[i]
+            if line.starts_with(indent) {
+                line = line.sub(indent.len, line.len)
+            } else if line.trim().len > 0 {
+                fail(lx, t.line, t.col, "a line of this text is indented less than the closing \"\"\"")
+            } else {
+                line = ""
+            }
+            lines.push(line)
+        }
+        return lines.join("\n")
+    }
+    return body
 }
 
 fn escape(ptr[Lexer] lx, char e) -> char {
@@ -185,6 +236,9 @@ fn lex(str src, str path) -> []Token {
             if mant.len > 0 {
                 t.text = (mant + lx.src.sub(expStart, lx.i)).replace("_", "")   // LLVM wants the '.'
             }
+        } else if c == '"' && peek(lx, 1) == '"' && peek(lx, 2) == '"' {
+            t.kind = "string"
+            t.text = longString(lx, t)
         } else if c == '"' || c == '\'' {
             quote := c
             t.kind = "string"

@@ -1,0 +1,6 @@
+// expect: a constant is made of numbers, text
+fn f() -> int { return 1 }
+const W = f()
+fn main() {
+    print(W)
+}

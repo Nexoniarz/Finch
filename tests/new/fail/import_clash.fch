@@ -1,0 +1,5 @@
+// expect: is already used by another import
+import path
+import time as path
+fn main() {
+}

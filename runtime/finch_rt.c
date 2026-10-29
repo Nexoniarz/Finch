@@ -18,7 +18,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifndef _WIN32
+#ifdef _WIN32
+#include <direct.h>
+#include <io.h>
+#else
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <sys/wait.h>
 #endif
 
@@ -659,6 +665,147 @@ int finch_try_write_file(const FStr *path, const FStr *text, FStr *err) {
     if (!errno) errno = EIO;
     file_error(err, "write", path);
     return 0;
+}
+
+// ---------- folders (std/fs.fch, through std/finch_fs.h) ----------
+
+int finch_fs_is_dir(const char *path) {
+#ifdef _WIN32
+    struct _finddata_t d;
+    intptr_t h = _findfirst(path, &d);
+    if (h == -1) return 0;
+    _findclose(h);
+    return (d.attrib & _A_SUBDIR) != 0;
+#else
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+}
+
+int finch_fs_exists(const char *path) {
+#ifdef _WIN32
+    return _access(path, 0) == 0;
+#else
+    struct stat st;
+    return stat(path, &st) == 0;
+#endif
+}
+
+static int make_one_dir(const char *p) {
+#ifdef _WIN32
+    return _mkdir(p) == 0 || errno == EEXIST;
+#else
+    return mkdir(p, 0777) == 0 || errno == EEXIST;
+#endif
+}
+
+// mkdir -p: the parents too; 1 if the folder is there afterwards
+int finch_fs_mkdir(const char *path) {
+    size_t n = strlen(path);
+    char *p = finch_alloc((int64_t)n + 1);
+    memcpy(p, path, n + 1);
+    for (size_t i = 1; i < n; i++) {
+        if (p[i] == '/' || p[i] == '\\') {
+            if (p[i - 1] == ':') continue;  /* C: is a drive */
+            char c = p[i];
+            p[i] = 0;
+            make_one_dir(p);
+            p[i] = c;
+        }
+    }
+    int ok = make_one_dir(p) && finch_fs_is_dir(p);
+    free(p);
+    return ok;
+}
+
+int finch_fs_remove_dir(const char *path) {
+#ifdef _WIN32
+    return _rmdir(path) == 0;
+#else
+    return rmdir(path) == 0;
+#endif
+}
+
+// the names in a folder, one per call ("" at the end), without . and ..
+typedef struct {
+#ifdef _WIN32
+    intptr_t h;
+    struct _finddata_t d;
+    int first;
+#else
+    DIR *d;
+#endif
+} FsList;
+
+void *finch_fs_list_open(const char *path) {
+    FsList *l = finch_zalloc((int64_t)sizeof(FsList));
+#ifdef _WIN32
+    size_t n = strlen(path);
+    char *pat = finch_alloc((int64_t)n + 3);
+    memcpy(pat, path, n);
+    memcpy(pat + n, "\\*", 3);
+    l->h = _findfirst(pat, &l->d);
+    free(pat);
+    if (l->h == -1) {
+        free(l);
+        return NULL;
+    }
+    l->first = 1;
+#else
+    l->d = opendir(path);
+    if (!l->d) {
+        free(l);
+        return NULL;
+    }
+#endif
+    return l;
+}
+
+const char *finch_fs_list_next(void *handle) {
+    FsList *l = handle;
+    for (;;) {
+#ifdef _WIN32
+        if (!l->first && _findnext(l->h, &l->d) != 0) return "";
+        l->first = 0;
+        const char *name = l->d.name;
+#else
+        struct dirent *e = readdir(l->d);
+        if (!e) return "";
+        const char *name = e->d_name;
+#endif
+        if (strcmp(name, ".") != 0 && strcmp(name, "..") != 0) return name;
+    }
+}
+
+void finch_fs_list_close(void *handle) {
+    FsList *l = handle;
+#ifdef _WIN32
+    _findclose(l->h);
+#else
+    closedir(l->d);
+#endif
+    free(l);
+}
+
+// where a program keeps its own files for this user (saves, settings); "" if unknown
+//   Linux: $XDG_DATA_HOME or ~/.local/share   macOS: ~/Library/Application Support   Windows: %APPDATA%
+const char *finch_fs_data_home(void) {
+    static char buf[4096];
+    const char *v;
+#if defined(_WIN32)
+    v = getenv("APPDATA");
+    snprintf(buf, sizeof buf, "%s", v ? v : "");
+#elif defined(__APPLE__)
+    v = getenv("HOME");
+    if (v) snprintf(buf, sizeof buf, "%s/Library/Application Support", v);
+    else buf[0] = 0;
+#else
+    v = getenv("XDG_DATA_HOME");
+    if (v && *v) snprintf(buf, sizeof buf, "%s", v);
+    else if ((v = getenv("HOME"))) snprintf(buf, sizeof buf, "%s/.local/share", v);
+    else buf[0] = 0;
+#endif
+    return buf;
 }
 
 // ---------- maps ----------

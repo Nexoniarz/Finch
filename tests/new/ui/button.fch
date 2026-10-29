@@ -1,0 +1,7 @@
+// a module in a folder, for tests/new/lang_additions.fch (import ui/button)
+const SIZE = 3
+struct Button {
+    str label
+    int w = SIZE * 10
+}
+fn make(str l) -> Button { return Button(label: l) }

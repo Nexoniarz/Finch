@@ -1,0 +1,6 @@
+// expect: is indented less than the closing
+fn main() {
+    s := """
+  a
+        """
+}

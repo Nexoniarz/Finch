@@ -236,7 +236,23 @@ fn parseProgram(ptr[Parser] p) -> ast.Program {
                 if !at(p, "ident") {
                     fail(p, t, "expected a module name or a C header after 'import'")
                 }
-                prog.imports.push(next(p).text)
+                // import ui/button (a folder), import path as p (another name here)
+                key := next(p).text
+                name := key
+                while at(p, "/") && !cur(p).nl {
+                    next(p)
+                    name = expect(p, "ident", "a module name after '/'").text
+                    key = key + "/" + name
+                }
+                if at(p, "ident") && cur(p).text == "as" && !cur(p).nl {
+                    next(p)
+                    name = expect(p, "ident", "the name to use for the module, like  import path as p").text
+                }
+                if prog.imports.contains(name) {
+                    fail(p, t, "the name '" + name + "' is already used by another import (pick one with: import " + key + " as other)")
+                }
+                prog.imports.push(name)
+                prog.modules.push(key)
             }
         } else if at(p, "link") {
             lt := next(p)
@@ -248,6 +264,8 @@ fn parseProgram(ptr[Parser] p) -> ast.Program {
             prog.links.push(lib)
         } else if at(p, "struct") {
             prog.structs.push(parseStruct(p))
+        } else if at(p, "const") {
+            prog.consts.push(parseConst(p))
         } else if at(p, "enum") {
             e := parseEnum(p)
             prog.enums.push(e)
@@ -259,6 +277,24 @@ fn parseProgram(ptr[Parser] p) -> ast.Program {
         }
     }
     return prog
+}
+
+// const WIDTH = 640     const f32 GRAVITY = 9.8     const TITLE = "Game"
+fn parseConst(ptr[Parser] p) -> ast.Node {
+    c := node(p, "const")
+    expect(p, "const", "'const'")
+    if !(at(p, "ident") && peekKind(p, 1) == "=") {
+        c.ty = parseType(p)
+        c.flag = true
+    }
+    t := expect(p, "ident", "the constant's name, like  const WIDTH = 640")
+    c.name = t.text
+    c.line = t.line
+    c.col = t.col
+    expect(p, "=", "'=' and its value, like  const WIDTH = 640")
+    c.kids.push(parseExpr(p))
+    endOfStatement(p)
+    return c
 }
 
 // enum Color { Red, Green, Blue }      enum Status { Ok = 200, NotFound = 404 }
@@ -433,7 +469,7 @@ fn parseFn(ptr[Parser] p) -> ast.Node {
     if at(p, "ident") && isTypeName(cur(p).text) {
         fail(p, cur(p), "functions start with 'fn', like: fn add(int a, int b) -> int { ... }")
     }
-    expect(p, "fn", "'fn', 'struct' or 'import'")
+    expect(p, "fn", "'fn', 'struct', 'enum', 'const' or 'import'")
     f.name = expect(p, "ident", "a function name").text
     if at(p, "[") {
         f.tparams = parseTParams(p)         // fn max[T](...)   or the struct's, in  fn Stack[T].push(...)
@@ -612,6 +648,33 @@ fn parseIf(ptr[Parser] p) -> ast.Node {
 
 // ---------- expressions ----------
 
+// if as a value:  x := if a > b { a } else { b }   (each branch is one value; the else is needed)
+fn parseIfValue(ptr[Parser] p) -> ast.Node {
+    e := node(p, "ifvalue")
+    expect(p, "if", "'if'")
+    e.kids.push(parseExpr(p))
+    e.kids.push(branchValue(p))
+    if !accept(p, "else") {
+        fail(p, cur(p), "an if that gives a value needs an else: if c { a } else { b }")
+    }
+    if at(p, "if") {
+        e.kids.push(parseIfValue(p))
+    } else {
+        e.kids.push(branchValue(p))
+    }
+    return e
+}
+
+fn branchValue(ptr[Parser] p) -> ast.Node {
+    expect(p, "{", "'{'")
+    saved := p.depth
+    p.depth = 1
+    v := parseExpr(p)
+    p.depth = saved
+    expect(p, "}", "'}' (a branch of an if that gives a value holds just that value)")
+    return v
+}
+
 fn binaryLevel(str op) -> int {
     if op == "||" {
         return 1
@@ -768,6 +831,9 @@ fn parsePrimary(ptr[Parser] p) -> ast.Node {
     }
     if k == "match" {
         return parseMatch(p, true)
+    }
+    if k == "if" {
+        return parseIfValue(p)
     }
     if k == "[" {
         next(p)

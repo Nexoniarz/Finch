@@ -1,0 +1,5 @@
+// expect: is a constant; it can't be changed
+const W = 3
+fn main() {
+    W = 4
+}

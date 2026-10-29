@@ -163,6 +163,7 @@ struct Ref {
 
 struct Gen {
     []ast.Program progs
+    []str constBusy     // the constants being worked out: a loop between them is an error
     []str files
     []str head
     []str out
@@ -520,7 +521,17 @@ fn progOf(ptr[Gen] g, str module) -> int {
 }
 
 fn imports(ptr[Gen] g, str module) -> bool {
-    return g.progs[progOf(g, g.module)].imports.contains(module)
+    return modFor(g, module).len > 0
+}
+
+// the module a name stands for in this file: button -> "ui/button", p -> "path"; "" if none
+fn modFor(ptr[Gen] g, str name) -> str {
+    pr := g.progs[progOf(g, g.module)]
+    k := pr.imports.find(name)
+    if k < 0 {
+        return ""
+    }
+    return pr.modules[k]
 }
 
 fn resolve(ptr[Gen] g, ast.Type t, ast.Node at) -> ast.Type {
@@ -567,7 +578,7 @@ fn resolve(ptr[Gen] g, ast.Type t, ast.Node at) -> ast.Type {
             if !imports(g, t.module) {
                 fail(g, at, "'" + t.module + "' is not imported here (add: import " + t.module + ")")
             }
-            gm = t.module
+            gm = modFor(g, t.module)
         }
         return instStruct(g, gm, t.name, args, at)
     }
@@ -582,7 +593,7 @@ fn resolve(ptr[Gen] g, ast.Type t, ast.Node at) -> ast.Type {
         if !imports(g, t.module) {
             fail(g, at, "'" + t.module + "' is not imported here (add: import " + t.module + ")")
         }
-        module = t.module
+        module = modFor(g, t.module)
     }
     if findEnum(g, module, t.name) >= 0 {
         return ast.Type(kind: "enum", name: t.name, module: module)
@@ -606,7 +617,7 @@ fn modName(str m) -> str {
     if m.len == 0 {
         return "main"
     }
-    return m
+    return m.replace("/", "$")          // ui/button -> ui$button in symbol names
 }
 
 fn llty(ptr[Gen] g, ast.Type t) -> str {
@@ -2423,6 +2434,9 @@ fn assignStmt(ptr[Gen] g, ast.Node s) {
     if root.len > 0 {
         id := lookup(g, root)
         if id < 0 && target.kind == "var" {
+            if findConst(g, g.module, root) >= 0 {
+                fail(g, s, "'" + root + "' is a constant; it can't be changed")
+            }
             fail(g, s, "there is no variable named '" + root + "' (create it with " + root + " := ...)")
         }
         if id >= 0 && varAt(g, id).readonly {
@@ -3266,6 +3280,38 @@ fn matchGen(ptr[Gen] g, ast.Node e, bool asValue) -> Val {
     return Val(ty: T("void"))
 }
 
+// x := if c { a } else { b }: both branches give the same type
+fn ifValue(ptr[Gen] g, ast.Node e, ast.Type want) -> Val {
+    c := coerce(g, expr(g, e.kids[0]), T("bool"), e.kids[0], "the condition")
+    yes := newLabel(g, "ifv.yes")
+    no := newLabel(g, "ifv.no")
+    end := newLabel(g, "ifv.end")
+    condBr(g, c.v, yes, no)
+    label(g, yes)
+    a := exprWant(g, e.kids[1], want)
+    if a.ty.kind == "void" || a.ty.kind == "null" {
+        fail(g, e.kids[1], "this branch has to give a value")
+    }
+    if want.kind != "void" {
+        a = coerce(g, a, want, e.kids[1], "this branch")
+    }
+    t := a.ty
+    av := own(g, a)
+    fromYes := newLabel(g, "ifv.from")
+    br(g, fromYes)
+    label(g, fromYes)
+    br(g, end)
+    label(g, no)
+    b := coerce(g, exprWant(g, e.kids[2], t), t, e.kids[2], "this branch (both branches of the if have to give the same type)")
+    bv := own(g, b)
+    fromNo := newLabel(g, "ifv.from")
+    br(g, fromNo)
+    label(g, fromNo)
+    br(g, end)
+    label(g, end)
+    return Val(v: op(g, "phi " + llty(g, t) + " " + phiList([av, bv], [fromYes, fromNo])), ty: t, fresh: owning(g, t))
+}
+
 fn phiList([]str vals, []str labels) -> str {
     []str parts
     for i in 0..vals.len {
@@ -3385,6 +3431,9 @@ fn exprWant(ptr[Gen] g, ast.Node e, ast.Type want) -> Val {
     if e.kind == "map" {
         return mapLit(g, e, want)
     }
+    if e.kind == "ifvalue" {
+        return ifValue(g, e, want)          // f32 x = if c { 1.0 } else { 0.5 }
+    }
     return expr(g, e)
 }
 
@@ -3432,6 +3481,9 @@ fn expr(ptr[Gen] g, ast.Node e) -> Val {
     }
     if k == "match" {
         return matchGen(g, e, true)
+    }
+    if k == "ifvalue" {
+        return ifValue(g, e, T("void"))
     }
     if k == "try" {
         return tryExpr(g, e)
@@ -3840,6 +3892,12 @@ fn ref(ptr[Gen] g, ast.Node e, bool write) -> Ref {
             }
             return Ref(isPlace: true, pl: Place(addr: "@" + e.name, ty: gt))
         }
+        if id < 0 && findConst(g, g.module, e.name) >= 0 {
+            if write {
+                fail(g, e, "'" + e.name + "' is a constant; it can't be changed")
+            }
+            return Ref(isPlace: false, val: constValue(g, g.module, e.name, e))
+        }
         if id < 0 {
             if imports(g, e.name) {
                 fail(g, e, "'" + e.name + "' is a module; use something from it, like " + e.name + ".name(...)")
@@ -3878,13 +3936,76 @@ fn llFloat(str text) -> str {
     return s
 }
 
+// ---------- constants ----------
+
+fn findConst(ptr[Gen] g, str module, str name) -> int {
+    pi := progOf(g, module)
+    if pi < 0 {
+        return -1
+    }
+    for i in 0..g.progs[pi].consts.len {
+        if g.progs[pi].consts[i].name == name {
+            return i
+        }
+    }
+    return -1
+}
+
+// A constant is worked out where it is used, from the code it was written with: numbers,
+// text, true/false, chars, other constants, enum variants and operators between them.
+fn constValue(ptr[Gen] g, str module, str name, ast.Node at) -> Val {
+    pi := progOf(g, module)
+    c := g.progs[pi].consts[findConst(g, module, name)]
+    key := module + "." + name
+    if g.constBusy.contains(key) {
+        fail(g, at, "the constant '" + name + "' is worked out from itself")
+    }
+    checkConst(g, c.kids[0])
+    g.constBusy.push(key)
+    savedScopes := g.scopes
+    savedModule := g.module
+    []Scope none
+    g.scopes = none
+    pushScope(g)
+    g.module = module
+    v := Val()
+    if c.flag {
+        t := resolve(g, c.ty, c)
+        v = coerce(g, exprWant(g, c.kids[0], t), t, c.kids[0], "the constant '" + name + "'")
+    } else {
+        v = expr(g, c.kids[0])
+    }
+    g.module = savedModule
+    g.scopes = savedScopes
+    g.constBusy.pop()
+    noteRef(g, at, at.col, name.len, "```finch\nconst " + ast.show(v.ty) + " " + name + "\n```", g.files[c.file], c.line, c.col)
+    return v
+}
+
+fn checkConst(ptr[Gen] g, ast.Node e) {
+    k := e.kind
+    if ["int", "float", "char", "str", "bool", "var", "unary", "binary", "member"].contains(k) {
+        for kid in e.kids {
+            checkConst(g, kid)
+        }
+        return
+    }
+    if k == "call" && numType(e.name).len > 0 {
+        for kid in e.kids {
+            checkConst(g, kid)
+        }
+        return                              // f32(0.5), u8(255)
+    }
+    fail(g, e, "a constant is made of numbers, text, true/false, chars and other constants (not calls or variables)")
+}
+
 // Which enum does `m.kids[0]` name, if it names one? Color, or shapes.Color. -1 if neither.
 fn enumNamed(ptr[Gen] g, ast.Node n) -> int {
     if n.kind == "var" && lookup(g, n.name) < 0 {
         return findEnum(g, g.module, n.name)
     }
     if n.kind == "member" && n.kids[0].kind == "var" && lookup(g, n.kids[0].name) < 0 && imports(g, n.kids[0].name) {
-        return findEnum(g, n.kids[0].name, n.name)
+        return findEnum(g, modFor(g, n.kids[0].name), n.name)
     }
     return -1
 }
@@ -3895,7 +4016,7 @@ fn sumNamed(ptr[Gen] g, ast.Node n) -> int {
         return findSum(g, g.module, n.name)
     }
     if n.kind == "member" && n.kids[0].kind == "var" && lookup(g, n.kids[0].name) < 0 && imports(g, n.kids[0].name) {
-        return findSum(g, n.kids[0].name, n.name)
+        return findSum(g, modFor(g, n.kids[0].name), n.name)
     }
     return -1
 }
@@ -3996,6 +4117,13 @@ fn member(ptr[Gen] g, ast.Node m, bool write) -> Ref {
             fail(g, m, "a variant of an enum can't be changed")
         }
         return Ref(isPlace: false, val: enumValue(g, m, ei))
+    }
+    mod := m.kids[0]
+    if mod.kind == "var" && lookup(g, mod.name) < 0 && imports(g, mod.name) && findConst(g, modFor(g, mod.name), m.name) >= 0 {
+        if write {
+            fail(g, m, "'" + mod.name + "." + m.name + "' is a constant; it can't be changed")
+        }
+        return Ref(isPlace: false, val: constValue(g, modFor(g, mod.name), m.name, m))       // shapes.SIDES
     }
     obj := ref(g, m.kids[0], write)
     t := obj.val.ty
@@ -5198,11 +5326,83 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     if si >= 0 {
         return construct(g, si, c.kids, c.names, c)
     }
+    if ["min", "max", "abs", "clamp"].contains(n) {
+        return mathCall(g, c)       // only when nothing of yours (or C's abs) has the name
+    }
     if lookup(g, n) >= 0 {
         fail(g, c, "'" + n + "' is a variable, not a function")
     }
     fail(g, c, "there is no function named '" + n + "'" + headerHint(n))
     return Val()
+}
+
+// min(a, b, ...), max(a, b, ...), abs(x), clamp(x, lo, hi) for any numbers
+fn mathCall(ptr[Gen] g, ast.Node c) -> Val {
+    n := c.name
+    for nm in c.names {
+        if nm.len > 0 {
+            fail(g, c, "named arguments (" + nm + ": ...) are only for creating structs")
+        }
+    }
+    []Val vals
+    for a in c.kids {
+        v := expr(g, a)
+        if !isNumber(v.ty) {
+            fail(g, a, n + "(...) is for numbers, but this is " + ast.show(v.ty))
+        }
+        vals.push(v)
+    }
+    if n == "abs" {
+        checkArgs(g, c, 0, 1, n)
+        x := vals[0]
+        if isUnsigned(x.ty) {
+            return x
+        }
+        zero := "0"
+        if isFloat(x.ty) {
+            zero = "0.0"
+        }
+        neg := arith(g, "-", Val(v: zero, ty: x.ty, lit: true), x, c)
+        below := compare(g, "<", x, Val(v: zero, ty: x.ty, lit: true), c)
+        return Val(v: op(g, "select i1 " + below.v + ", " + llty(g, x.ty) + " " + neg.v + ", " + llty(g, x.ty) + " " + x.v), ty: x.ty)
+    }
+    if n == "clamp" {
+        checkArgs(g, c, 0, 3, n)
+        low := pick(g, "<", vals[0], vals[2], c)        // min(x, hi)
+        return pick(g, ">", low, vals[1], c)             // max(that, lo)
+    }
+    if vals.len < 2 {
+        fail(g, c, "'" + n + "' takes two or more numbers")
+    }
+    o := "<"
+    if n == "max" {
+        o = ">"
+    }
+    out := vals[0]
+    for i in 1..vals.len {
+        out = pick(g, o, out, vals[i], c)
+    }
+    return out
+}
+
+// the smaller (o "<") or bigger (o ">") of two numbers, in the type both fit
+fn pick(ptr[Gen] g, str o, Val a, Val b, ast.Node at) -> Val {
+    l := a
+    r := b
+    if !unify(g, addr(l), addr(r)) {
+        badOperands(g, o, a, b, at)
+    }
+    if l.lit && r.lit && l.ty.kind == "int" {
+        x := int(l.v) or 0
+        y := int(r.v) or 0
+        if (o == "<") == (x < y) {
+            return l
+        }
+        return r
+    }
+    first := compare(g, o, l, r, at)
+    t := llty(g, l.ty)
+    return Val(v: op(g, "select i1 " + first.v + ", " + t + " " + l.v + ", " + t + " " + r.v), ty: l.ty)
 }
 
 fn callFn(ptr[Gen] g, int fi, ast.Node c, int first, str shown, str selfAddr, str selfRoot) -> Val {
@@ -5375,13 +5575,15 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
         if !imports(g, mn) {
             fail(g, objNode, "there is no variable or module named '" + mn + "' (to use a module, add  import " + mn + "  at the top)")
         }
+        shown := mn
+        mn = modFor(g, mn)
         fi := findFn(g, mn, m.name)
         if fi >= 0 {
-            return callFn(g, fi, m, 1, mn + "." + m.name, "", "")
+            return callFn(g, fi, m, 1, shown + "." + m.name, "", "")
         }
         mti := findTemplate(g, mn, m.name, "", false)
         if mti >= 0 {
-            return genericCall(g, m, mti, 1, mn + "." + m.name)
+            return genericCall(g, m, mti, 1, shown + "." + m.name)
         }
         mei := findEnum(g, mn, m.name)
         if mei >= 0 {
@@ -5395,7 +5597,7 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
             }
             return construct(g, si, args, m.names, m)
         }
-        fail(g, m, "the module '" + mn + "' has no function or struct named '" + m.name + "'")
+        fail(g, m, "the module '" + shown + "' has no function or struct named '" + m.name + "'")
     }
     changing := ["push", "pop", "insert", "remove", "clear", "resize", "sort", "reverse"]
     r := ref(g, objNode, changing.contains(m.name))

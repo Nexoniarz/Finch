@@ -1,0 +1,4 @@
+// expect: both branches of the if have to give the same type
+fn main() {
+    x := if true { 1 } else { "one" }
+}

@@ -114,11 +114,13 @@ struct Node {
 struct Program {
     str module
     str path
-    []str imports   // Finch modules
+    []str imports   // Finch modules, by the name this file uses: import ui/button -> "button"
+    []str modules   // which module each is: "ui/button" (import path as p: "path")
     []str cimports  // C headers: import "stdio.h"
     []str cwhere    // where each was written, for error messages
     []str links     // link "glfw", link "mine.c"
     []Node structs
     []Node enums
     []Node fns
+    []Node consts   // const NAME = value
 }

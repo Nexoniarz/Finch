@@ -1,0 +1,4 @@
+// expect: an if that gives a value needs an else
+fn main() {
+    x := if true { 1 }
+}

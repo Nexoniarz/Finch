@@ -104,9 +104,9 @@ fn load(ptr[Loader] l, str path, str module) {
     prog := parser.parse(lexer.lex(src, path), file, path)
     prog.module = module
     prog.path = path
-    imports := prog.imports
+    modules := prog.modules
     l.progs.push(prog)
-    for name in imports {
+    for name in modules {
         if !l.loaded.contains(name) {
             l.loaded.push(name)
             load(l, findModule(l, path, name), name)

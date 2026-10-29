@@ -1,0 +1,7 @@
+true true false
+5 0 255 65 true
+["a", "z.txt"]
+["b", "blob.bin"]
+["(none)"]
+false
+gone: can't remove the folder "fs_test_dir" (is it empty?)
