@@ -204,7 +204,12 @@ e3 = src3.replace("    print(", "    pt.\n    print(")
 c.notify("textDocument/didChange", {"textDocument": {"uri": uri3, "version": 2}, "contentChanges": [{"text": e3}]})
 comp = c.request("textDocument/completion", {"textDocument": {"uri": uri3}, "position": {"line": 3, "character": 7}})
 labels = [i["label"] for i in comp["items"]]
-check("completion: a module under another name", "base" in labels and "join" in labels, labels)
+ok3 = "base" in labels and "join" in labels
+if not ok3:  # show what the compiler's index says about the module, to see where the names differ
+    import subprocess
+    idx = subprocess.run([FINCH, "index", path3], capture_output=True, text=True).stdout
+    labels = [l for l in idx.splitlines() if l.startswith("@I") or (l.startswith("@F") and "base" in l)][:6]
+check("completion: a module under another name", ok3, labels)
 
 c.request("shutdown", None)
 c.notify("exit", None)

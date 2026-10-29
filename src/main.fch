@@ -495,8 +495,8 @@ fn main([]str args) -> int {
         extra = extra + " -g"      // or clang drops the debug info that is in the IR
     }
     []str cflagList
-    for d in extraDirs {
-        cflagList.push(" -I" + linker.quote(d))
+    for d in dirs {
+        cflagList.push(" -I" + linker.quote(d))      // also the program's own folders (its headers, for inline C functions)
     }
     cflagList.push(cflags)
     if linker.build(linker.Build(out: out, ir: ir, rt: rt, opt: opt, extra: extra, shared: shared, links: links, name: absolute(file), cflags: cflagList.join(""), ldflags: ldflags), tg, ci) != 0 {

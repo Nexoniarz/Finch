@@ -36,3 +36,6 @@ static inline int fill_key(Event *e, int key) {
     return 1;
 }
 int poll_event(Event *e);
+
+static inline int twice(int x) { return 2 * x; }
+static inline int sum_all(int n, ...) { return n; }

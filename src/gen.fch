@@ -5086,17 +5086,26 @@ fn callC(ptr[Gen] g, ast.Node c, cimport.CFunc f) -> Val {
             tail = "..."
         }
     }
-    if !g.cdone.contains("f:" + f.name) {
+    callee := "@" + f.name
+    sig := ""
+    if f.variadic {
+        sig = " (" + ptys.join(", ") + tail + ")"
+    }
+    if f.inline {
+        // a static inline function has no symbol: the linker builds a C file with  void *finch_inl_name = &name;
+        if !g.cdone.contains("i:" + f.name) {
+            g.cdone.push("i:" + f.name)
+            g.head.push("@finch_inl_" + f.name + " = external global ptr")
+        }
+        callee = load(g, "ptr", "@finch_inl_" + f.name)
+        sig = " (" + ptys.join(", ") + tail + ")"
+    } else if !g.cdone.contains("f:" + f.name) {
         g.cdone.push("f:" + f.name)
         if !runtimeDeclares(f.name) {
             g.head.push("declare" + retExt + " " + retLL + " @" + f.name + "(" + ptys.join(", ") + tail + ")")
         }
     }
-    sig := ""
-    if f.variadic {
-        sig = " (" + ptys.join(", ") + tail + ")"
-    }
-    text := "call" + retExt + " " + retLL + sig + " @" + f.name + "(" + args.join(", ") + ")"
+    text := "call" + retExt + " " + retLL + sig + " " + callee + "(" + args.join(", ") + ")"
     if ret.kind == "void" {
         emit(g, text)
         releaseAll(g, temps, mark)

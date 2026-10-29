@@ -18,6 +18,7 @@ struct CFunc {
     ast.Type ret
     []ast.Type params
     bool variadic
+    bool inline         // static inline in the header: called through a pointer a small C file keeps (finch_inl_name)
     str unsupported     // non-empty: why Finch can't call it (yet)
 }
 
@@ -535,9 +536,7 @@ fn visit(ptr[Importer] imp, CXCursor c) {
         }
         f := CFunc(name: name, header: imp.header)
         if clang_Cursor_getStorageClass(c) == CX_SC_Static {
-            f.unsupported = "is a static inline C function (it has no code to link against)"
-            imp.out.fns[name] = f
-            return
+            f.inline = true         // mingw's printf and time, header-only helpers
         }
         ft := clang_getCanonicalType(clang_getCursorType(c))
         if ft.kind == CXType_FunctionNoProto {

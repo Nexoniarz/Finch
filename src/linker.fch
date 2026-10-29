@@ -98,6 +98,40 @@ fn depsKey([]str files, str flags) -> str {
     return fingerprint2(all.join("\n"))
 }
 
+// "@finch_inl_name = external global ptr" in the IR -> a C file (in the cache) that defines them; "" if none
+fn inlineFile(str ir, cimport.CImports ci) -> str {
+    []str headers
+    []str lines
+    for line in ir.split("\n") {
+        if line.starts_with("@finch_inl_") && line.ends_with(" = external global ptr") {
+            name := line.sub(11, line.find(" = "))
+            h := ci.fns[name].header
+            if !headers.contains(h) {
+                headers.push(h)
+            }
+            lines.push("void *finch_inl_" + name + " = (void *)&" + name + ";")
+        }
+    }
+    if lines.len == 0 {
+        return ""
+    }
+    []str src
+    for h in headers {
+        src.push("#include \"" + h + "\"")
+    }
+    for l in lines {
+        src.push(l)
+    }
+    text := src.join("\n") + "\n"
+    dir := host.cacheDir() + "/c"
+    host.makeDirs(dir)
+    path := dir + "/inline_" + fingerprint2(text) + ".c"
+    if !file_exists(path) {
+        write_file(path, text)
+    }
+    return path
+}
+
 // A C file of the program (link "x.c"), built once and kept until it or a header it includes changes.
 fn cObject(str src, str cc, str flags, platform.Target tg, str log) -> str! {
     dir := host.cacheDir() + "/c"
@@ -225,6 +259,8 @@ fn linkFailed(str output, cimport.CImports ci, platform.Target tg) -> int {
             missing.add(between(l, "unresolved external symbol ", " \n\r"))
         } else if l.contains("cannot find -l") {
             libs.add(between(l, "cannot find -l", ": \n\r"))
+        } else if l.contains("unable to find library -l") {
+            libs.add(between(l, "unable to find library -l", ": \n\r"))         // lld (MinGW)
         } else if l.contains("library not found for -l") {
             libs.add(between(l, "library not found for -l", ": \n\r"))
         } else if l.contains("ld: library '") {
@@ -368,6 +404,20 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
         }
     }
     cmd := linkWith + " " + quote(obj) + " " + quote(rtobj) + " -o " + quote(b.out)
+    // static inline C functions the program calls: a C file that keeps a pointer to each
+    inl := inlineFile(b.ir, ci)
+    if inl.len > 0 {
+        pic := " -fPIC"
+        if tg.windows {
+            pic = ""
+        }
+        o := cObject(inl, cc, " -O2" + pic + b.cflags, tg, log) or {
+            print(err)
+            host.remove(log)
+            return 1
+        }
+        cmd = cmd + " " + quote(o)
+    }
     if !tg.msvc {
         cmd = cmd + " -lm"
     }
@@ -384,7 +434,7 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
     }
     if b.shared {
         if tg.darwin {
-            cmd = cmd + " -dynamiclib"
+            cmd = cmd + " -dynamiclib -undefined dynamic_lookup"     // like a .so: the host's functions are found when it is loaded
         } else {
             cmd = cmd + " -shared"
         }

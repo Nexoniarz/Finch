@@ -26,4 +26,5 @@ fn main() {
     print(abs(-2.5), abs(-3), min(EV_KEY, 7))     // Finch's abs, not C's int-only one
     bg := RAYWHITE                                  // #define RAYWHITE (Color){ 245, 245, 245, 255 }
     print(bg.r, bg.a, DARK.g, DARK.a, HALF_UP.x, HALF_UP.y)
+    print(twice(21))                                // static inline in the header
 }
