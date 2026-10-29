@@ -123,4 +123,5 @@ struct Program {
     []Node enums
     []Node fns
     []Node consts   // const NAME = value
+    []str tests     // the functions made from test "..." { } blocks, in order
 }

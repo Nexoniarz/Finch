@@ -266,6 +266,19 @@ fn parseProgram(ptr[Parser] p) -> ast.Program {
             prog.structs.push(parseStruct(p))
         } else if at(p, "const") {
             prog.consts.push(parseConst(p))
+        } else if at(p, "ident") && cur(p).text == "test" && peekKind(p, 1) == "string" {
+            // test "adds up" { ... }: a function finch test runs (its name is the text)
+            t := next(p)
+            f := node(p, "fn")
+            f.line = t.line
+            f.col = t.col
+            f.text = next(p).text
+            f.name = "__test_" + str(prog.tests.len)
+            f.ty = ast.simple("void")
+            f.kids.push(parseBlock(p))
+            f.endLine = f.kids[0].endLine
+            prog.tests.push(f.name)
+            prog.fns.push(f)
         } else if at(p, "enum") {
             e := parseEnum(p)
             prog.enums.push(e)

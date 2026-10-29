@@ -30,6 +30,9 @@ struct Options {
     bool debug          // -g
     str cwd             // the folder the compiler was started in (for the debug info)
     platform.Target target
+    bool trace          // runtime errors show the chain of calls (off for --shared and --no-trace)
+    bool test           // finch test: main runs the test "..." blocks instead
+    []str testModules   // the modules whose tests run ("" is the main file); not the standard library's
 }
 
 // A generic struct or function, kept as written until something asks for a version of it.
@@ -163,6 +166,9 @@ struct Ref {
 
 struct Gen {
     []ast.Program progs
+    bool trace          // each function keeps a frame { prev, name, file, line } in @finch_trace
+    str frame           // the current function's frame ("" in helpers)
+    str frameLine       // where its line goes
     []str constBusy     // the constants being worked out: a loop between them is an error
     []str files
     []str head
@@ -782,6 +788,8 @@ fn boundsCheck(ptr[Gen] g, str i, str len, ast.Node at) {
 // ---------- helper functions (generated once per type) ----------
 
 struct Saved {
+    str frame
+    str frameLine
     []str body
     []str allocas
     int tmp
@@ -790,8 +798,10 @@ struct Saved {
 }
 
 fn beginHelper(ptr[Gen] g) -> Saved {
-    s := Saved(body: g.body, allocas: g.allocas, tmp: g.tmp, term: g.term, dbgScope: g.dbgScope)
+    s := Saved(body: g.body, allocas: g.allocas, tmp: g.tmp, term: g.term, dbgScope: g.dbgScope, frame: g.frame, frameLine: g.frameLine)
     g.dbgScope = -1             // a helper made on the side has no source lines
+    g.frame = ""
+    g.frameLine = ""
     []str empty
     g.body = empty
     g.allocas = empty
@@ -807,6 +817,8 @@ fn endHelper(ptr[Gen] g, Saved s, str header) {
     g.tmp = s.tmp
     g.term = s.term
     g.dbgScope = s.dbgScope
+    g.frame = s.frame
+    g.frameLine = s.frameLine
 }
 
 // for i in 0..n, inside the current function
@@ -2258,6 +2270,25 @@ fn define(ptr[Gen] g, int si) {
     []Scope none
     g.scopes = none
     pushScope(g)
+    g.frame = ""
+    g.frameLine = ""
+    if g.trace {
+        // this call on the chain a runtime error shows: in move (game.fch:12)
+        shownName := g.cur.name
+        if g.cur.recv.len > 0 {
+            shownName = g.cur.recv + "." + g.cur.name
+        }
+        if f.text.len > 0 && g.cur.name.starts_with("__test_") {
+            shownName = "test \"" + f.text + "\""
+        }
+        g.frame = alloca(g, "{ ptr, ptr, ptr, i64 }")
+        emit(g, "store ptr " + load(g, "ptr", "@finch_trace") + ", ptr " + g.frame)
+        emit(g, "store ptr " + strGlobal(g, shownName) + ", ptr " + op(g, "getelementptr inbounds { ptr, ptr, ptr, i64 }, ptr " + g.frame + ", i32 0, i32 1"))
+        emit(g, "store ptr " + strGlobal(g, g.files[f.file]) + ", ptr " + op(g, "getelementptr inbounds { ptr, ptr, ptr, i64 }, ptr " + g.frame + ", i32 0, i32 2"))
+        g.frameLine = op(g, "getelementptr inbounds { ptr, ptr, ptr, i64 }, ptr " + g.frame + ", i32 0, i32 3")
+        emit(g, "store i64 " + str(f.line) + ", ptr " + g.frameLine)
+        emit(g, "store ptr " + g.frame + ", ptr @finch_trace")
+    }
     []str params
     if g.cur.recv.len > 0 {
         // self is the caller's struct itself, reached through its address
@@ -2328,6 +2359,9 @@ fn block(ptr[Gen] g, ast.Node b, bool scope) {
 fn stmt(ptr[Gen] g, ast.Node s) {
     g.dbgLine = s.line
     g.dbgCol = s.col
+    if g.frameLine.len > 0 && !g.term {
+        emit(g, "store i64 " + str(s.line) + ", ptr " + g.frameLine)
+    }
     k := s.kind
     if k == "block" {
         block(g, s, true)
@@ -4731,19 +4765,20 @@ fn exportWrapper(ptr[Gen] g, FnSig sig) -> str {
         }
     }
     text := "call " + llty(g, sig.ret) + " " + sig.ll + "(" + args.join(", ") + ")"
+    savedTrace := traceSave(g)
     retLL := "void"
     retExt := ""
     if sig.ret.kind == "void" {
-        emit(g, text)
+        tracedEmit(g, text, savedTrace)
         emit(g, "ret void")
     } else if sig.ret.kind == "bool" {
         retLL = "i8"
         retExt = " zeroext"
-        emit(g, "ret i8 " + op(g, "zext i1 " + op(g, text) + " to i8"))
+        emit(g, "ret i8 " + op(g, "zext i1 " + tracedCall(g, text, savedTrace) + " to i8"))
     } else {
         retLL = llty(g, sig.ret)
         retExt = cExt(g, sig.ret)
-        emit(g, "ret " + retLL + " " + op(g, text))
+        emit(g, "ret " + retLL + " " + tracedCall(g, text, savedTrace))
     }
     dll := ""
     if g.tg.windows {
@@ -4751,6 +4786,29 @@ fn exportWrapper(ptr[Gen] g, FnSig sig) -> str {
     }
     endHelper(g, s, "define" + dll + retExt + " " + retLL + " @" + sig.name + "(" + params.join(", ") + ")")
     return sig.name
+}
+
+// A call from C into Finch (a callback, an export fn) leaves the chain of calls as it found it
+fn traceSave(ptr[Gen] g) -> str {
+    if !g.trace {
+        return ""
+    }
+    return load(g, "ptr", "@finch_trace")
+}
+
+fn tracedCall(ptr[Gen] g, str text, str saved) -> str {
+    r := op(g, text)
+    if saved.len > 0 {
+        emit(g, "store ptr " + saved + ", ptr @finch_trace")
+    }
+    return r
+}
+
+fn tracedEmit(ptr[Gen] g, str text, str saved) {
+    emit(g, text)
+    if saved.len > 0 {
+        emit(g, "store ptr " + saved + ", ptr @finch_trace")
+    }
 }
 
 // A C-callable door into a Finch function, for addr(fn): callbacks like qsort's or libclang's.
@@ -4809,20 +4867,21 @@ fn cThunk(ptr[Gen] g, int fi, ast.Node at) -> str {
         }
     }
     text := "call " + llty(g, sig.ret) + " " + sig.ll + "(" + args.join(", ") + ")"
+    savedTrace := traceSave(g)
     retExt := ""
     if sig.ret.kind == "void" {
-        emit(g, text)
+        tracedEmit(g, text, savedTrace)
         emit(g, "ret void")
     } else if pl.sret {
-        store(g, llty(g, sig.ret), op(g, text), sretName)
+        store(g, llty(g, sig.ret), tracedCall(g, text, savedTrace), sretName)
         emit(g, "ret void")
     } else if pl.ret.kind == "expand" {
         slot := alloca(g, "[32 x i8]")
-        store(g, llty(g, sig.ret), op(g, text), slot)
+        store(g, llty(g, sig.ret), tracedCall(g, text, savedTrace), slot)
         emit(g, "ret " + pl.ret.coerced + " " + load(g, pl.ret.coerced, slot))
     } else {
         retExt = cExt(g, sig.ret)
-        emit(g, "ret " + cLL(g, sig.ret) + " " + op(g, text))
+        emit(g, "ret " + cLL(g, sig.ret) + " " + tracedCall(g, text, savedTrace))
     }
     endHelper(g, s, "define internal" + retExt + " " + pl.retLL + " " + name + "(" + hdr.join(", ") + ")")
     return name
@@ -5329,6 +5388,9 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     if ["min", "max", "abs", "clamp"].contains(n) {
         return mathCall(g, c)       // only when nothing of yours (or C's abs) has the name
     }
+    if n == "assert" {
+        return assertCall(g, c)
+    }
     if lookup(g, n) >= 0 {
         fail(g, c, "'" + n + "' is a variable, not a function")
     }
@@ -5337,6 +5399,58 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
 }
 
 // min(a, b, ...), max(a, b, ...), abs(x), clamp(x, lo, hi) for any numbers
+// assert(cond) and assert(cond, "why"): stops the program (in finch test: fails the test) when cond is false
+fn assertCall(ptr[Gen] g, ast.Node c) -> Val {
+    if c.kids.len != 1 && c.kids.len != 2 {
+        fail(g, c, "assert takes a condition, and maybe a message: assert(x > 0, \"x must be positive\")")
+    }
+    cond := coerce(g, expr(g, c.kids[0]), T("bool"), c.kids[0], "the condition of assert")
+    bad := newLabel(g, "assert.failed")
+    ok := newLabel(g, "assert.ok")
+    condBr(g, cond.v, ok, bad)
+    label(g, bad)
+    file := strGlobal(g, g.files[c.file])
+    msg := strConst(g, "")
+    if c.kids.len == 2 {
+        msg = strArg(g, c.kids[1], "the message")
+    }
+    emit(g, "call void @finch_assert_failed(ptr " + file + ", i64 " + str(c.line) + ", ptr " + spill(g, msg) + ")")
+    emit(g, "unreachable")
+    g.term = true
+    label(g, ok)
+    return Val(ty: T("void"))
+}
+
+fn traceInit() -> str {
+    return "  call void @finch_trace_init(ptr @finch_trace_top, ptr @finch_trace_set)\n"
+}
+
+// finch test: a main that runs every test "..." block of these modules, each on its own
+fn testMain(ptr[Gen] g, []str modules) {
+    body := ""
+    n := 0
+    for pr in g.progs {
+        if !modules.contains(pr.module) {
+            continue
+        }
+        for i in 0..pr.tests.len {
+            fi := findFn(g, pr.module, pr.tests[i])
+            name := g.progs[g.sigs[fi].prog].fns[g.sigs[fi].index].text
+            shown := name
+            if pr.module.len > 0 {
+                shown = pr.module + ": " + name
+            }
+            body = body + "  call void @finch_test_run(ptr " + strGlobal(g, shown) + ", ptr " + g.sigs[fi].ll + ")\n"
+            n += 1
+        }
+    }
+    if n == 0 {
+        print(g.files[0] + ":1:1: error: there are no tests here (write them as  test \"what it checks\" { ... })")
+        exit(1)
+    }
+    g.out.push("define i32 @main(i32 %argc, ptr %argv) {\nentry:\n" + traceInit() + body + "  %r = call i32 @finch_test_summary()\n  ret i32 %r\n}\n")
+}
+
 fn mathCall(ptr[Gen] g, ast.Node c) -> Val {
     n := c.name
     if g.index {
@@ -5448,6 +5562,30 @@ fn emitCall(ptr[Gen] g, FnSig sig, ast.Node c, []str args, str shown) -> Val {
         fail(g, c, "'" + shown + "' can fail, so say what happens then:  " + shown + "(...) or <value>,  " + shown + "(...) or { ... },  or  try " + shown + "(...)")
     }
     text := "call " + retTy(g, sig) + " " + sig.ll + "(" + args.join(", ") + ")"
+    if g.frame.len > 0 {
+        // the callee put its frame on the chain; it is gone once the call is back
+        out := Val(ty: sig.ret)
+        r := ""
+        if sig.ret.kind == "void" && !sig.fallible {
+            emit(g, text)
+        } else {
+            r = op(g, text)
+        }
+        emit(g, "store ptr " + g.frame + ", ptr @finch_trace")
+        if sig.fallible {
+            ok := op(g, "extractvalue " + retTy(g, sig) + " " + r + ", 0")
+            g.ffailed = op(g, "xor i1 " + ok + ", true")
+            g.fmsg = op(g, "extractvalue " + retTy(g, sig) + " " + r + ", 2")
+            if sig.ret.kind == "void" {
+                return out
+            }
+            return Val(v: op(g, "extractvalue " + retTy(g, sig) + " " + r + ", 1"), ty: sig.ret, fresh: owning(g, sig.ret))
+        }
+        if sig.ret.kind == "void" {
+            return out
+        }
+        return Val(v: r, ty: sig.ret, fresh: owning(g, sig.ret))
+    }
     if sig.fallible {
         r := op(g, text)
         ok := op(g, "extractvalue " + retTy(g, sig) + " " + r + ", 0")
@@ -6093,6 +6231,10 @@ fn runtimeDecls() -> str {
         "declare void @qsort(ptr, i64, i64, ptr)",
         "declare void @finch_args(ptr, i32, ptr)",
         "declare void @finch_args_free(ptr)",
+        "declare void @finch_assert_failed(ptr, i64, ptr)",
+        "declare void @finch_test_run(ptr, ptr)",
+        "declare void @finch_trace_init(ptr, ptr)",
+        "declare i32 @finch_test_summary()",
         "declare void @finch_input(ptr, ptr)",
         "declare i32 @finch_file_exists(ptr)",
         "declare i32 @finch_str_try_int(ptr, ptr, ptr)",
@@ -6123,6 +6265,14 @@ fn assemble(ptr[Gen] g) -> str {
         text = text + "target triple = \"" + g.tg.triple + "\"\n\n"
     }
     text = text + g.head.join("\n") + "\n\n" + runtimeDecls() + "\n"
+    // the chain of calls a runtime error shows; the runtime reads it through these two
+    tls := "thread_local(initialexec)"
+    if g.shared || g.tg.windows {
+        tls = "thread_local"
+    }
+    text = text + "@finch_trace = internal " + tls + " global ptr null\n"
+    text = text + "define hidden ptr @finch_trace_top() {\nentry:\n  %t = load ptr, ptr @finch_trace\n  ret ptr %t\n}\n"
+    text = text + "define hidden void @finch_trace_set(ptr %t) {\nentry:\n  store ptr %t, ptr @finch_trace\n  ret void\n}\n\n"
     if g.debug {
         text = text + "declare void @llvm.dbg.declare(metadata, metadata, metadata)\n\n"
     }
@@ -6137,6 +6287,7 @@ fn generate([]ast.Program progs, []str files, cimport.CImports ci, Options opt) 
     shared := opt.shared
     gen := Gen(progs: progs, files: files, ci: ci, shared: opt.shared, debug: opt.debug, index: opt.index, cwd: opt.cwd, tg: opt.target, dbgScope: -1)
     g := addr(gen)
+    g.trace = opt.trace && !opt.shared
     if g.debug {
         // !0 the compile unit, !1 and !2 the module flags, then the source files
         g.md.push("")
@@ -6149,6 +6300,15 @@ fn generate([]ast.Program progs, []str files, cimport.CImports ci, Options opt) 
     }
     declare(g)
     main := findFn(g, "", "main")
+    if opt.test {
+        di := 0
+        while di < g.sigs.len {
+            define(g, di)
+            di += 1
+        }
+        testMain(g, opt.testModules)
+        return assemble(g)
+    }
     if shared {
         if main >= 0 {
             fail(g, g.progs[g.sigs[main].prog].fns[g.sigs[main].index], "a library (--shared) has no main: the program that loads it calls its 'export fn's")
@@ -6212,6 +6372,6 @@ fn generate([]ast.Program progs, []str files, cimport.CImports ci, Options opt) 
         callText = "%r = " + callText
         ret = "  %code = trunc i64 %r to i32\n  ret i32 %code\n"
     }
-    g.out.push("define i32 @main(i32 %argc, ptr %argv) {\nentry:\n" + pre + "  " + callText + "\n" + after + ret + "}\n")
+    g.out.push("define i32 @main(i32 %argc, ptr %argv) {\nentry:\n" + traceInit() + pre + "  " + callText + "\n" + after + ret + "}\n")
     return assemble(g)
 }

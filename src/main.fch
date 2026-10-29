@@ -28,6 +28,14 @@ fn dirOf(str path) -> str {
     return path.sub(0, i)
 }
 
+// the path from the root, so the same file is the same in the cache wherever finch is started
+fn absolute(str path) -> str {
+    if path.starts_with("/") || (path.len > 2 && path[1] == ':') {
+        return path
+    }
+    return host.cwd() + "/" + path
+}
+
 fn stem(str path) -> str {
     name := path.sub(dirOf(path).len + 1, path.len)
     if dirOf(path) == "." && !path.starts_with("./") {
@@ -150,6 +158,7 @@ fn usage() {
     print("usage:")
     print("  finch run <file.fch> [args...]     build and run a program")
     print("  finch build <file.fch> [-o name]   build a program")
+    print("  finch test <file.fch>              run its test \"...\" { } blocks (and those of the modules it imports)")
     print("  finch ir <file.fch>                print the LLVM IR")
     print("  finch version                      show the version")
     print("  finch lsp                          the language server, for editors (VS Code, Kate, ...)")
@@ -158,6 +167,8 @@ fn usage() {
     print("  -l <lib>          link a library (the same as  link \"lib\"  in the program)")
     print("  -I <dir>          look for imported C headers there too")
     print("  -g                debug info (for gdb and lldb; use -O0 with it)")
+    print("  --trace           runtime errors show the chain of calls (finch run, finch test, -g and -O0 do it anyway)")
+    print("  --no-trace        they don't (finch build without -g or -O0 doesn't, it costs speed)")
     print("  --target <name>   build for another system: windows, linux, arm64 (Linux), macos, or an LLVM triple")
     exit(1)
 }
@@ -192,13 +203,15 @@ fn main([]str args) -> int {
     }
     cmd := args[1]
     file := args[2]
-    if cmd != "build" && cmd != "run" && cmd != "ir" && cmd != "index" {
+    if cmd != "build" && cmd != "run" && cmd != "ir" && cmd != "index" && cmd != "test" {
         usage()
     }
     out := stem(file)
     outGiven := false
     shared := false
     debug := false
+    trace := cmd != "build"         // finch build: only with --trace, -g or -O0 (the chain costs speed)
+    traceGiven := false
     targetName := ""
     opt := "-O2"
     []str extraLibs
@@ -234,6 +247,12 @@ fn main([]str args) -> int {
             ai += 1
         } else if a == "-g" {
             debug = true
+        } else if a == "--no-trace" {
+            trace = false
+            traceGiven = true
+        } else if a == "--trace" {
+            trace = true
+            traceGiven = true
         } else if a == "--target" && ai + 1 < args.len {
             targetName = args[ai + 1]
             ai += 1
@@ -244,8 +263,11 @@ fn main([]str args) -> int {
         }
         ai += 1
     }
+    if !traceGiven && (debug || opt == "-O0") {
+        trace = true
+    }
     tg := platform.select(targetName)
-    if cmd == "run" {
+    if cmd == "run" || cmd == "test" {
         out = host.tempDir() + "/finch_run_" + str(host.pid()) + "_" + stem(file) + tg.exe
     } else if shared && !outGiven {
         if tg.windows {
@@ -315,7 +337,13 @@ fn main([]str args) -> int {
         print(err)
         return 1
     }
-    ir := gen.generate(loader.progs, loader.files, ci, gen.Options(shared: shared, debug: debug, index: cmd == "index", cwd: host.cwd(), target: tg))
+    []str testModules
+    for prog in loader.progs {
+        if !prog.path.starts_with(loader.std + "/") {
+            testModules.push(prog.module)       // your own files' tests, not the standard library's
+        }
+    }
+    ir := gen.generate(loader.progs, loader.files, ci, gen.Options(shared: shared, debug: debug, index: cmd == "index", cwd: host.cwd(), target: tg, test: cmd == "test", testModules: testModules, trace: trace))
     if cmd == "ir" || cmd == "index" {
         print(ir)
         return 0
@@ -345,10 +373,14 @@ fn main([]str args) -> int {
     if debug {
         extra = extra + " -g"      // or clang drops the debug info that is in the IR
     }
-    if linker.build(linker.Build(out: out, ir: ir, rt: rt, opt: opt, extra: extra, shared: shared, links: links), tg, ci) != 0 {
+    []str cflagList
+    for d in extraDirs {
+        cflagList.push(" -I" + linker.quote(d))
+    }
+    if linker.build(linker.Build(out: out, ir: ir, rt: rt, opt: opt, extra: extra, shared: shared, links: links, name: absolute(file), cflags: cflagList.join("")), tg, ci) != 0 {
         return 1
     }
-    if cmd == "run" {
+    if cmd == "run" || cmd == "test" {
         []str quoted
         for a in progArgs {
             quoted.push(linker.quote(a))

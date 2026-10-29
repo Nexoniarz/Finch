@@ -13,6 +13,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <math.h>
+#include <setjmp.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -50,10 +51,38 @@ static char empty[1] = "";
 static void (*fatal_hook)(const char *msg);
 void finch_on_fatal(void (*hook)(const char *msg)) { fatal_hook = hook; }
 
+// The chain of Finch calls, kept by the program itself (see @finch_trace in the compiler's output):
+// each frame is { the caller's frame, the function's name, its file, the line it is at }.
+typedef struct FFrame {
+    struct FFrame *prev;
+    const char *name;
+    const char *file;
+    int64_t line;
+} FFrame;
+static void *(*trace_top)(void);
+static void (*trace_set)(void *);
+void finch_trace_init(void *(*top)(void), void (*set)(void *)) {
+    trace_top = top;
+    trace_set = set;
+}
+
+static void print_trace(void) {
+    if (!trace_top) return;
+    FFrame *f = trace_top();
+    for (int n = 0; f; n++, f = f->prev) {
+        if (n == 30) {
+            fprintf(stderr, "  ...\n");
+            break;
+        }
+        fprintf(stderr, "  in %s (%s:%lld)\n", f->name, f->file, (long long)f->line);
+    }
+}
+
 static __attribute__((noreturn)) void fatal(const char *msg) {
     if (fatal_hook) fatal_hook(msg);
     fflush(stdout);
     fprintf(stderr, "%s\n", msg);
+    print_trace();
     exit(1);
 }
 
@@ -80,6 +109,50 @@ static void *must(void *p) {
 
 void *finch_alloc(int64_t n) { return must(malloc(n ? (size_t)n : 1)); }
 void *finch_zalloc(int64_t n) { return must(calloc(1, n ? (size_t)n : 1)); }
+
+// ---------- assert and finch test ----------
+
+__attribute__((noreturn, cold)) void finch_assert_failed(const char *file, int64_t line, const FStr *why) {
+    char msg[600];
+    if (why->len) snprintf(msg, sizeof msg, "assert failed: %.*s", (int)(why->len > 500 ? 500 : why->len), why->ptr);
+    else snprintf(msg, sizeof msg, "assert failed");
+    finch_panic(file, line, msg);
+}
+
+// Each test runs on its own: a runtime error (a failed assert too) ends that test, and the next one runs.
+static jmp_buf test_jump;
+static char test_message[1100];
+static int64_t tests_passed, tests_failed;
+
+static void test_fatal(const char *msg) {
+    snprintf(test_message, sizeof test_message, "%s", msg);
+    longjmp(test_jump, 1);
+}
+
+void finch_test_run(const char *name, void (*fn)(void)) {
+    void (*saved)(const char *) = fatal_hook;
+    void *chain = trace_top ? trace_top() : NULL;
+    test_message[0] = 0;
+    fatal_hook = test_fatal;
+    int failed = setjmp(test_jump);
+    if (!failed) fn();
+    fatal_hook = saved;
+    if (trace_set) trace_set(chain);        // a test that stopped early left its calls on the chain
+    fflush(stdout);
+    if (failed) {
+        tests_failed++;
+        printf("FAIL %s\n     %s\n", name, test_message);
+    } else {
+        tests_passed++;
+        printf("ok   %s\n", name);
+    }
+    fflush(stdout);
+}
+
+int finch_test_summary(void) {
+    printf("\n%lld passed, %lld failed\n", (long long)tests_passed, (long long)tests_failed);
+    return tests_failed ? 1 : 0;
+}
 
 // ---------- strings ----------
 

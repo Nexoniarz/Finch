@@ -18,8 +18,106 @@ fn fingerprint(str text) -> str {
     return parts.join("")
 }
 
+// two different 32-bit hashes: names a cached object after everything it was built from
+fn fingerprint2(str text) -> str {
+    u32 h = 2166136261
+    u32 k = 5381
+    for c in text {
+        h = (h ^ u32(c)) * 16777619
+        k = k * 33 + u32(c)
+    }
+    digits := "0123456789abcdef"
+    []str parts
+    for i in 0..8 {
+        parts.push(str(digits[int((h >> u32(28 - 4 * i)) & 15)]))
+    }
+    for i in 0..8 {
+        parts.push(str(digits[int((k >> u32(28 - 4 * i)) & 15)]))
+    }
+    return parts.join("")
+}
+
 fn quote(str a) -> str {
     return host.quote(a)
+}
+
+// The files a C file was built from, as the compiler's -MMD wrote them: "x.o: x.c x.h \\n y.h"
+fn depFiles(str dep) -> []str {
+    colon := dep.find(": ")
+    []str out
+    if colon < 0 {
+        return out
+    }
+    text := dep.sub(colon + 2, dep.len).replace("\\\r\n", " ").replace("\\\n", " ").replace("\\ ", str(char(1)))
+    for w in text.replace("\n", " ").replace("\t", " ").split(" ") {
+        if w.trim().len > 0 {
+            out.push(w.trim().replace(str(char(1)), " "))
+        }
+    }
+    return out
+}
+
+// what the files say now, as one fingerprint ("" if one is gone)
+fn depsKey([]str files, str flags) -> str {
+    []str all
+    all.push(flags)
+    for f in files {
+        text := read_file(f) or {
+            return ""
+        }
+        all.push(f)
+        all.push(text)
+    }
+    return fingerprint2(all.join("\n"))
+}
+
+// A C file of the program (link "x.c"), built once and kept until it or a header it includes changes.
+fn cObject(str src, str cc, str flags, platform.Target tg, str log) -> str! {
+    dir := host.cacheDir() + "/c"
+    host.makeDirs(dir)
+    slot := dir + "/" + fingerprint2(src + "\n" + cc + "\n" + flags + "\n" + tg.triple)
+    obj := slot + ".o"
+    key := cc + flags + tg.triple
+    if file_exists(obj) && file_exists(slot + ".d") && file_exists(slot + ".key") {
+        was := read_file(slot + ".key") or ""
+        if was.len > 0 && was == depsKey(depFiles(read_file(slot + ".d") or ""), key) {
+            return obj
+        }
+    }
+    part := slot + ".part" + str(host.pid())
+    code := host.run(cc + flags + " -MMD -MF " + quote(slot + ".d") + " -c " + quote(src) + " -o " + quote(part) + " > " + quote(log) + " 2>&1")
+    if code != 0 {
+        host.remove(part)
+        return error((read_file(log) or "") + "error: couldn't compile " + src)
+    }
+    host.move(part, obj)
+    write_file(slot + ".key", depsKey(depFiles(read_file(slot + ".d") or ""), key))
+    return obj
+}
+
+// The program's IR, compiled once: the same IR with the same flags gives the same object.
+// One slot per program (`name`), so the cache does not grow with every change.
+fn irObject(str clang, str flags, str ir, str name, str log) -> str! {
+    dir := host.cacheDir() + "/ir"
+    host.makeDirs(dir)
+    slot := dir + "/" + fingerprint2(name + "\n" + flags)
+    obj := slot + ".o"
+    key := fingerprint2(clang + flags + "\n" + ir)
+    if file_exists(obj) && (read_file(slot + ".key") or "") == key {
+        return obj
+    }
+    ll := slot + ".part" + str(host.pid()) + ".ll"
+    part := slot + ".part" + str(host.pid()) + ".o"
+    write_file(ll, ir)
+    code := host.run(clang + flags + " -w -c " + quote(ll) + " -o " + quote(part) + " > " + quote(log) + " 2>&1")
+    host.remove(ll)
+    if code != 0 {
+        host.remove(part)
+        return error((read_file(log) or "") + "\nerror: clang couldn't compile the program's IR")
+    }
+    host.move(part, obj)
+    write_file(slot + ".key", key)
+    return obj
 }
 
 // "-lname", or whatever pkg-config says the library needs
@@ -203,6 +301,9 @@ struct Build {
     str extra           // -g, -fPIC ...
     bool shared
     []str links         // what the program asked to link: a library name, a .c file (with its folder), a .o or .a
+    str name            // the main file (names its slot in the cache)
+    str cflags          // for the program's own C files: -I dirs, finch.toml's cflags
+    str ldflags         // more for the linker: finch.toml's ldflags, -L dirs
 }
 
 // IR -> program. 0 if it worked.
@@ -222,26 +323,22 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
         print(err)
         return 1
     }
-    ll := b.out + ".ll"
-    obj := b.out + ".o"
-    write_file(ll, b.ir)
     target := ""
     if tg.cross || tg.windows {
         target = " --target=" + tg.triple
     }
     log := b.out + ".log"
-    code := host.run(clang + target + " " + b.opt + b.extra + " -w -c " + quote(ll) + " -o " + quote(obj) + " > " + quote(log) + " 2>&1")
-    host.remove(ll)
-    if code != 0 {
-        print(read_file(log) or "")
-        print("error: clang couldn't compile the program's IR")
-        host.remove(obj)
+    obj := irObject(clang, target + " " + b.opt + b.extra, b.ir, b.name + "\n" + tg.triple, log) or {
+        print(err)
         host.remove(log)
         return 1
     }
     cmd := cc + " " + quote(obj) + " " + quote(rtobj) + " -o " + quote(b.out)
     if !tg.msvc {
         cmd = cmd + " -lm"
+    }
+    if b.ldflags.len > 0 {
+        cmd = cmd + b.ldflags                              // finch.toml: libdirs and ldflags
     }
     if getenv("FINCH_LDFLAGS").len > 0 {
         cmd = cmd + " " + getenv("FINCH_LDFLAGS")          // more flags for the linker, like -L/where/libclang/is
@@ -253,24 +350,18 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
             cmd = cmd + " -shared"
         }
     }
-    []str temps
     for l in b.links {
         if l.ends_with(".c") {
-            // the program's own C file, built along with it
-            o := b.out + "." + str(temps.len) + ".o"
+            // the program's own C file, built along with it (and kept in the cache until it changes)
             pic := " -fPIC"
             if tg.windows {
                 pic = ""
             }
-            c := host.run(cc + " -O2" + pic + " -c " + quote(l) + " -o " + quote(o) + " > " + quote(log) + " 2>&1")
-            if c != 0 {
-                print((read_file(log) or "") + "error: couldn't compile " + l)
-                host.remove(obj)
+            o := cObject(l, cc, " -O2" + pic + b.cflags, tg, log) or {
+                print(err)
                 host.remove(log)
-                host.remove(o)
                 return 1
             }
-            temps.push(o)
             cmd = cmd + " " + quote(o)
         } else if l.ends_with(".o") || l.ends_with(".a") {
             cmd = cmd + " " + quote(l)
@@ -280,11 +371,7 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
     }
     status := host.run(cmd + " > " + quote(log) + " 2>&1")
     output := read_file(log) or ""
-    host.remove(obj)
     host.remove(log)
-    for t in temps {
-        host.remove(t)
-    }
     if status == 127 {
         print("error: no C compiler found to link with ('" + cc + "'; install one, or set FINCH_CC)")
         return 1

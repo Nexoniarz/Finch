@@ -80,6 +80,7 @@ fn operator(ptr[Lexer] lx) -> str {
 
 // """ text over several lines """: the line break after the opening quotes is dropped, and so is
 // the indentation of the closing quotes, from every line (the text can be indented with the code).
+// Gives the text as written (escapes and \(...) still in it); cook() finishes it.
 fn longString(ptr[Lexer] lx, Token t) -> str {
     for k in 0..3 {
         advance(lx)
@@ -90,15 +91,23 @@ fn longString(ptr[Lexer] lx, Token t) -> str {
             fail(lx, t.line, t.col, "text is never closed (missing \"\"\")")
         }
         ch := peek(lx, 0)
-        advance(lx)
-        if ch == '\\' {
-            e := peek(lx, 0)
+        if ch == '\\' && peek(lx, 1) == '(' {
+            start := lx.i
             advance(lx)
-            ch = escape(lx, e)
-        } else if ch == '\r' {
+            advance(lx)
+            skipEmbedded(lx, t)
+            parts.push(lx.src.sub(start, lx.i))
+            continue
+        }
+        advance(lx)
+        if ch == '\r' {
             continue
         }
         parts.push(str(ch))
+        if ch == '\\' && lx.i < lx.src.len {
+            parts.push(str(peek(lx, 0)))       // \" doesn't end the text
+            advance(lx)
+        }
     }
     for k in 0..3 {
         advance(lx)
@@ -129,6 +138,156 @@ fn longString(ptr[Lexer] lx, Token t) -> str {
     return body
 }
 
+// "text" as written, up to the closing quote (which is skipped); escapes and \(...) are still in it
+fn rawString(ptr[Lexer] lx, Token t) -> str {
+    advance(lx)
+    start := lx.i
+    while peek(lx, 0) != '"' {
+        if lx.i >= lx.src.len || peek(lx, 0) == '\n' {
+            fail(lx, t.line, t.col, "string is never closed (missing \")")
+        }
+        if peek(lx, 0) == '\\' && peek(lx, 1) == '(' {
+            advance(lx)
+            advance(lx)
+            skipEmbedded(lx, t)
+            continue
+        }
+        if peek(lx, 0) == '\\' {
+            advance(lx)                 // the escaped character can't end the string
+        }
+        advance(lx)
+    }
+    raw := lx.src.sub(start, lx.i)
+    advance(lx)
+    return raw
+}
+
+// past the code of a \( ... ), up to and including its )
+fn skipEmbedded(ptr[Lexer] lx, Token t) {
+    depth := 1
+    while depth > 0 {
+        c := peek(lx, 0)
+        if lx.i >= lx.src.len || c == '\n' {
+            fail(lx, t.line, t.col, "a \\( in this text is never closed (missing ')')")
+        }
+        if c == '(' {
+            depth += 1
+        } else if c == ')' {
+            depth -= 1
+        } else if c == '"' || c == '\'' {
+            advance(lx)
+            while peek(lx, 0) != c {
+                if lx.i >= lx.src.len || peek(lx, 0) == '\n' {
+                    fail(lx, t.line, t.col, "a text inside \\( ... ) is never closed")
+                }
+                if peek(lx, 0) == '\\' {
+                    advance(lx)
+                }
+                advance(lx)
+            }
+        }
+        advance(lx)
+    }
+}
+
+fn punct(str k, Token at) -> Token {
+    return Token(kind: k, text: k, line: at.line, col: at.col, nl: false)
+}
+
+// The tokens of a text: one string, or for "x is \(x)" the tokens of ("x is " + str(x) + "").
+// \(v, 2) is str(v, 2): a number with two digits after the point.
+fn cook(ptr[Lexer] lx, str raw, Token t) -> []Token {
+    []Token toks
+    []str parts
+    pieces := 0
+    i := 0
+    while i < raw.len {
+        ch := raw[i]
+        if ch == '\\' && i + 1 < raw.len && raw[i + 1] == '(' {
+            j := i + 2
+            depth := 1
+            while depth > 0 {
+                c := raw[j]
+                if c == '(' {
+                    depth += 1
+                } else if c == ')' {
+                    depth -= 1
+                } else if c == '"' || c == '\'' {
+                    j += 1
+                    while raw[j] != c {
+                        if raw[j] == '\\' {
+                            j += 1
+                        }
+                        j += 1
+                    }
+                }
+                j += 1
+            }
+            code := raw.sub(i + 2, j - 1)
+            if code.trim().len == 0 {
+                fail(lx, t.line, t.col, "\\( ) needs a value inside, like \\(x)")
+            }
+            if pieces == 0 {
+                open := punct("(", t)
+                open.nl = t.nl
+                toks.push(open)
+            }
+            toks.push(Token(kind: "string", text: parts.join(""), line: t.line, col: t.col, nl: false))
+            []str none
+            parts = none
+            toks.push(punct("+", t))
+            toks.push(Token(kind: "ident", text: "str", line: t.line, col: t.col, nl: false))
+            toks.push(punct("(", t))
+            inner := lexFrom(code, lx.path, t.line, t.col + 3 + i)
+            for k in 0..inner.len - 1 {
+                tk := inner[k]
+                tk.nl = false
+                toks.push(tk)
+            }
+            toks.push(punct(")", t))
+            toks.push(punct("+", t))
+            pieces += 1
+            i = j
+            continue
+        }
+        if ch == '\\' {
+            i += 1
+            ch = escapeAt(lx, raw[i], t.line, t.col)
+        }
+        parts.push(str(ch))
+        i += 1
+    }
+    last := Token(kind: "string", text: parts.join(""), line: t.line, col: t.col, nl: false)
+    if pieces == 0 {
+        last.nl = t.nl
+        toks.push(last)
+        return toks
+    }
+    toks.push(last)
+    toks.push(punct(")", t))
+    return toks
+}
+
+fn escapeAt(ptr[Lexer] lx, char e, int line, int col) -> char {
+    if e == 'n' {
+        return '\n'
+    }
+    if e == 't' {
+        return '\t'
+    }
+    if e == 'r' {
+        return '\r'
+    }
+    if e == '0' {
+        return char(0)
+    }
+    if e == '\\' || e == '"' || e == '\'' {
+        return e
+    }
+    fail(lx, line, col, "unknown escape \\" + str(e) + " in this text (\\n \\t \\r \\0 \\\\ \\\" \\' and \\(value))")
+    return e
+}
+
 fn escape(ptr[Lexer] lx, char e) -> char {
     if e == 'n' {
         return '\n'
@@ -150,7 +309,12 @@ fn escape(ptr[Lexer] lx, char e) -> char {
 }
 
 fn lex(str src, str path) -> []Token {
-    lexer := Lexer(src: src, path: path, i: 0, line: 1, col: 1, nl: true)
+    return lexFrom(src, path, 1, 1)
+}
+
+// `src` starts at this line and column of the file (the code inside a "\(...)")
+fn lexFrom(str src, str path, int firstLine, int firstCol) -> []Token {
+    lexer := Lexer(src: src, path: path, i: 0, line: firstLine, col: firstCol, nl: true)
     lx := addr(lexer)
     []Token out
     while lx.i < lx.src.len {
@@ -237,8 +401,15 @@ fn lex(str src, str path) -> []Token {
                 t.text = (mant + lx.src.sub(expStart, lx.i)).replace("_", "")   // LLVM wants the '.'
             }
         } else if c == '"' && peek(lx, 1) == '"' && peek(lx, 2) == '"' {
-            t.kind = "string"
-            t.text = longString(lx, t)
+            for tk in cook(lx, longString(lx, t), t) {
+                out.push(tk)
+            }
+            continue
+        } else if c == '"' {
+            for tk in cook(lx, rawString(lx, t), t) {
+                out.push(tk)
+            }
+            continue
         } else if c == '"' || c == '\'' {
             quote := c
             t.kind = "string"
