@@ -343,7 +343,7 @@ import ui/button as btn  // another name: btn.draw()
 | `union U` | `U`: `U u`, `u.field`, `U(field: v)`, by pointer to C (not by value) |
 | `#define N 4`, `"text"`, `(1u << 3)`, `((Uint64)2)` | constants (not function-like macros) |
 
-A C function's `char *` result is a `str` already; structs by value work on every target (System V, Windows x64, ARM64).
+A C function's `char *` result is a `str` already; structs by value work with the System V, Windows x64 and ARM64 Linux calling conventions (tested in emulators; macOS by CI).
 
 ---
 

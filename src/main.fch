@@ -47,6 +47,7 @@ struct Loader {
     str os              // "windows", "macos" or "linux": a module may have a version for each (time_windows.fch)
     str std             // the standard library's folder, or ""
     []str paths         // FINCH_PATH: more folders to look for modules in
+    str root            // the main file's folder: modules are named by their path from here (ui/button)
     []str overlayPaths  // --overlay path=file: read `path` from `file` (the text an editor has, not saved yet)
     []str overlayFiles
 }
@@ -89,6 +90,27 @@ fn findModule(ptr[Loader] l, str from, str name) -> str {
     return local
 }
 
+// A module is named by its file, so `import button` in ui/menu.fch and `import ui/button` in main.fch
+// are the same module, and two different util.fch files are two modules.
+fn moduleKey(ptr[Loader] l, str file, str name) -> str {
+    []str roots
+    roots.push(l.root)
+    for d in l.paths {
+        roots.push(d)
+    }
+    roots.push(l.std)
+    for r in roots {
+        if r.len > 0 && file.starts_with(r + "/") && file.ends_with(".fch") {
+            key := file.sub(r.len + 1, file.len - 4)
+            if key.ends_with("_" + l.os) {
+                key = key.sub(0, key.len - l.os.len - 1)        // time_windows.fch is the module time
+            }
+            return key
+        }
+    }
+    return name
+}
+
 fn load(ptr[Loader] l, str path, str module) {
     if !file_exists(path) && !l.overlayPaths.contains(path) {
         if module.len > 0 {
@@ -104,12 +126,21 @@ fn load(ptr[Loader] l, str path, str module) {
     prog := parser.parse(lexer.lex(src, path), file, path)
     prog.module = module
     prog.path = path
+    if module.len == 0 {
+        l.root = dirOf(path)
+    }
+    []str files
+    for i in 0..prog.modules.len {
+        f := findModule(l, path, prog.modules[i])
+        files.push(f)
+        prog.modules[i] = moduleKey(l, f, prog.modules[i])
+    }
     modules := prog.modules
     l.progs.push(prog)
-    for name in modules {
-        if !l.loaded.contains(name) {
-            l.loaded.push(name)
-            load(l, findModule(l, path, name), name)
+    for i in 0..modules.len {
+        if !l.loaded.contains(modules[i]) {
+            l.loaded.push(modules[i])
+            load(l, files[i], modules[i])
         }
     }
 }

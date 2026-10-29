@@ -1,0 +1,4 @@
+// for tests/new/modules_by_file.fch: a util.fch in a folder
+fn who() -> str {
+    return "ui/util"
+}

@@ -1,0 +1,11 @@
+// for tests/new/modules_by_file.fch: its sibling, imported without the folder
+import button
+import util
+
+fn first() -> button.Button {
+    return button.make("menu")
+}
+
+fn whoami() -> str {
+    return util.who()
+}

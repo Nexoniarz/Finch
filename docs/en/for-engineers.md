@@ -98,6 +98,18 @@ its `endLine` (used by the language server). The old `fn name(...) type` order i
 `name.fch` there, the folders of `FINCH_PATH`, then the standard library `std/`. Each module is parsed once; its names
 are used as `module.name`. `import "x.h"` goes to the C importer instead.
 
+A module is identified by its **file**: the key is its path from the main file's folder (or from a `FINCH_PATH` folder or
+`std/`) without `.fch` and without an `_<os>` suffix, e.g. `ui/button`. `Program.imports` holds the name each file uses
+(`button`, or `btn` for `import ui/button as btn`) and `Program.modules` the key; `modFor()` maps one to the other.
+Symbols use the key with `/` turned into `$` (`@finch.ui$button.make`).
+
+**Constants.** `const NAME = expr` is a top-level node; `constValue()` evaluates the expression at each use, in the
+defining module with no local scopes, so it folds to a literal (integer literal operators are folded in `arith`).
+`checkConst()` allows only literals, names, operators, members and numeric conversions; `constBusy` catches cycles.
+
+**Lexer extras.** `1e9` / `2.5e-3` are float tokens (the text is normalised to have a `.` for LLVM); `"""` strings are
+dedented by the closing line's indentation in `longString()`.
+
 ---
 
 ## 4. Code generation
@@ -137,6 +149,14 @@ LLVM IR does not do the C calling convention for you, so `gen.fch` reproduces it
 - `makePlan` turns the classification into a call plan; `cThunk` makes `addr(fn)` callable from C (callbacks).
 
 The same code is what lets the compiler call libclang, whose API passes `CXCursor`, `CXType` and `CXString` by value.
+
+**Macros.** A `#define` that is one number or a string literal is read from its tokens. One whose tokens could be a
+constant expression (no braces, semicolons or statement keywords) is evaluated by clang: a second parse of the header
+adds `static const __auto_type __finch_m_NAME = (NAME);` for each, and `clang_Cursor_Evaluate` gives an int, a double
+or a string. Those that are not constants only produce errors in that second parse and are dropped.
+
+**Unions** are a `CStruct` with `isUnion`: the LLVM type is `{ [n x iA] }` (size and alignment from clang), every field has
+offset 0, and a field is read through memory. They can't be passed by value to C (`unsupported` says why).
 
 ---
 
@@ -201,8 +221,9 @@ from the slot they flow into (`exprWant()`), so `[]f32 xs = [1, 2.5]` works.
 
 ### Binary operands: `unify(l, r)`
 
-A literal side adapts to the other; otherwise the side that widens grows; `i32` + `u32` is an error;
-int + float → float; f32 + f64 → f64. There is no C integer promotion: `u8 + u8` stays `u8`.
+A literal side adapts to the other (also a float literal next to an `f32`: `x * 2.0` stays `f32`); otherwise the side
+that widens grows; `i32` + `u32` is an error; int + float → float; f32 + f64 → f64. There is no C integer promotion:
+`u8 + u8` stays `u8`. Two integer literals fold to a literal, so `FLAG_A | FLAG_B` still fits a `u64` or `u32`.
 
 ### Explicit conversions: `convert()`
 

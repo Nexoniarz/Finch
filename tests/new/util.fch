@@ -1,0 +1,4 @@
+// for tests/new/modules_by_file.fch: the top-level util.fch
+fn who() -> str {
+    return "util"
+}

@@ -1,5 +1,6 @@
 // C unions (SDL_Event-style) and #defines that are expressions, strings or casts
 import "cunion.h"
+import "stdlib.h"
 link "cunion.c"
 
 fn main() {
@@ -22,4 +23,5 @@ fn main() {
     Tagged t
     t.as.f = 0.5
     print(t.as.f)
+    print(abs(-2.5), abs(-3), min(EV_KEY, 7))     // Finch's abs, not C's int-only one
 }

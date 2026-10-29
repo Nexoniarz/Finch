@@ -342,7 +342,7 @@ import ui/przycisk as p  // inna nazwa: p.rysuj()
 | `union U` | `U`: `U u`, `u.pole`, `U(pole: v)`, przez wskaźnik do C (nie przez wartość) |
 | `#define N 4`, `"tekst"`, `(1u << 3)`, `((Uint64)2)` | stałe (bez makr-funkcji) |
 
-Wynik `char *` z funkcji C to od razu `str`; struktury przez wartość działają na każdym systemie (System V, Windows x64, ARM64).
+Wynik `char *` z funkcji C to od razu `str`; struktury przez wartość działają w konwencjach System V, Windows x64 i ARM64 Linux (sprawdzone w emulatorach; macOS przez CI).
 
 ---
 

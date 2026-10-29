@@ -97,6 +97,18 @@ kolejność `fn nazwa(...) typ` to błąd składni z podpowiedzią.
 katalogów z `FINCH_PATH`, potem biblioteki standardowej `std/`. Każdy moduł jest parsowany raz; jego nazwy są używane jako
 `modul.nazwa`. `import "x.h"` trafia do importera C.
 
+Moduł rozpoznaje się po **pliku**: kluczem jest jego ścieżka od folderu głównego pliku (albo od folderu z `FINCH_PATH`
+lub `std/`) bez `.fch` i bez końcówki `_<system>`, np. `ui/przycisk`. `Program.imports` trzyma nazwę używaną w danym
+pliku (`przycisk`, albo `p` przy `import ui/przycisk as p`), a `Program.modules` klucz; `modFor()` zamienia jedno na drugie.
+Symbole używają klucza z `/` zamienionym na `$` (`@finch.ui$przycisk.rysuj`).
+
+**Stałe.** `const NAZWA = wyrażenie` to węzeł najwyższego poziomu; `constValue()` liczy wyrażenie przy każdym użyciu, w
+module, w którym je zdefiniowano, bez zmiennych lokalnych, więc wychodzi literał (operatory na literałach całkowitych
+składa `arith`). `checkConst()` dopuszcza tylko literały, nazwy, operatory, pola i konwersje liczb; `constBusy` łapie pętle.
+
+**Dodatki leksera.** `1e9` / `2.5e-3` to tokeny float (tekst dostaje `.` dla LLVM); teksty `"""` tracą wcięcie
+linii zamykającej w `longString()`.
+
 ---
 
 ## 4. Generowanie kodu
@@ -129,6 +141,14 @@ LLVM IR nie realizuje za ciebie konwencji wywołań C, więc `gen.fch` ją odtwa
 - `classifyArm64`: AAPCS64, z jednorodnymi agregatami zmiennoprzecinkowymi (HFA);
 - reguły Microsoft x64 (struktury 1, 2, 4, 8 bajtów w rejestrze, reszta przez wskaźnik);
 - `makePlan` zamienia klasyfikację w plan wywołania; `cThunk` robi z `addr(fn)` coś, co C może wywołać (callbacki).
+
+**Makra.** `#define` będący jedną liczbą albo tekstem czyta się z tokenów. Taki, którego tokeny mogą być wyrażeniem
+stałym (bez klamer, średników i słów instrukcji), liczy clang: drugie parsowanie nagłówka dodaje
+`static const __auto_type __finch_m_NAZWA = (NAZWA);` dla każdego, a `clang_Cursor_Evaluate` daje liczbę całkowitą,
+double albo tekst. Te, które nie są stałymi, dają tylko błędy w tym drugim parsowaniu i są pomijane.
+
+**Unie** to `CStruct` z `isUnion`: typ LLVM to `{ [n x iA] }` (rozmiar i wyrównanie od clanga), każde pole ma
+przesunięcie 0, a pole czyta się przez pamięć. Nie da się ich przekazać do C przez wartość (`unsupported` mówi dlaczego).
 
 Ten sam kod pozwala kompilatorowi wołać libclang, którego API przekazuje `CXCursor`, `CXType` i `CXString` przez wartość.
 
@@ -194,9 +214,10 @@ Literały tablic biorą typ elementu z miejsca, do którego trafiają (`exprWant
 
 ### Argumenty operatorów: `unify(l, r)`
 
-Strona-literał dopasowuje się do drugiej; w przeciwnym razie rośnie strona, która się rozszerza;
-`i32` + `u32` to błąd; całkowita + zmiennoprzecinkowa → zmiennoprzecinkowa; f32 + f64 → f64.
-Nie ma promocji całkowitych z C: `u8 + u8` zostaje `u8`.
+Strona-literał dopasowuje się do drugiej (także literał float obok `f32`: `x * 2.0` zostaje `f32`); w przeciwnym razie
+rośnie strona, która się rozszerza; `i32` + `u32` to błąd; całkowita + zmiennoprzecinkowa → zmiennoprzecinkowa;
+f32 + f64 → f64. Nie ma promocji całkowitych z C: `u8 + u8` zostaje `u8`. Dwa literały całkowite składają się w literał,
+więc `FLAG_A | FLAG_B` dalej mieści się w `u64` albo `u32`.
 
 ### Konwersje jawne: `convert()`
 

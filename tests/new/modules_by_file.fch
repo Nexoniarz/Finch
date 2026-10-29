@@ -1,0 +1,10 @@
+// a module is its file: ui/menu's "import button" is this file's "import ui/button",
+// and ui/util.fch and util.fch are two different modules
+import ui/button
+import ui/menu
+import util
+
+fn main() {
+    button.Button b = menu.first()
+    print(b.label, b.w, menu.whoami(), util.who())
+}

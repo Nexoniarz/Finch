@@ -186,6 +186,19 @@ c.notify("textDocument/didChange", {"textDocument": {"uri": uri2, "version": 4},
 diags = c.diagnostics(uri2)
 check("error: unhandled failure", diags and "can fail" in diags[0]["message"], diags)
 
+# a module imported under another name: completion after its name
+src3 = "import path as pt\n\nfn main() {\n    print(pt.base(\"a/b\"))\n}\n"
+path3 = os.path.join(d, "alias.fch")
+open(path3, "w").write(src3)
+uri3 = pathlib.Path(path3).resolve().as_uri()
+c.notify("textDocument/didOpen", {"textDocument": {"uri": uri3, "languageId": "finch", "version": 1, "text": src3}})
+check("import as: compiles", c.diagnostics(uri3) == [])
+e3 = src3.replace("    print(", "    pt.\n    print(")
+c.notify("textDocument/didChange", {"textDocument": {"uri": uri3, "version": 2}, "contentChanges": [{"text": e3}]})
+comp = c.request("textDocument/completion", {"textDocument": {"uri": uri3}, "position": {"line": 3, "character": 7}})
+labels = [i["label"] for i in comp["items"]]
+check("completion: a module under another name", "base" in labels and "join" in labels, labels)
+
 c.request("shutdown", None)
 c.notify("exit", None)
 c.p.wait(timeout=5)

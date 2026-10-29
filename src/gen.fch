@@ -279,8 +279,8 @@ fn noteCall(ptr[Gen] g, ast.Node c, FnSig sig) {
 
 // what is known about every function, struct and enum, for completion and the outline
 fn indexAll(ptr[Gen] g, []str mainImports) {
-    for im in mainImports {
-        g.idx.push("@I\t" + im)
+    for i in 0..mainImports.len {
+        g.idx.push("@I\t" + mainImports[i] + "\t" + g.progs[0].modules[i])      // the name used here, the module
     }
     for sg in g.sigs {
         f := g.progs[sg.prog].fns[sg.index]
@@ -5319,8 +5319,8 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     if ei >= 0 {
         return enumFrom(g, c, ei)
     }
-    if g.ci.fns.has(n) {
-        return callC(g, c, g.ci.fns[n])
+    if g.ci.fns.has(n) && !["min", "max", "abs", "clamp"].contains(n) {
+        return callC(g, c, g.ci.fns[n])        // (C's abs only takes an int; Finch's takes any number)
     }
     si = findStruct(g, "C", n)
     if si >= 0 {
@@ -5339,6 +5339,9 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
 // min(a, b, ...), max(a, b, ...), abs(x), clamp(x, lo, hi) for any numbers
 fn mathCall(ptr[Gen] g, ast.Node c) -> Val {
     n := c.name
+    if g.index {
+        noteRef(g, c, c.col, n.len, docs.hover(docs.find(docs.builtins(), n)), "", 0, 0)
+    }
     for nm in c.names {
         if nm.len > 0 {
             fail(g, c, "named arguments (" + nm + ": ...) are only for creating structs")

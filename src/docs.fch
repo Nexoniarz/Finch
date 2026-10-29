@@ -21,11 +21,15 @@ fn builtins() -> []Doc {
         doc("delete_file", "delete_file(str path) -> bool", "Deletes the file. true if it worked; with or / try, the reason it didn't."),
         doc("error", "error(str message)", "The failure a fallible function returns: return error(\"...\"). The caller handles it with or / try."),
         doc("shell", "shell(str command) -> int", "Runs a command in the system's shell and gives back its exit code."),
-        doc("exit", "exit(int code)", "Ends the program right away with this exit code."),
+        doc("exit", "exit(int code)", "Ends the program right away with this exit code (it also ends an or { } block)."),
+        doc("min", "min(a, b, ...) -> number", "The smallest of the numbers, in the type they all fit."),
+        doc("max", "max(a, b, ...) -> number", "The biggest of the numbers, in the type they all fit."),
+        doc("abs", "abs(x) -> number", "x without its minus sign (any number type)."),
+        doc("clamp", "clamp(x, lo, hi) -> number", "x, but at least lo and at most hi."),
         doc("addr", "addr(x) -> ptr[T]", "A pointer to a variable, field or element. addr(function) gives C a callback."),
         doc("new", "new(value) -> ptr[T]", "Puts a copy of the value on the heap. Give it back with free(...)."),
         doc("free", "free(ptr p)", "Gives back memory from new(...) (or from C), freeing what the value owns."),
-        doc("str", "str(x) -> str", "Turns a number, bool, char, []u8 or C char pointer into text."),
+        doc("str", "str(x) -> str", "Turns a number, bool, char, []u8 or C char pointer into text. str(x, 2): a number with 2 digits after the point."),
         doc("int", "int(x) -> int", "Converts to a whole number: cuts off fractions, parses text (stops the program if it isn't a number, unless handled: int(s) or 0)."),
         doc("float", "float(x) -> float", "Converts to a decimal number; parses text (int(s) or 0.0 handles bad text)."),
         doc("char", "char(int n) -> char", "The character with this code."),
@@ -86,7 +90,7 @@ fn mapMethods() -> []Doc {
 
 fn keywords() -> []str {
     return ["fn", "return", "if", "else", "while", "for", "in", "break", "continue", "true", "false", "null", "import",
-            "link", "struct", "enum", "match", "export", "defer", "or", "try", "self"]
+            "link", "struct", "enum", "match", "export", "defer", "or", "try", "self", "const"]
 }
 
 fn typeNames() -> []str {
