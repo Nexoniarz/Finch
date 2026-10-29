@@ -306,7 +306,7 @@ fn parseDiag(str line) -> Diag {
 
 fn parseOutput(str output) -> Analysis {
     a := Analysis()
-    for line in output.split("\n") {
+    for line in output.replace("\r", "").split("\n") {       // Windows ends the compiler's lines with \r\n
         if line.starts_with("@") {
             f := splitTabs(line)
             tag := f[0]

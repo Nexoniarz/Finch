@@ -12,7 +12,8 @@ target=${1:?usage: tests/cross.sh windows|arm64}
 FINCH=${FINCH:-../build/finch}
 export WINEDEBUG=-all
 case $target in
-    windows) runner=wine; ext=.exe ;;
+    windows) runner=wine; ext=.exe
+             wine cmd /c exit > /dev/null 2>&1 || true ;;      # the first run sets Wine up and says so: not in a test's output
     arm64)   runner=qemu-aarch64; ext= ;;
     *) echo "unknown target $target"; exit 2 ;;
 esac
