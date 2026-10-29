@@ -1,0 +1,12 @@
+// exit(...) ends an or-block, like return
+fn load(str p) -> int! {
+    return error("no such file")
+}
+
+fn main() {
+    n := load("a.txt") or {
+        print("stopping:", err)
+        exit(0)
+    }
+    print("never", n)
+}

@@ -12,6 +12,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -153,10 +154,48 @@ void finch_str_from_uint(FStr *out, uint64_t v) {
     str_heap(out, buf, n);
 }
 
+// The shortest text that reads back as the same number (as an f32 when `single`):
+// 0.1 -> "0.1", 1.0/3 -> "0.3333333333333333", 1e8 -> "100000000", 1e20 -> "1e+20".
+static int fmt_float(char *buf, size_t size, double v, int single) {
+    if (isnan(v)) return snprintf(buf, size, "nan");
+    if (isinf(v)) return snprintf(buf, size, v < 0 ? "-inf" : "inf");
+    int p = 1;
+    for (; p < 17; p++) {
+        snprintf(buf, size, "%.*e", p - 1, v);
+        double back = strtod(buf, NULL);
+        if (single ? (float)back == (float)v : back == v) break;
+    }
+    int exp = atoi(strchr(buf, 'e') + 1);
+    if (exp < -5 || exp >= 17) return snprintf(buf, size, "%.*g", p, v);
+    int decimals = p - 1 - exp;
+    return snprintf(buf, size, "%.*f", decimals > 0 ? decimals : 0, v);
+}
+
 void finch_str_from_float(FStr *out, double v) {
     char buf[64];
-    int n = snprintf(buf, sizeof buf, "%g", v);
+    int n = fmt_float(buf, sizeof buf, v, 0);
     str_heap(out, buf, n);
+}
+
+void finch_str_from_f32(FStr *out, double v) {
+    char buf[64];
+    int n = fmt_float(buf, sizeof buf, v, 1);
+    str_heap(out, buf, n);
+}
+
+// str(x, 2): a fixed number of digits after the point
+void finch_str_fixed(FStr *out, double v, int64_t digits) {
+    char buf[400];
+    if (digits < 0) digits = 0;
+    if (digits > 60) digits = 60;
+    int n = snprintf(buf, sizeof buf, "%.*f", (int)digits, v);
+    str_heap(out, buf, n);
+}
+
+void finch_print_float(double v, int32_t single) {
+    char buf[64];
+    fmt_float(buf, sizeof buf, v, single);
+    fputs(buf, stdout);
 }
 
 void finch_str_from_char(FStr *out, char c) { str_heap(out, &c, 1); }
@@ -242,6 +281,7 @@ static void file_error(FStr *err, const char *what, const FStr *path) {
 void finch_report_error(const FStr *msg) {
     fflush(stdout);
     fprintf(stderr, "error: %.*s\n", (int)msg->len, msg->ptr ? msg->ptr : "");
+    finch_str_drop((FStr *)msg);
 }
 
 void finch_str_sub(FStr *out, const FStr *s, int64_t start, int64_t end, const char *file, int64_t line) {
@@ -399,7 +439,14 @@ static void buf_fmt(FStr *b, const char *fmt, ...) {
 
 void finch_buf_int(FStr *b, int64_t v) { buf_fmt(b, "%lld", (long long)v); }
 void finch_buf_uint(FStr *b, uint64_t v) { buf_fmt(b, "%llu", (unsigned long long)v); }
-void finch_buf_float(FStr *b, double v) { buf_fmt(b, "%g", v); }
+void finch_buf_float(FStr *b, double v) {
+    char t[64];
+    finch_buf_add(b, t, fmt_float(t, sizeof t, v, 0));
+}
+void finch_buf_f32(FStr *b, double v) {
+    char t[64];
+    finch_buf_add(b, t, fmt_float(t, sizeof t, v, 1));
+}
 void finch_buf_bool(FStr *b, int v) { finch_buf_add(b, v ? "true" : "false", v ? 4 : 5); }
 void finch_buf_ptr(FStr *b, const void *p) {
     if (p) buf_fmt(b, "0x%llx", (unsigned long long)(uintptr_t)p);
@@ -496,6 +543,12 @@ void finch_args(FArr *out, int argc, char **argv) {
     out->len = out->cap = argc;
     out->ptr = finch_alloc((int64_t)sizeof(FStr) * (argc ? argc : 1));
     for (int i = 0; i < argc; i++) str_heap((FStr *)out->ptr + i, argv[i], (int64_t)strlen(argv[i]));
+}
+
+// after main: the arguments go
+void finch_args_free(FArr *a) {
+    for (int64_t i = 0; i < a->len; i++) finch_str_drop((FStr *)a->ptr + i);
+    finch_arr_free(a);
 }
 
 // input("Name? ") prints the prompt and reads one line, without the newline.

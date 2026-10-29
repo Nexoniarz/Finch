@@ -1,0 +1,5 @@
+// expect: this code can never run (it comes after return, break, continue or exit)
+fn main() {
+    exit(1)
+    print("x")
+}

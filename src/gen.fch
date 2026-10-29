@@ -1020,6 +1020,21 @@ fn own(ptr[Gen] g, Val v) -> str {
 
 // ---------- printing ----------
 
+// f32 prints the shortest text that is the same f32 (0.1, not 0.100000001)
+fn floatName(ast.Type t) -> str {
+    if t.kind == "f32" {
+        return "f32"
+    }
+    return "float"
+}
+
+fn single(ast.Type t) -> str {
+    if t.kind == "f32" {
+        return "1"
+    }
+    return "0"
+}
+
 fn printf(ptr[Gen] g, str fmt, str args) {
     f := strGlobal(g, fmt)
     t := tmpName(g)
@@ -1044,7 +1059,7 @@ fn emitPrint(ptr[Gen] g, str v, ast.Type t, bool quoted) {
     } else if isUnsigned(t) {
         printf(g, "%llu", "i64 " + intCast(g, v, t, T("u64")))
     } else if isFloat(t) {
-        printf(g, "%g", "double " + floatCast(g, v, t, T("float")))
+        emit(g, "call void @finch_print_float(double " + floatCast(g, v, t, T("float")) + ", i32 " + single(t) + ")")
     } else if k == "char" {
         z := op(g, "sext i8 " + v + " to i32")
         if quoted {
@@ -1106,7 +1121,7 @@ fn emitFormat(ptr[Gen] g, str buf, str v, ast.Type t, bool quoted) {
     } else if isUnsigned(t) {
         emit(g, "call void @finch_buf_uint(ptr " + buf + ", i64 " + intCast(g, v, t, T("u64")) + ")")
     } else if isFloat(t) {
-        emit(g, "call void @finch_buf_float(ptr " + buf + ", double " + floatCast(g, v, t, T("float")) + ")")
+        emit(g, "call void @finch_buf_" + floatName(t) + "(ptr " + buf + ", double " + floatCast(g, v, t, T("float")) + ")")
     } else if k == "char" {
         emit(g, "call void @finch_buf_char(ptr " + buf + ", i8 " + v + ", i32 " + q + ")")
     } else if k == "bool" {
@@ -2254,7 +2269,7 @@ fn block(ptr[Gen] g, ast.Node b, bool scope) {
     }
     for s in b.kids {
         if g.term {
-            fail(g, s, "this code can never run (it comes after return, break or continue)")
+            fail(g, s, "this code can never run (it comes after return, break, continue or exit)")
         }
         stmt(g, s)
     }
@@ -2354,6 +2369,12 @@ fn hasDefaults(ptr[Gen] g, ast.Type t) -> bool {
     }
     for f in g.progs[sd.prog].structs[sd.index].kids {
         if f.kids.len > 0 {
+            return true
+        }
+    }
+    // a field that is itself a struct with defaults gets them too
+    for ft in sd.ftypes {
+        if ft.kind == "struct" && hasDefaults(g, ft) {
             return true
         }
     }
@@ -3492,6 +3513,15 @@ fn unify(ptr[Gen] g, ptr[Val] l, ptr[Val] r) -> bool {
         return true
     }
     if isFloat(l.ty) && isFloat(r.ty) {
+        // a number written in the code adapts to an f32 on the other side: x * 2.0 stays f32
+        if l.ty.kind == "f32" && r.lit {
+            r.value = Val(v: floatCast(g, r.v, r.ty, l.ty), ty: l.ty)
+            return true
+        }
+        if r.ty.kind == "f32" && l.lit {
+            l.value = Val(v: floatCast(g, l.v, l.ty, r.ty), ty: r.ty)
+            return true
+        }
         if l.ty.kind == "f32" {
             l.value = Val(v: floatCast(g, l.v, l.ty, T("float")), ty: T("float"))
         }
@@ -4872,6 +4902,19 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
         return Val(v: pl.addr, ty: ast.ptrTo(pl.ty))
     }
     if n == "str" {
+        if c.kids.len == 2 {
+            // str(x, 2): a float with that many digits after the point
+            checkArgs(g, c, 0, 2, n)
+            x := expr(g, c.kids[0])
+            if !isNumber(x.ty) {
+                fail(g, c.kids[0], "str(x, digits) is for numbers, but this is " + ast.show(x.ty))
+            }
+            x = coerce(g, x, T("float"), c.kids[0], "the number")
+            d := coerce(g, expr(g, c.kids[1]), T("int"), c.kids[1], "the number of digits")
+            fixed := strOut(g)
+            emit(g, "call void @finch_str_fixed(ptr " + fixed + ", double " + x.v + ", i64 " + d.v + ")")
+            return Val(v: load(g, "{ ptr, i64, i64 }", fixed), ty: T("str"), fresh: true)
+        }
         checkArgs(g, c, 0, 1, n)
         v := expr(g, c.kids[0])
         out := strOut(g)
@@ -4884,7 +4927,7 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
         } else if isUnsigned(v.ty) {
             emit(g, "call void @finch_str_from_uint(ptr " + out + ", i64 " + intCast(g, v.v, v.ty, T("u64")) + ")")
         } else if isFloat(v.ty) {
-            emit(g, "call void @finch_str_from_float(ptr " + out + ", double " + floatCast(g, v.v, v.ty, T("float")) + ")")
+            emit(g, "call void @finch_str_from_" + floatName(v.ty) + "(ptr " + out + ", double " + floatCast(g, v.v, v.ty, T("float")) + ")")
         } else if k == "char" {
             emit(g, "call void @finch_str_from_char(ptr " + out + ", i8 signext " + v.v + ")")
         } else if k == "bool" {
@@ -4998,6 +5041,8 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
         t := op(g, "trunc i64 " + code.v + " to i32")
         f := op(g, "call i32 @fflush(ptr null)")
         emit(g, "call void @exit(i32 " + t + ")")
+        emit(g, "unreachable")
+        g.term = true                       // like return: an or-block may end with it
         return Val(ty: T("void"))
     }
     if n == "input" {
@@ -5200,6 +5245,8 @@ fn construct(ptr[Gen] g, int si, []ast.Node args, []str names, ast.Node at) -> V
             g.tnames = savedTN
             g.targs = savedTA
             g.scopes = savedScopes
+        } else if ft.kind == "struct" && hasDefaults(g, ft) {
+            fv = Val(v: defaultVal(g, ft, at), ty: ft, fresh: owning(g, ft))
         } else {
             continue
         }
@@ -5716,6 +5763,10 @@ fn runtimeDecls() -> str {
         "declare void @finch_str_from_int(ptr, i64)",
         "declare void @finch_str_from_uint(ptr, i64)",
         "declare void @finch_str_from_float(ptr, double)",
+        "declare void @finch_str_from_f32(ptr, double)",
+        "declare void @finch_str_fixed(ptr, double, i64)",
+        "declare void @finch_print_float(double, i32)",
+        "declare void @finch_buf_f32(ptr, double)",
         "declare void @finch_str_from_char(ptr, i8 signext)",
         "declare void @finch_str_from_bool(ptr, i32)",
         "declare i64 @finch_str_to_int(ptr, ptr, i64)",
@@ -5747,6 +5798,7 @@ fn runtimeDecls() -> str {
         "declare void @finch_arr_remove_gap(ptr, i64, i64)",
         "declare void @qsort(ptr, i64, i64, ptr)",
         "declare void @finch_args(ptr, i32, ptr)",
+        "declare void @finch_args_free(ptr)",
         "declare void @finch_input(ptr, ptr)",
         "declare i32 @finch_file_exists(ptr)",
         "declare i32 @finch_str_try_int(ptr, ptr, ptr)",
@@ -5846,6 +5898,10 @@ fn generate([]ast.Program progs, []str files, cimport.CImports ci, Options opt) 
     }
     callText = callText + ")"
     ret := "  ret i32 0\n"
+    after := ""
+    if m.params.len == 1 {
+        after = "  call void @finch_args_free(ptr %args)\n"
+    }
     if m.fallible {
         // fn main() -> !: a failure is printed, and the exit code is 1
         callText = "%r = " + callText
@@ -5854,7 +5910,7 @@ fn generate([]ast.Program progs, []str files, cimport.CImports ci, Options opt) 
         rt := retTy(g, m)
         pre = pre + "  %ok = extractvalue " + rt + " %r, 0\n  br i1 %ok, label %main.ok, label %main.bad\nmain.bad:\n"
         pre = pre + "  %m = extractvalue " + rt + " %r, 2\n  %mp = alloca { ptr, i64, i64 }\n  store { ptr, i64, i64 } %m, ptr %mp\n"
-        pre = pre + "  call void @finch_report_error(ptr %mp)\n  ret i32 1\nmain.ok:\n"
+        pre = pre + "  call void @finch_report_error(ptr %mp)\n" + after + "  ret i32 1\nmain.ok:\n"
         if m.ret.kind == "int" {
             ret = "  %v = extractvalue " + rt + " %r, 1\n  %code = trunc i64 %v to i32\n  ret i32 %code\n"
         }
@@ -5862,6 +5918,6 @@ fn generate([]ast.Program progs, []str files, cimport.CImports ci, Options opt) 
         callText = "%r = " + callText
         ret = "  %code = trunc i64 %r to i32\n  ret i32 %code\n"
     }
-    g.out.push("define i32 @main(i32 %argc, ptr %argv) {\nentry:\n" + pre + "  " + callText + "\n" + ret + "}\n")
+    g.out.push("define i32 @main(i32 %argc, ptr %argv) {\nentry:\n" + pre + "  " + callText + "\n" + after + ret + "}\n")
     return assemble(g)
 }

@@ -144,6 +144,8 @@ fn lex(str src, str path) -> []Token {
             }
         } else if isDigit(c) {
             t.kind = "int"
+            mant := ""
+            expStart := 0
             if c == '0' && (peek(lx, 1) == 'x' || peek(lx, 1) == 'X') {
                 advance(lx)
                 advance(lx)
@@ -161,8 +163,28 @@ fn lex(str src, str path) -> []Token {
                         advance(lx)
                     }
                 }
+                // an exponent: 1e9, 2.5e-3
+                e := peek(lx, 0)
+                sign := peek(lx, 1) == '+' || peek(lx, 1) == '-'
+                if (e == 'e' || e == 'E') && (isDigit(peek(lx, 1)) || (sign && isDigit(peek(lx, 2)))) {
+                    if t.kind == "int" {
+                        t.kind = "float"
+                        mant = lx.src.sub(start, lx.i) + ".0"
+                    }
+                    expStart = lx.i
+                    advance(lx)
+                    if sign {
+                        advance(lx)
+                    }
+                    while lx.i < lx.src.len && isDigit(lx.src[lx.i]) {
+                        advance(lx)
+                    }
+                }
             }
             t.text = lx.src.sub(start, lx.i).replace("_", "")
+            if mant.len > 0 {
+                t.text = (mant + lx.src.sub(expStart, lx.i)).replace("_", "")   // LLVM wants the '.'
+            }
         } else if c == '"' || c == '\'' {
             quote := c
             t.kind = "string"
