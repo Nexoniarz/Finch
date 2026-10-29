@@ -27,8 +27,20 @@ case $seed in windows-*) EXE=.exe ;; esac
 CLANG=${FINCH_CLANG:-clang}
 LIBS=${FINCH_LIBCLANG:--lclang}
 INC=
-[ -z "${FINCH_LLVM_INCLUDE:-}" ] || INC="-I $FINCH_LLVM_INCLUDE"        # where clang-c/Index.h is, if clang does not find it itself
+# where clang-c/Index.h is, if clang does not find it itself (Debian and Ubuntu keep it in /usr/lib/llvm-N/include)
+if [ -z "${FINCH_LLVM_INCLUDE:-}" ] && command -v llvm-config > /dev/null 2>&1 \
+   && [ -f "$(llvm-config --includedir)/clang-c/Index.h" ]; then
+    FINCH_LLVM_INCLUDE=$(llvm-config --includedir)
+fi
+[ -z "${FINCH_LLVM_INCLUDE:-}" ] || INC="-I $FINCH_LLVM_INCLUDE"
 export FINCH_RT=$PWD/runtime/finch_rt.c
+# the -L folders of FINCH_LIBCLANG are where the compiler's own link "clang" is found too
+if [ -z "${FINCH_LDFLAGS:-}" ]; then
+    for w in $LIBS; do
+        case $w in -L*) FINCH_LDFLAGS="${FINCH_LDFLAGS:-} $w" ;; esac
+    done
+    [ -z "${FINCH_LDFLAGS:-}" ] || export FINCH_LDFLAGS
+fi
 # Windows: libclang.dll has to sit next to the programs that use it (FINCH_LIBCLANG is then the path of that dll)
 if [ -n "$EXE" ]; then cp "$LIBS" build/; fi
 

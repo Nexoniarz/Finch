@@ -79,7 +79,7 @@ for f in new/enums.fch new/generics.fch new/std_json.fch run/basics.fch run/meth
          run/defer.fch run/c_structs.fch run/memory.fch; do
     input="${f%.fch}.in"
     [ -f "$input" ] || input=/dev/null
-    if "$FINCH" build "$f" -g -O0 -o "$tmp/progg" > "$tmp/err" 2>&1 && [ "$("$tmp/progg" < "$input" 2>&1)" == "$(cat "${f%.fch}.out")" ]; then
+    if "$FINCH" build "$f" -g -O0 -o "$tmp/progg" > "$tmp/err" 2>&1 && [ "$("$tmp/progg" < "$input" 2>&1 | tr -d '\r')" == "$(tr -d '\r' < "${f%.fch}.out")" ]; then
         pass=$((pass + 1))
     else
         failed=$((failed + 1))
@@ -88,8 +88,12 @@ for f in new/enums.fch new/generics.fch new/std_json.fch run/basics.fch run/meth
     fi
 done
 
-# a library a C program loads (finch build --shared)
-if FINCH="$FINCH" ./shared.sh > "$tmp/shared.out" 2>&1; then
+# a library a C program loads (finch build --shared); the test's host uses dlopen and -rdynamic, so not on Windows
+# (there a DLL can't call functions of the program that loads it without an import library)
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) skip_shared=1 ;; *) skip_shared=0 ;; esac
+if [ $skip_shared = 1 ]; then
+    :
+elif FINCH="$FINCH" ./shared.sh > "$tmp/shared.out" 2>&1; then
     pass=$((pass + 1))
 else
     failed=$((failed + 1))

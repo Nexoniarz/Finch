@@ -84,7 +84,8 @@ init = c.request("initialize", {"processId": None, "rootUri": None, "capabilitie
 check("initialize", init["capabilities"]["hoverProvider"] is True)
 c.notify("initialized", {})
 c.notify("textDocument/didOpen", {"textDocument": {"uri": uri, "languageId": "finch", "version": 1, "text": src}})
-check("no errors in a good file", c.diagnostics(uri) == [])
+first = c.diagnostics(uri)
+check("no errors in a good file", first == [], first)
 
 h = c.request("textDocument/hover", {"textDocument": td, "position": pos(12, "total")})
 check("hover: variable type", h and "int total" in h["contents"]["value"], h)
