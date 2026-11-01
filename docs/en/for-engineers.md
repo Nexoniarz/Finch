@@ -114,18 +114,19 @@ dedented by the closing line's indentation in `longString()`.
 
 ## 4. Code generation
 
-`gen.fch` is one big `Gen` struct plus functions over it. The passes are:
+`gen.fch` is one big `Gen` struct plus functions over it. `generate()` runs:
 
-1. `declareStructs`: every Finch and C struct gets an LLVM type (C structs with their real padding); recursive-by-value
-   structs are refused.
-2. `declareFns`: signatures, with a *borrow analysis* for parameters (a parameter that is never stored is passed without
-   a copy).
-3. `define`: each body, type checked and emitted. Scopes track what must be dropped when they end (`defer` runs first).
-4. `defineMainWrapper`: the C `main(argc, argv)`, and `finch_on_fatal` for embedders.
-5. With `-g`, DWARF metadata is attached as the IR is written (use `-O0`).
+1. `declare()`: every Finch and C struct gets an LLVM type (C structs with their real padding; recursive-by-value
+   structs are refused), then every function gets its signature, with a *borrow analysis* for parameters (§8.2).
+2. `define()` for each function: the body, type checked and emitted. Scopes track what must be dropped when they end.
+   Instantiating a generic adds functions while this goes on, so the loop runs until no new ones appear.
+3. The C entry point `main(argc, argv)` (or, for `--shared`, `finch_module_on_fatal` and the `export fn` wrappers).
+4. `assemble()`: the declarations, struct types, string constants, helpers and bodies, as one `.ll` text.
+
+With `-g`, DWARF metadata is attached as the IR is written (use `-O0`).
 
 Generics are **monomorphised**: a call `max(1, 2)` infers `T`, then the template's AST is generated again with `T` bound,
-under a mangled name (`max$int`). `match` over an enum is exhaustive (a missing variant is an error, `else` covers the
+under its shown name (`max[int]`, a symbol `max.int`). `match` over an enum is exhaustive (a missing variant is an error, `else` covers the
 rest); on a value it is a chain of comparisons. Enum values are `i32`; `Color(n)` is range checked; printing uses a
 generated name table.
 
@@ -162,7 +163,7 @@ offset 0, and a field is read through memory. They can't be passed by value to C
 
 ## 6. Driver, linking and targets
 
-`finch build|run|ir|index file.fch [-o out] [-O0] [-g] [-l lib] [-I dir] [--target t] [--shared] [--overlay path=file]`.
+`finch build|run|ir|index file.fch [-o out] [-O0] [-g] [-l lib] [-I dir] [--target t] [--cpu c] [--shared] [--overlay path=file]`.
 `ir` prints the IR; `index` prints the records the language server uses (§11); `--shared` makes a shared library of the
 `export fn`s.
 
@@ -211,6 +212,7 @@ owned at that point is not freed.
 A line that starts at bracket depth 0 and doesn't continue a line ending in an operator or `,` is re-indented to
 4 × brace depth; other lines (continuations, `"""` bodies) are shifted by the same amount as the line that started the
 statement, so their shape (and the `"""` dedent) is kept.
+
 ---
 
 ## 7. Type system
@@ -223,7 +225,7 @@ statement, so their shape (and the `"""` dedent) is kept.
 | `char` `i8` `u8` / `i16` `u16` / `i32` `u32` / `int` `u64` | `i8` / `i16` / `i32` / `i64` |
 | `f32` / `float` | `float` / `double` |
 | `str`, `[]T` | `{ ptr, i64, i64 }` (pointer, length, capacity) |
-| `map[K]V` | `{ ptr, i64, i64, i64, ptr, i64 }` (entries, len, used, cap, index, icap; see src/gen.fch) |
+| `map[K]V` | `{ ptr, i64, i64, i64, ptr, i64, i64 }` (entries, len, used, cap, index, icap, adds; see src/gen.fch) |
 | `ptr`, `ptr[T]`, `null` | `ptr` (opaque) |
 | `[N]T` | `[N x T]` |
 | `f32x8`, `i8x32`, … | `<8 x float>`, `<32 x i8>` (§7, Vectors) |
@@ -322,11 +324,9 @@ IR's compile, so the same IR becomes SSE2, AVX2 + FMA, AVX-512 or NEON code. Lan
 
 ---
 
----
-
 ## 8. Ownership and memory
 
-### 9.1 The model
+### 8.1 The model
 
 Every value of an **owning type** (`str`, `[]T`, or a Finch struct with an owning field) has exactly one
 owner: a variable, an array element, a struct field, or a heap cell from `new()`. The owner drops the
@@ -350,21 +350,21 @@ A string literal is a fresh value with `cap = 0`: moving it costs nothing, dropp
 (`release()` ignores constants), and writing into it (`s[i] = c`) first makes a heap copy
 (`finch_str_own`). Strings from C are borrowed with `cap = -1` and always copied before being kept.
 
-### 9.2 Parameter borrowing: `mutates()`
+### 8.2 Parameter borrowing: `mutates()`
 
 When declaring a function, every owning parameter is checked with `mutates(name, body)`: an
 assignment whose root variable (`rootVar()`: through `.field` and `[i]`) is the parameter, a changing
 method on it (`push pop insert remove clear resize sort reverse`), or `addr(…)` of it. Unchanged
-parameters are borrowed (`Fn::borrowParam`); changed ones are copied once at entry. The analysis is
+parameters are borrowed (`FnSig.borrow`); changed ones are copied once at entry. The analysis is
 syntactic and conservative: anything that *might* change the parameter makes a copy, which is always correct.
 The same analysis decides whether `for x in list` must copy elements.
 
-Methods take part: `declareFns()` first finds which methods change `self` (`mutates("self", body)`),
+Methods take part: `declare()` first finds which methods change `self` (`mutates("self", body)`),
 repeating until nothing changes, because calling a changing method on `self` changes `self` too. Their
-names go into `mutatingMethods`, which `mutatesExpr()` treats like `push`: `p.move(1)` changes `p`.
-Only then is `borrowParam` computed for every function and method.
+names go into `g.mm`, which `mutates()` treats like `push`: `p.move(1)` changes `p`.
+Only then is `borrow` computed for every function and method.
 
-### 9.3 Copy and drop
+### 8.3 Copy and drop
 
 `dropAt(addr, T)` / `copyAt(dst, src, T)` work on addresses:
 
@@ -374,10 +374,10 @@ Only then is `borrowParam` computed for every function and method.
   element and then `finch_arr_free`; copies call `finch_arr_clone_raw` and then deep-copy owning
   elements over the raw bits. Structs drop/copy only their owning fields.
 
-Helpers are emitted in their own functions (`HelperScope` saves the builder position and switches off
-debug locations), may call each other recursively (`struct Node { []Node kids }`), and are inlined by O2.
+Helpers are emitted in their own functions (`beginHelper()` / `endHelper()` set the function being written aside
+and switch off debug locations), may call each other recursively (`struct Node { []Node kids }`), and are inlined by O2.
 
-### 9.4 What it looks like
+### 8.4 What it looks like
 
 ```c
 fn greet(str name) -> str {
@@ -420,29 +420,27 @@ The `-O0` IR of `main` (abridged):
 
 and `greet` returns `msg` without copying (`ret … %5` after loading the slot: the variable was moved out).
 
-### 9.5 defer
+### 8.5 defer
 
-`defer stmt` pushes a `Cleanup{isDefer, body, order = current varOrder}` into the current scope; it
-emits nothing there. Whenever the scope's cleanups are emitted (falling off the end of the block,
+`defer stmt` records the statement in the current scope (`Scope.defers`, with `orders`: how many variables existed
+then) and a `Cleanup{isDefer}`; it emits nothing there. Whenever the scope's cleanups are emitted (falling off the end of the block,
 `return`, `break`/`continue` leaving it) the body is generated **at that exit**, with `deferLimit = order`
 so that `lookup()` hides variables declared after the defer: those are already dropped by then
 (cleanups run in reverse). `return`/`break`/`continue` inside a deferred statement are errors (`inDefer`).
 Defer bodies are therefore duplicated per exit path, which is what makes them free on the normal path.
 
-### 9.6 Manual memory
+### 8.6 Manual memory
 
 `new(v)` allocates `sizeof(T)` with `finch_alloc`, stores `own(v)` and returns `ptr[T]`. `free(p)` drops
 the pointee if `T` is owning (skipping null) and calls libc `free`. Pointers never own anything:
 `addr(x)` can dangle after `x`'s block ends; this is not checked.
 
-### 9.7 Verifying it
+### 8.7 Verifying it
 
 `MEMCHECK=1 tests/run.sh` builds every test program and runs it under valgrind with
 `--leak-check=full --errors-for-leak-kinds=all`: zero leaks and zero invalid accesses across all of them,
 including returns from inside loops, `continue`/`break` with owned locals, defers, mutation during
 iteration, nested arrays of structs, and C struct passing.
-
----
 
 ---
 
@@ -485,16 +483,17 @@ mode the compiler prints, besides IR-free output, tab-separated records:
 | `@V name type file line col fnFile fnLine fnEnd` | a variable and the function it lives in |
 | `@F module name recv file line col endLine signature params` | a function or method |
 | `@S` / `@SF`, `@E`, `@I` | structs (and fields), enums, imports |
+| `@W` | a warning |
 
 The first error is printed as `path:line:col: error: message` and becomes a diagnostic. When code does not compile, the
 server keeps answering completion and signature help from the last version that did. `tests/lsp_test.py` is the acceptance
-test (22 checks).
+test.
 
 ---
 
 ## 12. Semantics vs. C
 
-| Situation | C | Finch 2.0 |
+| Situation | C | Finch |
 |---|---|---|
 | Signed integer overflow | UB | defined wraparound (no `nsw`) |
 | Integer division by zero, `INT_MIN / -1` | UB | compile error if constant, otherwise runtime error |
@@ -507,12 +506,8 @@ test (22 checks).
 | Uninitialized variables | UB | impossible (zero or defaults) |
 | Missing return | UB if used | compile error |
 | Order of evaluation | mostly unspecified | left to right; in an assignment the right side first |
-| Shift ≥ width, out-of-range float→int | UB | still poison (not checked yet) |
+| Shift ≥ width, out-of-range float→int | UB | poison, as in LLVM (not checked) |
 | Dangling pointer from `addr()` / `new` + `free` | UB | still UB |
-
----
-
----
 
 ### The chain of calls on runtime errors
 
