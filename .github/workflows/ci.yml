@@ -1,8 +1,8 @@
 name: CI
 
 # The compiler is written in Finch. It is built from bootstrap/<system>.ll, its own LLVM IR (see bootstrap/README.md),
-# then from itself. Seeds: Linux x86-64 and ARM64 (tested here), Windows x86-64 (tested under Wine, and here),
-# macOS ARM64 and x86-64 (made with Apple's headers; only checked as IR until the macos job below passes).
+# then from itself, and tested, on every system it runs on: Linux x86-64 and ARM64, macOS ARM64 and x86-64, Windows x86-64.
+# A tag v* also makes the release: every package below is attached to it.
 
 on:
   push:
@@ -75,7 +75,14 @@ jobs:
           fi
 
   macos:
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15, arch: arm64 }
+          - { os: macos-15-intel, arch: x64 }
+    name: macos-${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Install LLVM 21 (libclang)
@@ -92,11 +99,11 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist/finch && cp build/finch README.md LICENSE dist/finch/ && cp -r runtime std examples dist/finch/
-          tar -czf finch-macos-arm64.tar.gz -C dist finch
+          tar -czf finch-macos-${{ matrix.arch }}.tar.gz -C dist finch
       - uses: actions/upload-artifact@v4
         with:
-          name: finch-macos-arm64
-          path: finch-macos-arm64.tar.gz
+          name: finch-macos-${{ matrix.arch }}
+          path: finch-macos-${{ matrix.arch }}.tar.gz
 
   windows:
     runs-on: windows-2022
@@ -154,3 +161,27 @@ jobs:
         with:
           name: finch-vscode
           path: editors/vscode/finch-lang.vsix
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, cross, macos, windows, vscode]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Attach the packages to the release (made if it isn't there yet)
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Finch ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/finch-linux-x64.tar.gz
+            dist/finch-linux-arm64.tar.gz
+            dist/finch-macos-arm64.tar.gz
+            dist/finch-macos-x64.tar.gz
+            dist/finch-windows-x64.zip
+            dist/finch-lang.vsix

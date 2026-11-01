@@ -1,8 +1,7 @@
 // Type checking and LLVM IR generation (as text), written in Finch.
 //
-// The output is a .ll file that clang turns into a program, linked with the same
-// C runtime the main compiler uses. This compiler copies values like the main one
-// (so programs behave the same) but never frees them: it is the bootstrap compiler.
+// The output is a .ll file that clang turns into a program, linked with Finch's C runtime
+// (runtime/finch_rt.c). Values are copied when assigned and freed when their block ends.
 import ast
 import docs
 import cimport
@@ -477,7 +476,7 @@ fn T(str kind) -> ast.Type {
     return ast.simple(kind)
 }
 
-// `int` is i64 and `float` is f64, as in the C++ compiler: the everyday names
+// `int` is i64 and `float` is f64: the everyday names
 // for the two default sizes, and the only way they are ever written back.
 fn isSigned(ast.Type t) -> bool {
     k := t.kind
@@ -4642,11 +4641,12 @@ fn convert(ptr[Gen] g, ast.Node c, ast.Type to) -> Val {
     return v
 }
 
-// ---------- the C calling convention for structs passed by value (System V x86-64) ----------
+// ---------- the C calling convention for structs passed by value ----------
 //
-// A struct of up to 16 bytes travels in registers, one INTEGER or SSE class per eightbyte;
+// System V x86-64: a struct of up to 16 bytes travels in registers, one INTEGER or SSE class per eightbyte;
 // bigger ones are copied to the stack (byval) and returned through a hidden pointer (sret).
-// Other targets (Windows, ARM64) have their own rules and are not done here yet.
+// ARM64 (AAPCS64, and Apple's variant) and Windows x64 have their own rules: classifyArm64, and the
+// windows branch of classify.
 
 struct Abi {
     str kind            // "direct", "expand" (in registers: `parts`) or "memory"
@@ -6992,7 +6992,9 @@ fn vecMethod(ptr[Gen] g, ast.Node m, Val v) -> Val {
             need(g, m, 2)
             b := asVec(g, expr(g, m.kids[1]), vt, "fma", m.kids[1])
             c := asVec(g, expr(g, m.kids[2]), vt, "fma", m.kids[2])
-            return Val(v: vecIntrinsic(g, lt, "fma", vt, [lt, lt, lt], [v.v, b.v, c.v], ""), ty: vt)
+            // fmuladd: one fused instruction where the processor has one (FMA, NEON), a multiply and an add where
+            // it doesn't (llvm.fma would call a slow library function there, to round only once)
+            return Val(v: vecIntrinsic(g, lt, "fmuladd", vt, [lt, lt, lt], [v.v, b.v, c.v], ""), ty: vt)
         }
         need(g, m, 0)
         return Val(v: vecIntrinsic(g, lt, n, vt, [lt], [v.v], ""), ty: vt)

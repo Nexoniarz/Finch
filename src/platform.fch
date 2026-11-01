@@ -1,6 +1,5 @@
 // The system a program is built for, and what depends on it: the C compiler that links, the file
 // name of the program, how it is run here, and (through the flags) the C calling convention.
-// The same as src/target.cpp.
 import host
 import "stdlib.h"
 

@@ -1,13 +1,11 @@
 # Finch for Engineers
 
-**The internals of Finch 2.5, whose compiler is written in Finch.** How source becomes tokens, an AST and LLVM IR *as text*,
+**The internals of Finch 2.6, whose compiler is written in Finch.** How source becomes tokens, an AST and LLVM IR *as text*,
 which `clang` compiles and links with a small C runtime; how C headers are read with libclang from Finch itself and how
 the C calling conventions are reproduced by hand; the type and ownership rules; how the compiler builds itself from a
 seed; and the language server.
 
 Assumed: you can read Finch (see the [technicians' guide](for-technicians.md)) and have at least seen LLVM IR.
-The compiler's first version, in C++ on LLVM's C++ API, is kept on the `before-bootstrap` branch; this guide describes
-the Finch one.
 
 > 🇵🇱 Polska wersja: [dla-inzynierow.md](../pl/dla-inzynierow.md)
 
@@ -34,7 +32,7 @@ the Finch one.
 ## 1. Architecture
 
 The compiler has no LLVM library inside it. It writes LLVM IR as **text** and lets `clang` do optimisation, code
-generation and linking. That is what makes it small (about 8k lines) and what lets it be written in Finch itself.
+generation and linking. That is what makes it small (about 12k lines) and what lets it be written in Finch itself.
 
 ```
  main.fch ─► loader ── lex ── parse ──► Program   (+ every imported module, recursively)
@@ -60,7 +58,7 @@ Design decisions that shape the rest:
   Finch type (a string kind: `int`, `f32`, `str`, `array`, `map`, `struct`, `enum`, `named`…) and flags.
 - **Let clang do the work.** Locals are `alloca`s promoted by `mem2reg`. Optimisation is clang's `-O2` (or `-O0` with `-g`).
 - **Values, not references.** Arrays, strings and structs have value semantics; ownership is decided at compile time (§8).
-- **A tiny C runtime** (`runtime/finch_rt.c`, ~760 lines) does what is tedious in IR: strings, array growth, maps, input,
+- **A small C runtime** (`runtime/finch_rt.c`, ~1150 lines) does what is tedious in IR: strings, array growth, maps, input,
   files, panics. It is compiled once and cached in `~/.cache/finch`.
 
 ---
@@ -70,17 +68,17 @@ Design decisions that shape the rest:
 | File | Lines | Responsibility |
 |---|---|---|
 | `src/lexer.fch` | 470 | Tokens, positions, `"""` text, `"\(x)"` turned into `("…" + str(x) + "…")` tokens |
-| `src/ast.fch` | 120 | One `Node` struct with a `kind` string, children, type names, positions (`line`, `endLine`) |
+| `src/ast.fch` | 170 | One `Node` struct with a `kind` string, children, type names, positions (`line`, `endLine`) |
 | `src/parser.fch` | 910 | Recursive descent: declarations, statements, expressions, generics (`[T]`), `enum`, `match`, `export`, `link`, `const`, `test "…" { }` |
-| `src/gen.fch` | 6450 | Type check + IR: structs, functions, methods, scopes and drops, statements, expressions, built-ins, maps, errors as values, generics (monomorphisation), enums and `match`, `-g` debug metadata, the `index` mode |
+| `src/gen.fch` | 7030 | Type check + IR: structs, functions, methods, scopes and drops, statements, expressions, built-ins, maps, errors as values, generics (monomorphisation), enums and `match`, vectors (SIMD), `-g` debug metadata, the `index` mode |
 | `src/cimport.fch` | 790 | libclang: functions, structs and unions (fields, offsets, padding), enums, constants, globals, macros (also struct-valued) |
-| `src/platform.fch` | 90 | `Target`: triple, data layout, C compiler, signedness of `char` per system |
-| `src/linker.fch` | 430 | The cache (runtime, program object, C/C++ files), libraries (`link`, pkg-config), link-error advice |
-| `src/main.fch` | 515 | Driver: CLI, loader with module lookup and overlays, `build/run/test/fmt/ir/index/lsp` |
+| `src/platform.fch` | 120 | `Target`: triple, data layout, C compiler, signedness of `char` per system |
+| `src/linker.fch` | 480 | The cache (runtime, program object, C/C++ files), libraries (`link`, pkg-config), link-error advice |
+| `src/main.fch` | 530 | Driver: CLI, loader with module lookup and overlays, `build/run/test/fmt/ir/index/lsp` |
 | `src/manifest.fch` | 240 | `finch.toml`: a small TOML reader, per-target lists |
 | `src/fmt.fch` | 225 | `finch fmt` and LSP formatting |
-| `src/lsp.fch` | 910 | The language server (§11) |
-| `src/docs.fch` | 110 | One description of the built-ins, shared by hover and completion |
+| `src/lsp.fch` | 950 | The language server (§11) |
+| `src/docs.fch` | 140 | One description of the built-ins, shared by hover and completion |
 | `std/*.fch` | 1040 | `json`, `path`, `time` (+`_windows`), `proc` (+`_windows`), `fs`, `thread` |
 | `runtime/finch_rt.c` | 1150 | The C runtime: text, arrays, maps, files, float printing, fs, threads, the test runner, the call chain |
 | `bootstrap/` | | `build.sh`, `install.sh`, the seeds (§10) |
@@ -168,6 +166,9 @@ offset 0, and a field is read through memory. They can't be passed by value to C
 `ir` prints the IR; `index` prints the records the language server uses (§11); `--shared` makes a shared library of the
 `export fn`s.
 
+`--cpu <name>` (or `cpu` in `finch.toml`) adds `-march=<name>` on x86-64 or `-mcpu=<name>` on ARM64 to the clang that
+compiles the IR (not the runtime); it is part of the cache key.
+
 `--target windows|linux|arm64|macos|android|<triple>` changes the triple and data layout, the C `char` signedness, the ABI rules
 above, the OS variant of modules (`name_windows.fch`), and the C compiler: `FINCH_CC` or `clang --target=…`. Linking
 asks `pkg-config` for flags for `link "lib"`; when the linker fails the output is analysed and the likely missing
@@ -225,6 +226,7 @@ statement, so their shape (and the `"""` dedent) is kept.
 | `map[K]V` | `{ ptr, i64, i64, i64, ptr, i64 }` (entries, len, used, cap, index, icap; see src/gen.fch) |
 | `ptr`, `ptr[T]`, `null` | `ptr` (opaque) |
 | `[N]T` | `[N x T]` |
+| `f32x8`, `i8x32`, … | `<8 x float>`, `<32 x i8>` (§7, Vectors) |
 | Finch struct | named struct type, natural layout |
 | a method's `self` | `ptr` (the first parameter) |
 | the result of `-> T!` | `{ i1 ok, T value, str error }` (`i8` in place of `T` for `-> !`) |
@@ -235,11 +237,16 @@ Signedness lives only in the Finch type and selects `sdiv/udiv`, `ashr/lshr`, `i
 
 ### Values
 
-```cpp
-struct Value_ { Value *v; FType type; bool literal; bool fresh; };
+```c
+struct Val {
+    str v           // the IR operand: %t12, 42, @.str.3, zeroinitializer
+    ast.Type ty
+    bool fresh
+    bool lit
+}
 ```
 
-- **`literal`**: a number written in the code or an imported C constant. It may become any integer type
+- **`lit`**: a number written in the code or an imported C constant. It may become any integer type
   it fits (`fits()`), or `f32`. It survives unary minus and literal-only arithmetic that folds to a
   constant; explicit conversions clear it (`u8(250)` is a typed constant, so `u8(250) + 10` wraps to 4).
 - **`fresh`**: an owning value (str/array/owning struct) that nobody holds yet: the result of a call,
@@ -280,6 +287,38 @@ that widens grows; `i32` + `u32` is an error; int + float → float; f32 + f64 �
 Pointers/null: `icmp eq/ne ptr` only. `str`: `finch_str_eq` (length + `memcmp`) for `==`/`!=`,
 `finch_str_cmp` for ordering. Floats: `oeq olt ole ogt oge` and `une` for `!=`. Integers/char by
 signedness (char unsigned). Bool: equality only. Arrays/structs: error.
+
+### Vectors
+
+`ast.vecType(name)` recognises `<lane>x<N>` (lanes `i8`…`u64`, `f32`, `f64`; N = 2…64; at most 512 bits) and gives
+`Type(kind: "vec", elem: [lane], count: N)`, which is an LLVM vector `<N x T>`. The parser takes such a name wherever a
+type goes; a call `f32x8(…)` goes to `vecMake()`.
+
+| Finch | IR |
+|---|---|
+| `f32x8(x)` | `insertelement` into lane 0 + `shufflevector … zeroinitializer` (a splat) |
+| `f32x8(a, …, h)` | a chain of `insertelement` |
+| `f32x8(list, i)` | bounds check of `i … i+7`, then `load <8 x float>, ptr …, align 4` (the lane's alignment) |
+| `f32x8(i32x8 v)` | `sitofp`, `fptosi`, `sext`, `trunc`… on the whole vector |
+| `v + w`, `v * 2.0` | `fadd`/`add`… on vectors; a scalar operand is coerced to the lane type, then splatted |
+| `v[i]` | a place: `getelementptr <lane>, ptr %v, i64 i` after a bounds check; or `extractelement` on a temporary |
+| `v == w` | `fcmp oeq`/`icmp eq` → `<N x i1>` → `llvm.vector.reduce.and` |
+| `min`, `max`, `abs` | `llvm.minnum`/`maxnum`, `llvm.smin`/`umin`…, `llvm.fabs`/`llvm.abs` |
+| `v.sum()`, `.min()`, `.max()` | `llvm.vector.reduce.fadd` (with `reassoc`), `.add`, `.fmin`, `.smin`… |
+| `v.sqrt()`, `.floor()`, `.ceil()`, `.round()` | the `llvm.*` intrinsic of that name |
+| `v.fma(b, c)` | `llvm.fmuladd` (fused where the target has FMA; `llvm.fma` would be a libm call per lane without it) |
+| `v.store(list, i)` | bounds check, `store <8 x float> …, align 4` |
+
+Integer `/` and `%` are refused: neither x86 nor ARM has a lane-wise integer divide, and LLVM would scalarise it.
+Ordering comparisons are refused because their result would be a mask, which has no Finch type.
+
+**Alignment.** LLVM gives `<8 x float>` an ABI alignment of 32 (its size), but `malloc` and Finch's `alloca … align 16`
+promise only 16. `llty()` records every vector wider than 16 bytes in `g.wide`, and `resolveStructBody` records a struct
+that holds one; `load()` and `store()` add `, align 16` for those types. Without it LLVM may emit `vmovaps` on a 16-byte
+aligned address and crash.
+
+**Which instructions** is clang's choice: `--cpu <name>` adds `-march=<name>` (x86-64) or `-mcpu=<name>` (ARM64) to the
+IR's compile, so the same IR becomes SSE2, AVX2 + FMA, AVX-512 or NEON code. Lanes wider than the registers are split.
 
 ---
 
@@ -428,8 +467,9 @@ and stops unless `finch1` and `finch` produce byte-identical IR (a fixpoint: the
 whatever built it). `bootstrap/build.sh seed` rewrites the seed from the current compiler; do it whenever the compiler's
 own source starts to use a feature the committed seed lacks.
 
-A seed is per system because the C calling convention for the libclang calls is baked into it (§5).
-Linux x86-64 and Linux ARM64 have seeds. macOS and Windows would need seeds made with Apple's and Microsoft's headers.
+A seed is per system because the C calling convention for the libclang calls is baked into it (§5). There are seeds
+for Linux x86-64 and ARM64, macOS ARM64 and x86-64 (made with Apple's SDK headers), and Windows x86-64 (made with
+llvm-mingw's headers). CI builds the compiler from each one on that system and runs the tests there.
 
 ---
 
@@ -518,13 +558,10 @@ evaluated twice and temporaries are never pointed to.
 
 ## 13. Known limitations
 
-- The compiler runs on Linux x86-64 and ARM64 only (no seed for macOS or Windows yet). Programs can be built for all three.
-- macOS output is only checked as IR; Windows and ARM64 are run under Wine and qemu in CI.
 - One error per run, no recovery.
 - `-g` debug info is best with `-O0`.
-- The driver uses `sh` utilities (`rm`, `mkdir`), so it needs a POSIX shell.
 - Generics are monomorphised (code size grows with instantiations); there are no trait bounds, a wrong use is an error
   inside the instantiated body.
 - A failed test's owned memory is not freed (the test runner `longjmp`s out of it).
-- `--target android` is checked to the object file only; linking needs the NDK and has not been run on a device.
+- Vectors have no lane masks (`v < w`), shuffles or integer division.
 

@@ -5,8 +5,8 @@
   </picture>
 </p>
 
-**Mały, zwinny, skuteczny.** Język programowania na LLVM ze składnią podobną do C,
-na tyle prosty, że nauczysz się go w godzinę, i tak szybki jak C.
+**Mały, szybki, celny.** Język programowania oparty na LLVM, ze składnią w stylu C. Nauczysz się go w godzinę,
+a programy działają tak szybko jak w C.
 
 > 🇬🇧 [English version](README.md)
 
@@ -19,7 +19,7 @@ fn przeciwprostokatna(float a, float b) -> float {
 
 fn main() {
     imie := "Finch"
-    print("Cześć od", imie, "!")
+    print("Cześć, tu", imie, "!")
 
     for i in 1..4 {
         print(i, "→", przeciwprostokatna(float(i), 1.0))
@@ -29,51 +29,58 @@ fn main() {
 
 ## Dlaczego Finch
 
-- **Prosty.** Bez średników, bez plików nagłówkowych, bez preprocesora. Każdą rzecz robi się na jeden sposób.
-- **Szybki.** Kompiluje się przez potok `-O2` z LLVM do kodu natywnego, bez garbage collectora.
-  Rekurencyjne `fib(40)` trwa ok. 0,19 s (`clang -O2` na tym samym kodzie C: ok. 0,23 s), a kod na tablicach
-  z kontrolą zakresu dorównuje C.
-- **Pamięć bez bólu.** Listy, teksty i struktury są wartościami: przypisanie kopiuje, a koniec bloku je zwalnia.
-  Nie ma `free`, o którym można zapomnieć, nie ma użycia po zwolnieniu, a każdy test jest czysty pod valgrindem.
-- **Bezpieczniejszy niż C tam, gdzie to tanie.** Nie ma cichego zwężania typów ani mieszania liczb ze znakiem
-  i bez znaku. Indeks poza zakresem, dzielenie przez zero i null zatrzymują program czytelnym błędem, zamiast
-  powodować niezdefiniowane zachowanie. Priorytety operatorów nie gryzą (`x & 1 == 0` znaczy to, co widać).
-- **Praktyczny.** Mapy, metody, błędy jako wartości (`int(s) or 0`, `try read_file(p)`), moduły, każda
-  biblioteka C i serwer języka dla twojego edytora. Działa na Linuksie, macOS i Windowsie, na x86-64 i ARM64.
-- **Błędy mówią po ludzku:**
+- **Prosty.** Nie ma średników, plików nagłówkowych ani preprocesora. Na każdą rzecz jest jeden sposób.
+- **Szybki.** Kod przechodzi przez optymalizacje LLVM (`-O2`) i staje się zwykłym programem, bez garbage collectora.
+  Rekurencyjne `fib(40)` liczy się ok. 0,19 s (ten sam kod w C z `clang -O2`: ok. 0,23 s), a pętle po tablicach
+  ze sprawdzaniem zakresu są tak samo szybkie jak w C.
+- **Pamięć bez kłopotów.** Listy, teksty i struktury są wartościami: przypisanie robi kopię, a koniec bloku sprząta.
+  Nie ma `free`, o którym da się zapomnieć, ani odwołań do zwolnionej pamięci. Valgrind nie znajduje błędów w żadnym teście.
+- **Bezpieczniejszy niż C tam, gdzie nic to nie kosztuje.** Liczby nie zmieniają po cichu typu, a liczb ze znakiem
+  i bez znaku nie da się przypadkiem pomieszać. Indeks poza tablicą, dzielenie przez zero czy `null` kończą program
+  jasnym komunikatem, a nie niezdefiniowanym zachowaniem. Kolejność działań jest taka, jakiej się spodziewasz
+  (`x & 1 == 0` znaczy dokładnie to, co widać).
+- **Praktyczny.** Mapy, metody, błędy jako wartości (`int(s) or 0`, `try read_file(p)`), moduły, dowolna biblioteka C
+  i serwer języka dla edytora. Działa na Linuksie, macOS i Windowsie, na procesorach x86-64 i ARM64.
+- **SIMD w języku.** `f32x8`, `i8x32`, `f64x4`: kilka liczb obok siebie, dodawanych i mnożonych naraz. LLVM zamienia je
+  na instrukcje SSE, AVX2, AVX-512 albo NEON, więc ten sam kod jest szybki na komputerze stacjonarnym, laptopie i ARM-ie.
+- **Komunikaty, które da się zrozumieć:**
   ```
   gra.fch:3:13: error: 'y' must be i32, but this is int (use i32(...) to convert)
       3 |     i32 y = x
         |             ^
   ```
-- **Każda biblioteka C, bezpośrednio.** Piszesz `import "raylib.h"` i `link "raylib"`, i możesz z niej korzystać,
-  także ze struktur przekazywanych przez wartość i z callbacków. Nagłówki czyta libclang, więc nie trzeba niczego deklarować ręcznie.
-- **Napisany w sobie.** Kompilator to kod w Finchu i nic więcej: `src/*.fch`, ok. 8,6 tys. linii. Buduje się go z ziarna
-  (własny kod LLVM IR, `bootstrap/`), potem z samego siebie, a oba wyniki są identyczne. Pierwsza wersja, w C++,
-  jest w gałęzi `before-bootstrap`.
+- **Biblioteki C bez pośredników.** Wystarczy `import "raylib.h"` i `link "raylib"`, żeby z niej korzystać, łącznie
+  ze strukturami przekazywanymi przez wartość i funkcjami zwrotnymi. Nagłówki czyta libclang, więc niczego nie trzeba
+  deklarować ręcznie.
+- **Napisany w samym sobie.** Kompilator to wyłącznie kod w Finchu: `src/*.fch`, ok. 12 tys. linii. Buduje się go
+  z pliku startowego (jego własnego kodu LLVM IR, w `bootstrap/`), a potem jeszcze raz nim samym. Oba wyniki są identyczne.
 
-## Szybki start
+## Na start
 
-**Budowanie** (Linux x86-64 lub ARM64; potrzebny `clang` i libclang, LLVM 21):
+**Gotowe kompilatory** na Linuksa (x64, ARM64), macOS (Apple Silicon, Intel) i Windowsa (x64) znajdziesz w
+[wydaniach](https://github.com/Nexoniarz/Finch/releases). Rozpakuj archiwum i trzymaj katalogi `runtime/` i `std/` obok
+pliku `finch`. Co jeszcze trzeba doinstalować, opisuje [przewodnik dla techników](docs/pl/dla-technikow.md#2-instalacja):
+na Linuksie clang i libclang z LLVM 21, na Macu `brew install llvm@21`, na Windowsie llvm-mingw.
+
+**Samodzielne budowanie** (na Linuksie, macOS albo Windowsie w Git Bash; potrzebne są `clang` i libclang z LLVM 21):
 
 ```sh
 git clone https://github.com/Nexoniarz/Finch.git
 cd Finch
-nix-shell                           # albo zainstaluj samodzielnie clang + libclang (LLVM 21) + pkg-config
-bootstrap/build.sh                  # kompilator to build/finch: z ziarna, potem z samego siebie
+nix-shell                           # albo zainstaluj clang, libclang (LLVM 21) i pkg-config po swojemu
+bootstrap/build.sh                  # gotowy kompilator to build/finch
 
 ./build/finch run examples/hello.fch
 ./build/finch build examples/tour.fch -o tour && ./tour
-tests/run.sh                        # każdy program, każda odmowa, -g, biblioteka współdzielona, serwer języka
+tests/run.sh                        # wszystkie programy testowe, oczekiwane błędy, -g, biblioteka współdzielona, serwer języka
 ```
 
-Gotowe kompilatory są w [wydaniach](https://github.com/Nexoniarz/Finch/releases) (Linux x64 i ARM64: rozpakuj, zostaw
-`runtime/` i `std/` obok `finch`). **Programy dla Windowsa, ARM64 i macOS** buduje się z Linuksa przez
-`--target windows|arm64|macos`; sam kompilator nie działa jeszcze na macOS ani Windowsie (potrzebuje ziarna
-zrobionego z nagłówkami tego systemu: patrz [bootstrap/README.md](bootstrap/README.md)).
+Ten sam `bootstrap/build.sh` działa na Macu (z `llvm@21` z Homebrew) i na Windowsie (z llvm-mingw); szczegóły są w
+[bootstrap/README.md](bootstrap/README.md). Program na inny system zbudujesz opcją `--target windows|linux|arm64|macos`
+(zob. [przewodnik](docs/pl/dla-technikow.md#budowanie-na-inny-system)).
 
-Edytory: **Kate** (`editors/kate/install.sh`), **VS Code** (plik `.vsix` `finch-lang` z wydania) albo dowolny
-edytor z obsługą LSP (`finch lsp`).
+Edytory: **Kate** (`editors/kate/install.sh`), **VS Code** (plik `.vsix` `finch-lang` z wydania) albo każdy edytor,
+który obsługuje LSP (`finch lsp`).
 
 ## Dokumentacja
 
@@ -81,90 +88,94 @@ Wybierz przewodnik dla siebie:
 
 | Przewodnik | Dla kogo | Polski | English |
 |---|---|---|---|
-| **Początkujący** | Nigdy nie programowałeś: uczniowie, seniorzy, ciekawscy | [dla-poczatkujacych.md](docs/pl/dla-poczatkujacych.md) | [for-beginners.md](docs/en/for-beginners.md) |
-| **Technicy** | Znasz komputery, programowanie jest nowe: instalacja, cały język, biblioteki C, problemy | [dla-technikow.md](docs/pl/dla-technikow.md) | [for-technicians.md](docs/en/for-technicians.md) |
-| **Inżynierowie** | Wszystko: lekser, gramatyka, AST, reguły typów, tłumaczenie na IR, import przez libclang, ABI, wnętrze | [dla-inzynierow.md](docs/pl/dla-inzynierow.md) | [for-engineers.md](docs/en/for-engineers.md) |
-| **Ściąga** | Każda funkcja, metoda, operator i polecenie na jednej stronie | [sciaga.md](docs/pl/sciaga.md) | [cheatsheet.md](docs/en/cheatsheet.md) |
+| **Dla początkujących** | Dla tych, którzy nigdy nie programowali: uczniów, seniorów, ciekawych świata | [dla-poczatkujacych.md](docs/pl/dla-poczatkujacych.md) | [for-beginners.md](docs/en/for-beginners.md) |
+| **Dla techników** | Znasz komputery, ale programowanie jest dla ciebie nowe: instalacja, cały język, biblioteki C, rozwiązywanie problemów | [dla-technikow.md](docs/pl/dla-technikow.md) | [for-technicians.md](docs/en/for-technicians.md) |
+| **Dla inżynierów** | Wszystko: lekser, gramatyka, AST, reguły typów, generowanie IR, import przez libclang, ABI, budowa kompilatora | [dla-inzynierow.md](docs/pl/dla-inzynierow.md) | [for-engineers.md](docs/en/for-engineers.md) |
+| **Ściąga** | Wszystkie funkcje, metody, operatory i polecenia na jednej stronie | [sciaga.md](docs/pl/sciaga.md) | [cheatsheet.md](docs/en/cheatsheet.md) |
 
 ## Język w pigułce
 
 | | |
 |---|---|
-| Zmienne | `x := 5` (typ zgadnięty) albo `int x = 5`; `const W = 640` |
-| Typy | `int` `float` `bool` `char` `str`, z rozmiarem `i8`…`i64` `u8`…`u64` `f32` `f64`, tablice `[]T`, mapy `map[K]V`, wskaźniki `ptr[T]` |
-| Funkcje | `fn add(int a, int b) -> int { return a + b }` |
-| Struktury | `struct Punkt { … }` z jednym polem na linijkę (`int x`, `int y = 0`); tworzenie przez `Punkt(1, 2)` albo `Punkt(x: 1)` |
+| Zmienne | `x := 5` (typ wynika z wartości) albo `int x = 5`; `const W = 640` |
+| Typy | `int` `float` `bool` `char` `str`, o podanym rozmiarze: `i8`…`i64` `u8`…`u64` `f32` `f64`, tablice `[]T`, mapy `map[K]V`, wskaźniki `ptr[T]`, wektory `f32x8` `i8x32`… |
+| Funkcje | `fn dodaj(int a, int b) -> int { return a + b }` |
+| Struktury | `struct Punkt { … }`, jedno pole w linii (`int x`, `int y = 0`); tworzy się je przez `Punkt(1, 2)` albo `Punkt(x: 1)` |
 | Metody | `fn Punkt.przesun(int dx) { self.x += dx }` → `p.przesun(3)` |
 | Tablice | `liczby := [1, 2, 3]`, `liczby.push(4)`, `liczby[0]`, `liczby.len`, `for i, n in liczby { }` |
-| Mapy | `wiek := ["ania": 31]`, `wiek["bob"] = 25`, `wiek.has("cy")`, `ile[s] += 1`, `for k, v in wiek { }` |
-| Błędy | `fn parsuj(str s) -> int! { … return error("zły") }` → `parsuj(s) or 0`, `parsuj(s) or { … }`, `try parsuj(s)` |
-| Tekst | `"hp \(hp)"`, `"a" + "b"`, `str(42)`, `int("42")`, `s.split(",")`, `s.upper()`, `s[0]` |
-| Sterowanie | `if` / `else if` / `else` (też jako wartość), `while`, `for i in 0..10`, `break`, `continue`, `defer` |
-| Pamięć | automatyczna dla tablic, tekstów i struktur; `new(...)` / `free(...)` dla własnych struktur na stercie |
-| Enumy, match | `enum Kolor { Czerwony, Zielony }`, `match k { Czerwony -> ... else -> ... }` (także jako wartość) |
-| Generyki | `fn max[T](T a, T b) -> T`, `struct Stos[T]`, `Stos[int]()` |
+| Mapy | `wiek := ["ania": 31]`, `wiek["bob"] = 25`, `wiek.has("cyryl")`, `ile[slowo] += 1`, `for k, v in wiek { }` |
+| Błędy | `fn parsuj(str s) -> int! { … return error("zła liczba") }` → `parsuj(s) or 0`, `parsuj(s) or { … }`, `try parsuj(s)` |
+| Wektory (SIMD) | `v := f32x8(lista, i)`, `v * 2.0 + w`, `v.sum()`, `v.dot(w)`, `min(v, 1.0)`, `v.store(lista, i)`, `v[3]` |
+| Tekst | `"hp: \(hp)"`, `"a" + "b"`, `str(42)`, `int("42")`, `s.split(",")`, `s.upper()`, `s[0]` |
+| Sterowanie | `if` / `else if` / `else` (również jako wartość), `while`, `for i in 0..10`, `break`, `continue`, `defer` |
+| Pamięć | tablice, teksty i struktury zwalniają się same; `new(...)` / `free(...)` dla własnych struktur na stercie |
+| Enumy i `match` | `enum Kolor { Czerwony, Zielony }`, `match k { Czerwony -> ... else -> ... }` (również jako wartość) |
+| Typy generyczne | `fn max[T](T a, T b) -> T`, `struct Stos[T]`, `Stos[int]()` |
 | Moduły | `import ksztalty` → `ksztalty.pole(p)`, `import ui/button as btn`; biblioteka standardowa: `json`, `path`, `time`, `proc`, `fs`, `thread` |
 | Wątki | `thread.spawn(addr(praca), addr(dane))`, `t.join()`, `thread.mutex()`, `atomic_add(addr(n), 1)` |
-| Testy | `test "nazwa" { assert(x == 3) }` obok kodu, uruchamiane przez `finch test` |
-| Współpraca z C | `import "stdio.h"`, `link "glfw"`, `link "moje.c"` / `"glue.cpp"`, unie, `#define` (też `(Color){…}`), `addr(fn)` dla callbacków |
-| Wejście/wyjście | `print(...)`, `input("? ")`, `read_file`, `write_file`, `shell` |
-| Narzędzia | `finch run/build/test/fmt/ir/lsp`, `finch.toml` dla projektu, cache budowania, `--target windows/arm64/macos/android`, `-g` dla gdb/lldb, `-O0`, łańcuch wywołań przy błędach w czasie działania |
+| Testy | `test "nazwa" { assert(x == 3) }` tuż obok kodu, uruchamiane przez `finch test` |
+| Współpraca z C | `import "stdio.h"`, `link "glfw"`, `link "moje.c"` / `"glue.cpp"`, unie, `#define` (także `(Color){…}`), `addr(fn)` jako funkcja zwrotna |
+| Wejście i wyjście | `print(...)`, `input("? ")`, `read_file`, `write_file`, `shell` |
+| Narzędzia | `finch run/build/test/fmt/ir/lsp`, `finch.toml` dla projektu, pamięć podręczna kompilacji, `--target windows/arm64/macos/android`, `--cpu native`, `-g` dla gdb i lldb, `-O0`, ścieżka wywołań przy błędzie w trakcie działania |
 
 ## Przykłady
 
-| Plik | Pokazuje |
+| Plik | Co pokazuje |
 |---|---|
-| [`examples/hello.fch`](examples/hello.fch) | najmniejszy program |
+| [`examples/hello.fch`](examples/hello.fch) | najkrótszy program |
 | [`examples/tour.fch`](examples/tour.fch) | zmienne, funkcje, warunki, pętle |
-| [`examples/guess.fch`](examples/guess.fch) | gra w zgadywanie: wejście, pętle, `rand` z C |
+| [`examples/guess.fch`](examples/guess.fch) | gra w zgadywanie liczby: wczytywanie, pętle, `rand` z C |
 | [`examples/todo.fch`](examples/todo.fch) | struktury, tablice, teksty i pliki |
 | [`examples/wordcount.fch`](examples/wordcount.fch) | mapy, metody i błędy jako wartości: najczęstsze słowa w pliku |
-| [`examples/structs.fch`](examples/structs.fch) | struktury, tablice struktur, lista wiązana z `new`/`free` |
-| [`examples/types.fch`](examples/types.fch) | liczby z rozmiarem i wskaźniki |
+| [`examples/structs.fch`](examples/structs.fch) | struktury, tablice struktur, lista jednokierunkowa z `new`/`free` |
+| [`examples/types.fch`](examples/types.fch) | liczby o podanym rozmiarze i wskaźniki |
 | [`examples/c_import.fch`](examples/c_import.fch) | `printf`, `math.h`, `malloc`/`free`, `stderr` |
-| [`examples/window.fch`](examples/window.fch) | okno GLFW + OpenGL |
+| [`examples/simd.fch`](examples/simd.fch) | wektory: iloczyn skalarny liczony po osiem liczb naraz i zysk na czasie |
+| [`examples/window.fch`](examples/window.fch) | okno GLFW z OpenGL |
 | [`examples/opengl.fch`](examples/opengl.fch) | nowoczesny OpenGL 3.3: shadery, bufory, obracający się trójkąt |
-| [`examples/vulkan.fch`](examples/vulkan.fch) | Vulkan: lista kart graficznych, ich pamięć i kolejki, tworzenie urządzenia |
-| [`examples/raylib.fch`](examples/raylib.fch) | raylib ze strukturami C przez wartość |
-| [`examples/llvm.fch`](examples/llvm.fch) | Finch budujący LLVM IR przez API LLVM-C |
-| [`src/`](src/) | kompilator napisany w Finchu (ziarno do jego zbudowania jest w [`bootstrap/`](bootstrap/)) |
+| [`examples/vulkan.fch`](examples/vulkan.fch) | Vulkan: lista kart graficznych z ich pamięcią i kolejkami, utworzenie urządzenia |
+| [`examples/raylib.fch`](examples/raylib.fch) | raylib i struktury C przekazywane przez wartość |
+| [`examples/llvm.fch`](examples/llvm.fch) | Finch, który buduje LLVM IR przez API LLVM-C |
+| [`src/`](src/) | kompilator napisany w Finchu (plik startowy do jego zbudowania leży w [`bootstrap/`](bootstrap/)) |
 
 ## Plan rozwoju
 
 - [x] Lekser, parser, generowanie kodu LLVM, optymalizacja O2
-- [x] Typy, w tym liczby z rozmiarem, wskaźniki, konwersje; funkcje; `if`/`while`/`for`
-- [x] Czytelne błędy kompilacji; kontrole w czasie działania (dzielenie, null, zakres)
-- [x] Operatory bitowe z rozsądnymi priorytetami
-- [x] Nagłówki C przez libclang; `link` z pkg-config; porady przy błędach linkowania
-- [x] `struct`, także struktury C przez wartość (ABI System V) i callbacki
-- [x] Tablice z `.len`, kontrolą zakresu i metodami; `for x in lista`
-- [x] Pamięć: zwalnianie na końcu bloku, `defer`, `new`/`free`
+- [x] Typy, w tym liczby o podanym rozmiarze, wskaźniki i konwersje; funkcje; `if`/`while`/`for`
+- [x] Czytelne błędy kompilacji; sprawdzanie w trakcie działania (dzielenie, `null`, zakres tablicy)
+- [x] Operatory bitowe z rozsądną kolejnością działań
+- [x] Nagłówki C przez libclang; `link` z pkg-config; podpowiedzi przy błędach linkera
+- [x] `struct`, w tym struktury C przekazywane przez wartość (ABI System V) i funkcje zwrotne
+- [x] Tablice z `.len`, sprawdzaniem zakresu i metodami; `for x in lista`
+- [x] Pamięć: wartości zwalniane na końcu bloku, `defer`, `new`/`free`
 - [x] Teksty: `+`, `.len`, indeksowanie, metody, `str(x)`, `int(s)`; `input()`; pliki
 - [x] Moduły Fincha (`import nazwa`)
 - [x] Informacje dla debuggera (`-g`)
-- [x] Bootstrap: kompilator Fincha napisany w Finchu, który buduje sam siebie
+- [x] Bootstrap: kompilator Fincha napisany w Finchu, który kompiluje sam siebie
 - [x] Windows: `finch.exe`, programy `.exe`, ABI Microsoft x64; budowanie na Windowsa z Linuksa (`--target windows`)
-- [x] Serwer języka (`finch lsp`) i rozszerzenie VS Code
+- [x] Serwer języka (`finch lsp`) i rozszerzenie do VS Code
 - [x] macOS i ARM64 (Linux i Apple Silicon) z ich konwencjami wywołań C; obsługa Kate
-- [x] Metody w strukturach, mapy, błędy jako wartości (`!`, `or`, `try`)
+- [x] Metody struktur, mapy, błędy jako wartości (`!`, `or`, `try`)
 - [x] Typy generyczne (`fn max[T]`, `struct Stos[T]`), `match`, enumy
 - [x] Biblioteka standardowa w Finchu: `json`, `path`, `time`, `proc`, `fs`
-- [x] `const`, `if` jako wartość, `"\(x)"` w tekście, tekst `"""`, unie C i wyrażenia `#define`
-- [x] Bloki `test` i `finch test`, `finch fmt`, `finch.toml`, cache budowania, łańcuch wywołań przy błędach
-- [x] Wątki (`import thread`) i operacje atomowe; pliki C++; `--target android` (kompiluje się; linkowanie z NDK i urządzenia niesprawdzone)
+- [x] `const`, `if` jako wartość, `"\(x)"` w tekście, tekst `"""`, unie C i wyrażenia w `#define`
+- [x] Bloki `test` i `finch test`, `finch fmt`, `finch.toml`, pamięć podręczna kompilacji, ścieżka wywołań przy błędach
+- [x] Wątki (`import thread`) i operacje atomowe; pliki C++; `--target android`
+- [x] Kompilator na każdym systemie, na który buduje: Linux, macOS (Apple Silicon i Intel), Windows; wydania robi CI
+- [x] Typy wektorowe (`f32x8`, `i8x32`, …) dla SIMD i `--cpu native`
 
-## Struktura
+## Co gdzie leży
 
 ```
-src/        kompilator, w Finchu: lekser, parser, AST, generowanie kodu (do LLVM IR jako tekst), import C (libclang)
-            i konwencje wywołań C, serwer języka, sterownik
-std/        biblioteka standardowa, w Finchu: json, path, time, proc, fs
-runtime/    mały runtime w C dołączany do każdego programu
-bootstrap/  build.sh i ziarna: własny LLVM IR kompilatora, po jednym na system
+src/        kompilator w Finchu: lekser, parser, AST, generowanie kodu (LLVM IR jako tekst), import C (libclang)
+            i konwencje wywołań C, serwer języka, polecenie finch
+std/        biblioteka standardowa w Finchu: json, path, time, proc, fs, thread
+runtime/    mały runtime w C, dołączany do każdego programu
+bootstrap/  build.sh i pliki startowe: własny LLVM IR kompilatora, osobno dla każdego systemu
 examples/   przykładowe programy
-editors/    rozszerzenie VS Code, podświetlanie i konfiguracja LSP dla Kate
-tests/      run/ new/ (wzorcowe wyjście), fail/ new/fail/ (oczekiwane błędy), run.sh, cross.sh, shared.sh, lsp_test.py
-docs/       przewodniki en/ i pl/ dla trzech grup odbiorców
+editors/    rozszerzenie do VS Code, podświetlanie składni i konfiguracja LSP dla Kate
+tests/      run/ new/ (wzorcowe wyniki), fail/ new/fail/ (oczekiwane błędy), run.sh, cross.sh, shared.sh, lsp_test.py
+docs/       przewodniki po angielsku (en/) i po polsku (pl/) dla trzech grup czytelników
 ```
 
 ## Licencja

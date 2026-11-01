@@ -107,7 +107,7 @@ fn vecMethods() -> []Doc {
         doc("ceil", "ceil() -> V", "Every lane rounded up (f32/f64 lanes)."),
         doc("round", "round() -> V", "Every lane rounded to the nearest whole number, halves away from 0 (f32/f64 lanes)."),
         doc("abs", "abs() -> V", "Every lane without its minus sign."),
-        doc("fma", "fma(V b, V c) -> V", "v * b + c in one step, with one rounding (f32/f64 lanes)."),
+        doc("fma", "fma(V b, V c) -> V", "v * b + c, as one instruction where the processor has one (f32/f64 lanes)."),
         doc("store", "store([]T list, int i)", "Writes the lanes into list[i], list[i+1], ... (or through a ptr[T]).")
     ]
 }

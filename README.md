@@ -40,6 +40,8 @@ fn main() {
   Operator precedence that does not bite (`x & 1 == 0` means what it says).
 - **Practical.** Maps, methods, errors as values (`int(s) or 0`, `try read_file(p)`), modules, any C
   library, and a language server for your editor. Runs on Linux, macOS and Windows, on x86-64 and ARM64.
+- **SIMD built in.** `f32x8`, `i8x32`, `f64x4`: numbers side by side, added and multiplied all at once. LLVM turns them
+  into SSE, AVX2, AVX-512 or NEON instructions, so one piece of code is fast on a desktop, a laptop and ARM.
 - **Errors that talk like a person:**
   ```
   game.fch:3:13: error: 'y' must be i32, but this is int (use i32(...) to convert)
@@ -48,13 +50,17 @@ fn main() {
   ```
 - **Any C library, directly.** `import "raylib.h"` + `link "raylib"`, and you can call it, structs by value
   and callbacks included. Headers are read by libclang, so there is nothing to declare by hand.
-- **Written in itself.** The compiler is Finch code, and nothing else: `src/*.fch`, about 8.6k lines. It is built from a
-  seed (its own LLVM IR, `bootstrap/`) and then from itself, and the two come out identical. Its first version, in C++,
-  is kept on the `before-bootstrap` branch.
+- **Written in itself.** The compiler is Finch code, and nothing else: `src/*.fch`, about 12k lines. It is built from a
+  seed (its own LLVM IR, `bootstrap/`) and then from itself, and the two come out identical.
 
 ## Quick start
 
-**Building it** (Linux x86-64 or ARM64; needs `clang` and libclang, LLVM 21):
+**Ready builds** for Linux (x64, ARM64), macOS (Apple Silicon, Intel) and Windows (x64) are in the
+[releases](https://github.com/Nexoniarz/Finch/releases). Unpack one and keep `runtime/` and `std/` next to `finch`. What
+each system needs besides is in the [technicians' guide](docs/en/for-technicians.md#2-installing): clang and libclang
+from LLVM 21 on Linux, `brew install llvm@21` on a Mac, llvm-mingw on Windows.
+
+**Building it yourself** (on Linux, macOS, or Windows with Git Bash; needs `clang` and libclang, LLVM 21):
 
 ```sh
 git clone https://github.com/Nexoniarz/Finch.git
@@ -64,13 +70,12 @@ bootstrap/build.sh                  # the compiler is build/finch: built from th
 
 ./build/finch run examples/hello.fch
 ./build/finch build examples/tour.fch -o tour && ./tour
-tests/run.sh                        # every program, every refusal, -g, a shared library, the language server
+tests/run.sh                        # every program, every expected error, -g, a shared library, the language server
 ```
 
-Ready builds of the compiler are in the [releases](https://github.com/Nexoniarz/Finch/releases) (Linux x64 and ARM64:
-unpack, keep `runtime/` and `std/` next to `finch`). **Programs for Windows, ARM64 and macOS** are built from Linux with
-`--target windows|arm64|macos` (see the [guide](docs/en/for-technicians.md#3-the-finch-command)); the compiler itself does not run on
-macOS or Windows yet (it needs a seed made with that system's headers: see [bootstrap/README.md](bootstrap/README.md)).
+The same `bootstrap/build.sh` works on a Mac (with Homebrew's `llvm@21`) and on Windows (with llvm-mingw): see
+[bootstrap/README.md](bootstrap/README.md). Programs for another system are built with `--target windows|linux|arm64|macos`
+(see the [guide](docs/en/for-technicians.md#building-for-another-system)).
 
 Editors: **Kate** (`editors/kate/install.sh`), **VS Code** (the `finch-lang` `.vsix` from the release), or any
 editor with LSP support (`finch lsp`).
@@ -91,13 +96,14 @@ Pick the guide that fits you:
 | | |
 |---|---|
 | Variables | `x := 5` (inferred) or `int x = 5`; `const W = 640` |
-| Types | `int` `float` `bool` `char` `str`, sized `i8`…`i64` `u8`…`u64` `f32` `f64`, arrays `[]T`, maps `map[K]V`, pointers `ptr[T]` |
+| Types | `int` `float` `bool` `char` `str`, sized `i8`…`i64` `u8`…`u64` `f32` `f64`, arrays `[]T`, maps `map[K]V`, pointers `ptr[T]`, vectors `f32x8` `i8x32`… |
 | Functions | `fn add(int a, int b) -> int { return a + b }` |
 | Structs | `struct Point { … }` with one field per line (`int x`, `int y = 0`); create with `Point(1, 2)` or `Point(x: 1)` |
 | Methods | `fn Point.move(int dx) { self.x += dx }` → `p.move(3)` |
 | Arrays | `nums := [1, 2, 3]`, `nums.push(4)`, `nums[0]`, `nums.len`, `for i, n in nums { }` |
 | Maps | `ages := ["ann": 31]`, `ages["bob"] = 25`, `ages.has("cy")`, `counts[w] += 1`, `for k, v in ages { }` |
 | Errors | `fn parse(str s) -> int! { … return error("bad") }` → `parse(s) or 0`, `parse(s) or { … }`, `try parse(s)` |
+| Vectors (SIMD) | `v := f32x8(list, i)`, `v * 2.0 + w`, `v.sum()`, `v.dot(w)`, `min(v, 1.0)`, `v.store(list, i)`, `v[3]` |
 | Text | `"hp \(hp)"`, `"a" + "b"`, `str(42)`, `int("42")`, `s.split(",")`, `s.upper()`, `s[0]` |
 | Control | `if` / `else if` / `else` (also as a value), `while`, `for i in 0..10`, `break`, `continue`, `defer` |
 | Memory | automatic for arrays, text and structs; `new(...)` / `free(...)` for your own heap structures |
@@ -108,7 +114,7 @@ Pick the guide that fits you:
 | Tests | `test "name" { assert(x == 3) }` next to the code, run with `finch test` |
 | C interop | `import "stdio.h"`, `link "glfw"`, `link "mine.c"` / `"glue.cpp"`, unions, `#define`s (also `(Color){…}`), `addr(fn)` for callbacks |
 | I/O | `print(...)`, `input("? ")`, `read_file`, `write_file`, `shell` |
-| Tools | `finch run/build/test/fmt/ir/lsp`, `finch.toml` for a project, a build cache, `--target windows/arm64/macos/android`, `-g` for gdb/lldb, `-O0`, the chain of calls on runtime errors |
+| Tools | `finch run/build/test/fmt/ir/lsp`, `finch.toml` for a project, a build cache, `--target windows/arm64/macos/android`, `--cpu native`, `-g` for gdb/lldb, `-O0`, the chain of calls on runtime errors |
 
 ## Examples
 
@@ -122,6 +128,7 @@ Pick the guide that fits you:
 | [`examples/structs.fch`](examples/structs.fch) | structs, arrays of structs, a linked list with `new`/`free` |
 | [`examples/types.fch`](examples/types.fch) | sized numbers and pointers |
 | [`examples/c_import.fch`](examples/c_import.fch) | `printf`, `math.h`, `malloc`/`free`, `stderr` |
+| [`examples/simd.fch`](examples/simd.fch) | vectors: a dot product eight numbers at a time, and the time it saves |
 | [`examples/window.fch`](examples/window.fch) | a GLFW + OpenGL window |
 | [`examples/opengl.fch`](examples/opengl.fch) | modern OpenGL 3.3: shaders, buffers, a spinning triangle |
 | [`examples/vulkan.fch`](examples/vulkan.fch) | Vulkan: list the GPUs, their memory and queues, create a device |
@@ -151,14 +158,16 @@ Pick the guide that fits you:
 - [x] A standard library in Finch: `json`, `path`, `time`, `proc`, `fs`
 - [x] `const`, `if` as a value, `"\(x)"` in text, `"""` text, C unions and `#define` expressions
 - [x] `test` blocks and `finch test`, `finch fmt`, `finch.toml`, a build cache, the chain of calls on runtime errors
-- [x] Threads (`import thread`) and atomics; C++ files; `--target android` (compiles; NDK linking and devices untried)
+- [x] Threads (`import thread`) and atomics; C++ files; `--target android`
+- [x] The compiler on every system it builds for: Linux, macOS (Apple Silicon and Intel), Windows; releases made by CI
+- [x] Vector types (`f32x8`, `i8x32`, …) for SIMD, and `--cpu native`
 
 ## Layout
 
 ```
 src/        the compiler, in Finch: lexer, parser, AST, code generation (to LLVM IR as text), C import (libclang) and
             the C calling conventions, the language server, the driver
-std/        the standard library, in Finch: json, path, time, proc, fs
+std/        the standard library, in Finch: json, path, time, proc, fs, thread
 runtime/    the small C runtime linked into every program
 bootstrap/  build.sh and the seeds: the compiler's own LLVM IR, one per system
 examples/   example programs

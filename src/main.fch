@@ -1,7 +1,4 @@
-// finch-boot: the Finch compiler written in Finch.
-//
-//   finch-boot build <file.fch> [-o name]    compile a program
-//   finch-boot ir    <file.fch>              print the LLVM IR
+// finch: the Finch compiler, written in Finch (`finch` with no arguments lists the commands).
 //
 // It reads the program and the modules it imports, checks it, writes LLVM IR as text
 // and lets clang turn that into a program, linked with Finch's C runtime.
