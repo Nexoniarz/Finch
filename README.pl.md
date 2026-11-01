@@ -105,7 +105,8 @@ Wybierz przewodnik dla siebie:
 | Tablice | `liczby := [1, 2, 3]`, `liczby.push(4)`, `liczby[0]`, `liczby.len`, `for i, n in liczby { }` |
 | Mapy | `wiek := ["ania": 31]`, `wiek["bob"] = 25`, `wiek.has("cyryl")`, `ile[slowo] += 1`, `for k, v in wiek { }` |
 | Błędy | `fn parsuj(str s) -> int! { … return error("zła liczba") }` → `parsuj(s) or 0`, `parsuj(s) or { … }`, `try parsuj(s)` |
-| Wektory (SIMD) | `v := f32x8(lista, i)`, `v * 2.0 + w`, `v.sum()`, `v.dot(w)`, `min(v, 1.0)`, `v.store(lista, i)`, `v[3]` |
+| Wektory (SIMD) | `v := f32x8(lista, i)`, `v * 2.0 + w`, `v.sum()`, `select(v > 0.0, v, 0.0)`, `t.lookup(idx)`, `acc.dot_add(a, b)`, `v.store(lista, i)` |
+| Procesory | `--cpu native`; `@cpu("avx2") fn …` razem z `if cpu_has("avx2")`; liczby zmiennoprzecinkowe liczone tak, jak zapisane (`fma`/`muladd` do łączenia) |
 | Tekst | `"hp: \(hp)"`, `"a" + "b"`, `str(42)`, `int("42")`, `s.split(",")`, `s.upper()`, `s[0]` |
 | Sterowanie | `if` / `else if` / `else` (również jako wartość), `while`, `for i in 0..10`, `break`, `continue`, `defer` |
 | Pamięć | tablice, teksty i struktury zwalniają się same; `new(...)` / `free(...)` dla własnych struktur na stercie |
@@ -163,6 +164,7 @@ Wybierz przewodnik dla siebie:
 - [x] Wątki (`import thread`) i operacje atomowe; pliki C++; `--target android`
 - [x] Kompilator na każdym systemie, na który buduje: Linux, macOS (Apple Silicon i Intel), Windows; wydania robi CI
 - [x] Typy wektorowe (`f32x8`, `i8x32`, …) dla SIMD i `--cpu native`
+- [x] Maski, przestawianie, tabele bajtów i `dot_add` dla jąder obliczeniowych; `@cpu` i `cpu_has`; `fma`/`muladd`, bity liczb, f16 i bf16
 
 ## Co gdzie leży
 

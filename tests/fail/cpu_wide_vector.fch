@@ -1,0 +1,8 @@
+// expect: can't be passed between them (its registers differ)
+@cpu("avx2")
+fn double(f32x8 v) -> f32x8 {
+    return v * 2.0
+}
+fn main() {
+    print(double(f32x8(1.0)))
+}

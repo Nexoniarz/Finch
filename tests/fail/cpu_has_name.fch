@@ -1,0 +1,4 @@
+// expect: cpu_has: 'avx-512' isn't a feature Finch knows
+fn main() {
+    print(cpu_has("avx-512"))
+}

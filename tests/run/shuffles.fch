@@ -1,0 +1,27 @@
+// Moving lanes: shuffle, lo/hi, concat, and a byte table lookup (how 4-bit weights are unpacked)
+
+// sixteen 4-bit numbers, two to a byte, made into sixteen bytes through a table of what each nibble means
+fn unpack4(u8x8 packed, i8x16 table) -> i8x16 {
+    pairs := packed.shuffle(0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7)   // u8x16: each byte twice
+    odd := u8x16(0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1) == 1
+    nibbles := select(odd, pairs >> 4, pairs & 15)   // low nibble first, then the high one
+    return table.lookup(nibbles)
+}
+
+fn main() {
+    v := f32x4(1.0, 2.0, 3.0, 4.0)
+    print(v.shuffle(3, 2, 1, 0), v.shuffle(0, 0, 1, 1, 2, 2, 3, 3), v.shuffle(1, 2))
+    w := i32x8(0, 1, 2, 3, 4, 5, 6, 7)
+    print(w.lo(), w.hi(), concat(w.hi(), w.lo()))
+    print(concat(w, w).len, concat(v, v * 10.0).shuffle(0, 4, 1, 5, 2, 6, 3, 7))
+
+    table := u8x16(10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25)
+    print(table.lookup(u8x16(15, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)))
+    print(table.lookup(u8x16(16, 17, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)).lo())
+    print(table.lookup(u8x32(3)).hi().lo().lo())
+
+    q4 := i8x16(-8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7)       // what each 4-bit number means
+    print(unpack4(u8x8(0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe), q4))
+    m := f32x4(1.0, -1.0, 2.0, -2.0) > 0.0
+    print(m.shuffle(1, 0, 3, 2), m.lo())
+}

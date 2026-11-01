@@ -255,12 +255,19 @@ Types: `f32x4/8/16`, `f64x2/4/8`, `i8x16/32/64`, `i16x8/16/32`, `i32x4/8/16`, `i
 | `f32x8(v)` | an 8-lane vector converted lane by lane (`f32x8(ints)`, `i32x8(floats)`) |
 | `v + w`, `v * 2.0`, `-v` | lane by lane; a plain number counts for every lane (`/` only on floats) |
 | `& \| ^ << >> ~` | lane by lane, whole-number lanes |
-| `v == w`, `v != w` | bool: every lane equal / not |
+| `v < w`, `v == w`, … | a mask `boolx8`: `m.all()`, `m.any()`, `m.count()`, `m & n`, `!m`, `m[i]` |
+| `select(m, a, b)` | lane by lane: `a` where `m` is true, else `b` |
 | `v[i]`, `v[i] = x`, `v.len` | a lane; the number of lanes |
 | `min(v, w)`, `max`, `abs(v)`, `clamp(v, lo, hi)` | lane by lane |
 | `v.sum()`, `v.min()`, `v.max()`, `v.dot(w)` | one number from all the lanes |
-| `v.sqrt()`, `v.floor()`, `v.ceil()`, `v.round()`, `v.fma(b, c)` | every lane (float lanes; `fma` = `v * b + c`) |
+| `v.sqrt()`, `v.floor()`, `v.ceil()`, `v.round()` | every lane (float lanes) |
+| `v.fma(b, c)`, `v.muladd(b, c)` | `v * b + c`: one rounding always / the fastest way here |
 | `v.store(list, i)` | lanes into `list[i]` … |
+| `f32x8(list, i, fill)`, `v.store_part(list, i)` | the end of a list: only the lanes inside it (the others are `fill`) |
+| `v.shuffle(3, 2, 1, 0)`, `v.lo()`, `v.hi()`, `concat(a, b)` | lanes rearranged (shuffle takes numbers written in the code) |
+| `table.lookup(idx)` | `table[idx % table.len]` per lane (`pshufb`, `tbl`) |
+| `acc.dot_add(a, b)` | `i32x8` sums gain 4 byte products each (`u8x32` × `i8x32`): `vpdpbusd`, `usdot` where there |
+| `@cpu("avx2,fma") fn …`, `cpu_has("avx2")` | a function that may use these features; check at run time before calling it |
 
 ---
 
@@ -324,6 +331,9 @@ Automatic only when nothing is lost: smaller → bigger number, any int → floa
 | `shell(command)` | run a command, its exit code |
 | `exit(code)` | stop the program now (also ends an `or { }` block) |
 | `min(a, b, …)`, `max(a, b, …)`, `abs(x)`, `clamp(x, lo, hi)` | for any numbers (your own function of that name wins) |
+| `fma(a, b, c)`, `muladd(a, b, c)` | `a * b + c` with one rounding / fused where the processor can (`a * b + c` written out is never fused) |
+| `f32_bits(x)`, `f32_from_bits(u)`, `f64_bits`, `f64_from_bits` | a float's bits as `u32`/`u64` and back, unchanged |
+| `f16_to_f32(h)`, `f32_to_f16(x)`, `bf16_to_f32(b)`, `f32_to_bf16(x)` | half and bfloat16 numbers (in a `u16`) ↔ `f32`; also on vectors |
 | `error(message)` | `return error("…")` in a `-> T!` function |
 | `addr(x)` | pointer to x; `addr(fn)` = C callback |
 | `assert(cond)`, `assert(cond, "why")` | stop with a runtime error when cond is false (in a `test` block: that test fails) |

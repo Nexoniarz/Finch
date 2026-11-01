@@ -30,6 +30,7 @@ const code = [
   '    assert(clamp(x, 0, 9) == 3)',
   '}',
   'fn dot(f32x8 a, i8x32 b) {',
+  '@cpu("avx2") fn k(boolx8 m) { select(m, a, b) }',
 ];
 const expect = [  // [line, token text, scope that must be present]
   [0, 'import', 'keyword.control.import'], [0, '"stdio.h"', 'string.quoted.double'],
@@ -51,6 +52,7 @@ const expect = [  // [line, token text, scope that must be present]
   [17, 'f', 'meta.embedded.line'], [17, 'left', 'string.quoted.double'],
   [18, 'assert', 'support.function.builtin'], [18, 'clamp', 'support.function.builtin'],
   [20, 'f32x8', 'storage.type.primitive'], [20, 'i8x32', 'storage.type.primitive'],
+  [21, '@cpu', 'storage.modifier.attribute'], [21, 'boolx8', 'storage.type.primitive'], [21, 'select', 'support.function.builtin'],
 ];
 registry.loadGrammar('source.finch').then((g) => {
   let state = vsctm.INITIAL, toks = [];

@@ -82,6 +82,19 @@
       <item>atomic_store</item>
       <item>atomic_swap</item>
       <item>atomic_cas</item>
+      <item>select</item>
+      <item>concat</item>
+      <item>fma</item>
+      <item>muladd</item>
+      <item>cpu_has</item>
+      <item>f32_bits</item>
+      <item>f32_from_bits</item>
+      <item>f64_bits</item>
+      <item>f64_from_bits</item>
+      <item>f16_to_f32</item>
+      <item>f32_to_f16</item>
+      <item>bf16_to_f32</item>
+      <item>f32_to_bf16</item>
     </list>
 
     <contexts>
@@ -104,7 +117,8 @@
         <keyword String="constants" attribute="Constant"/>
         <keyword String="types" attribute="Data Type"/>
         <!-- vectors: f32x8, i8x32, u16x16, f64x4 ... -->
-        <RegExpr String="\b[iuf](8|16|32|64)x(2|4|8|16|32|64)\b" attribute="Data Type"/>
+        <RegExpr String="\b([iuf](8|16|32|64)|bool)x(2|4|8|16|32|64)\b" attribute="Data Type"/>
+        <RegExpr String="@cpu\b" attribute="Keyword"/>
         <keyword String="builtins" attribute="Built-in"/>
 
         <RegExpr String="\b0[xX][0-9a-fA-F_]+\b" attribute="Hex"/>

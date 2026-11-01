@@ -13,12 +13,12 @@ fn dot_plain([]f32 a, []f32 b) -> f32 {
     return total
 }
 
-// eight at a time: f32x8(list, i) takes list[i] ... list[i+7], fma multiplies and adds in one step
+// eight at a time: f32x8(list, i) takes list[i] ... list[i+7]; muladd multiplies and adds, in one step where it can
 fn dot_simd([]f32 a, []f32 b) -> f32 {
     acc := f32x8(0.0)
     i := 0
     while i + 8 <= a.len {
-        acc = f32x8(a, i).fma(f32x8(b, i), acc)
+        acc = f32x8(a, i).muladd(f32x8(b, i), acc)
         i += 8
     }
     total := acc.sum()

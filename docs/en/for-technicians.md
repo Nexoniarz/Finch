@@ -345,6 +345,40 @@ str(p)           // a C char pointer as text
 **Fixed-size numbers wrap around**, like real hardware: a `u8` holding 255 plus 1 becomes 0.
 Calculations happen in the type of the values involved, so `u8(250) + 10` is `4`, not `260`.
 
+### Decimal numbers: what is guaranteed
+
+`f32` and `f64` are IEEE 754 numbers, and Finch computes them **exactly as written**, the same on every processor and
+with every `--cpu`:
+
+- Each operation rounds once, in the order written. `a * b - c * d` is two multiplies and a subtract, never folded into a
+  fused multiply-add (C compilers often do that by default, which changes the last digits).
+- Nothing is reordered or simplified: `(a + b) + c` is not turned into `a + (b + c)`, and `x * 0.0` is not assumed to be 0
+  (it is NaN when `x` is). The one exception is `v.sum()` on a vector, which adds the lanes in the fastest order.
+
+When speed matters more than the last bit, ask for it by name:
+
+| | |
+|---|---|
+| `fma(a, b, c)` | `a * b + c` with a single rounding, always. One instruction where the processor has FMA (with `--cpu`, on ARM64); a slower library call elsewhere. |
+| `muladd(a, b, c)` | `a * b + c` the fastest way on this processor: fused where it can be, a multiply and an add where not. |
+
+Both work on numbers and on vectors (`v.fma(b, c)`, `v.muladd(b, c)`).
+
+**Numbers as bits.** File formats and model weights store numbers as raw bits. These look at the bits without
+converting the value (all of them also work lane by lane on vectors):
+
+| | |
+|---|---|
+| `f32_bits(x)` / `f32_from_bits(u)` | `f32` ↔ the `u32` with the same bits (`f32_bits(1.0)` is `0x3f800000`) |
+| `f64_bits(x)` / `f64_from_bits(u)` | `f64` ↔ `u64` |
+| `f16_to_f32(h)` / `f32_to_f16(x)` | half precision, kept in a `u16`, ↔ `f32` (rounded to the nearest) |
+| `bf16_to_f32(b)` / `f32_to_bf16(x)` | bfloat16, kept in a `u16`, ↔ `f32` (rounded to the nearest, ties to even) |
+
+```c
+[]u16 weights = read_weights()               // f16 numbers from a file
+v := f16_to_f32(u16x8(weights, 0))           // 8 of them as f32, at once
+```
+
 ---
 
 ## 7. Operators
@@ -697,6 +731,8 @@ Using `.value`, `.field` or `[i]` on a `null` pointer **stops the program** with
 | `exit(code)` | Ends the program right away. |
 | `addr(x)` | A pointer to `x`; `addr(function)` gives C a function pointer (callback). |
 | `new(value)`, `free(p)` | Manual heap memory (see [Memory](#13-memory-who-frees-what)). |
+| `fma(a, b, c)`, `muladd(a, b, c)` | `a * b + c` with one rounding / the fastest way (see [Decimal numbers](#decimal-numbers-what-is-guaranteed)). |
+| `f32_bits(x)`, `f32_from_bits(u)`, `f16_to_f32(h)`, … | A number's bits, and half-precision numbers (see [Decimal numbers](#decimal-numbers-what-is-guaranteed)). |
 | `int(x)`, `str(x)`, `u8(x)`, … | Conversions (see [Conversions](#conversions)). `str(x)` works on every type and gives the same text `print` shows. `int(text) or 0` handles text that isn't a number. |
 
 ---
@@ -1364,16 +1400,14 @@ arrays, maps and function parameters, and `print` and `str` show it.
 | `+ - * /` | lane by lane (`/` on floats only: x86 and ARM can't divide whole numbers lane by lane) |
 | `& \| ^ << >> ~` | lane by lane, on whole-number lanes |
 | `-v` | every lane negated |
-| `v == w`, `v != w` | `true` if every lane is equal / if any differs |
 | `v[i]`, `v[i] = x`, `v.len` | one lane; the number of lanes |
 | `min(v, w)`, `max(v, w)`, `abs(v)`, `clamp(v, lo, hi)` | lane by lane; `lo`, `hi` and `w` can be plain numbers |
 | `v.sum()`, `v.min()`, `v.max()` | all the lanes made into one number |
 | `v.dot(w)` | `(v * w).sum()` |
 | `v.sqrt()`, `v.floor()`, `v.ceil()`, `v.round()` | every lane (float lanes) |
-| `v.fma(b, c)` | `v * b + c`, as one instruction where the processor has one |
+| `v.fma(b, c)` | `v * b + c` with one rounding, always (the same on every processor) |
+| `v.muladd(b, c)` | `v * b + c` the fastest way here: one instruction where the processor can (the last bit may differ between processors) |
 | `v.store(list, i)` | writes the lanes to `list[i]` … (or through a `ptr`) |
-
-`<` and the other comparisons would give an answer per lane, so they aren't there; use `min`, `max` or `v[i] < w[i]`.
 
 **A real loop.** The usual shape: as many whole vectors as fit, then the rest one by one.
 
@@ -1382,7 +1416,7 @@ fn dot([]f32 a, []f32 b) -> f32 {
     acc := f32x8(0.0)
     i := 0
     while i + 8 <= a.len {
-        acc = f32x8(a, i).fma(f32x8(b, i), acc)
+        acc = f32x8(a, i).muladd(f32x8(b, i), acc)
         i += 8
     }
     total := acc.sum()
@@ -1396,10 +1430,125 @@ fn dot([]f32 a, []f32 b) -> f32 {
 
 `examples/simd.fch` times this against the plain loop.
 
-**Which instructions.** By default a program runs on every processor of its system (on x86-64 that means SSE2, so an
-`f32x8` is done as two halves). `--cpu native` (or `cpu = "native"` in `finch.toml`) lets LLVM use everything the processor
-that builds it has: AVX2 and FMA, AVX-512, or NEON's newer parts on ARM. Such a program needs a processor like that one to
-run. To pick a level instead: `--cpu x86-64-v3` (AVX2, most PCs since 2015), `--cpu x86-64-v4` (AVX-512), `--cpu apple-m1`.
+### Masks: comparing, choosing, the end of a list
+
+Comparing vectors compares every lane, so the answer is a **mask**: one `true`/`false` a lane, of type `boolx8` (for 8 lanes).
+
+```c
+v := f32x8(-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, -4.0, 5.0)
+m := v > 0.0                      // boolx8(false, false, false, true, true, true, false, true)
+relu := select(m, v, 0.0)         // v where the mask is true, 0 elsewhere
+print(m.count(), m.any(), m.all())    // 4 true false
+if (v == w).all() { ... }         // a condition needs one bool: all() or any()
+```
+
+| | |
+|---|---|
+| `v < w`, `<=`, `>`, `>=`, `==`, `!=` | a mask (a plain number on one side counts for every lane) |
+| `select(m, a, b)` | lane by lane: `a` where `m` is true, `b` where false (either may be a plain number) |
+| `m.any()`, `m.all()`, `m.count()` | is any lane true, are all, how many |
+| `m & n`, `m \| n`, `m ^ n`, `!m` | masks combined |
+| `m[i]` | one lane, as a `bool` |
+| `i32x8(m)`, `boolx8(v)` | true is 1; a lane that isn't 0 is true |
+
+**The end of a list.** A list is rarely a whole number of vectors long. Two forms touch only the lanes that are inside it:
+
+| | |
+|---|---|
+| `f32x8(list, i, fill)` | `list[i]` … as far as the list goes; the lanes past its end are `fill` |
+| `v.store_part(list, i)` | writes only the lanes that fit in the list |
+
+```c
+fn add_one([]f32 xs) {
+    i := 0
+    while i < xs.len {                          // no separate loop for the rest
+        (f32x8(xs, i, 0.0) + 1.0).store_part(xs, i)
+        i += 8
+    }
+}
+```
+
+### Moving lanes
+
+| | |
+|---|---|
+| `v.shuffle(3, 2, 1, 0)` | the lanes with these numbers (written in the code), in this order; as many lanes as numbers |
+| `v.lo()`, `v.hi()` | the lower and the upper half |
+| `concat(a, b)` | `a`'s lanes, then `b`'s |
+| `table.lookup(idx)` | for every lane of `idx`: `table[idx % table.len]`. A byte table (`u8x16`, `i8x16`) is one `pshufb` on x86, `tbl` on ARM |
+
+Unpacking 4-bit numbers (two to a byte, as quantized models store them) is shuffle, mask and lookup:
+
+```c
+fn unpack4(u8x8 packed, i8x16 meaning) -> i8x16 {
+    pairs := packed.shuffle(0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7)   // each byte twice
+    odd := u8x16(0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1) == 1
+    nibbles := select(odd, pairs >> 4, pairs & 15)                         // low nibble, then high
+    return meaning.lookup(nibbles)                                         // 0..15 -> what it stands for
+}
+```
+
+### Int8 dot products: dot_add
+
+`acc.dot_add(a, b)` is the step of a quantized model's matrix multiply. `acc` is an `i32x8` of sums; `a` and `b` have four
+times as many bytes (`u8x32` and `i8x32`; `i8` × `i8` and `u8` × `u8` work too). Each lane of `acc` gains the sum of four
+products, `a[4k]*b[4k] + … + a[4k+3]*b[4k+3]`, exactly (no saturation), and the sums stay in the vector:
+
+```c
+acc := i32x8(0)
+i := 0
+while i + 32 <= weights.len {
+    acc = acc.dot_add(u8x32(activations, i), i8x32(weights, i))
+    i += 32
+}
+total := acc.sum()                // once, at the end
+```
+
+It is one instruction where the processor has one: `vpdpbusd` with AVX-VNNI (Intel since Alder Lake, AMD Zen 5) or
+AVX-512 VNNI, `usdot`/`sdot`/`udot` on ARM with the dot-product features. Elsewhere it is a few instructions
+(`pmaddwd` and adds), with the same result. Which one is used depends on `--cpu` or the function's `@cpu` (below).
+
+### Choosing the instructions: --cpu, @cpu and cpu_has
+
+By default a program runs on every processor of its system (on x86-64 that means SSE2, so an `f32x8` is done as two
+halves). Three ways to use more:
+
+**`--cpu`, for the whole program.** `--cpu native` (or `cpu = "native"` in `finch.toml`) lets LLVM use everything the
+processor that builds it has: AVX2 and FMA, AVX-512, VNNI, or NEON's newer parts on ARM. The program then needs a processor
+like that one. To pick a level instead: `--cpu x86-64-v3` (AVX2, most PCs since 2015), `--cpu x86-64-v4` (AVX-512),
+`--cpu alderlake`, `--cpu apple-m1`, `--cpu neoverse-v1`.
+
+**`@cpu`, for one function, and `cpu_has` to choose at run time.** One program can carry an AVX-512 version, an AVX2
+version and a plain one, and pick the best the computer it runs on has:
+
+```c
+@cpu("avx512f,avx512bw,avx512vl,avx512vnni")
+fn matmul_avx512([]u8 a, []i8 b, []i32 out) { ... }      // may use AVX-512 inside
+
+@cpu("x86-64-v3")
+fn matmul_avx2([]u8 a, []i8 b, []i32 out) { ... }        // a level works too
+
+fn matmul([]u8 a, []i8 b, []i32 out) {
+    if cpu_has("avx512vnni") && cpu_has("avx512vl") {
+        matmul_avx512(a, b, out)
+    } else if cpu_has("avx2") {
+        matmul_avx2(a, b, out)
+    } else {
+        matmul_plain(a, b, out)
+    }
+}
+```
+
+- The features are x86's `sse3 ssse3 sse4.1 sse4.2 popcnt avx avx2 fma f16c bmi1 bmi2 avx512f avx512bw avx512dq avx512vl
+  avx512vnni avx512bf16 avx512fp16 avxvnni`, the levels `x86-64-v2`/`v3`/`v4`, and ARM's `neon fp16 dotprod i8mm bf16 sve sve2`.
+- Names of the other architecture are left out when building, so the x86 and ARM versions sit side by side in one file
+  (and `cpu_has` says `false` for them).
+- Call a `@cpu` function only after `cpu_has` said yes: on a processor without the feature it stops with *Illegal instruction*.
+- A vector wider than 16 bytes (`f32x8`, `i32x16` …) can't be passed between functions with different `@cpu`: the two
+  sides would expect it in different registers. Pass the list (or a `ptr`) instead; Finch says so if you try.
 
 Lanes wider than the processor's registers are split by LLVM, and the same code builds for x86-64 and ARM64 alike.
 `v.sum()` on float lanes adds them in whatever order is fastest, so the last digits can differ from adding them one by one.
+
+On NixOS, Nix's clang wrapper removes `-march=native` inside `nix-shell`. Finch tells the wrapper to keep it, so
+`--cpu native` works there too; if it ever has no effect, Finch warns.

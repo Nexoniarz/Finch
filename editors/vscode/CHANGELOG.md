@@ -2,7 +2,8 @@
 
 ## 2.6.0
 
-- Vector types (`f32x8`, `i8x32`, `f64x4`, …) highlighted as types; completion of their methods (`sum`, `dot`, `fma`, `store`, …).
+- Vector types (`f32x8`, `i8x32`, `f64x4`, …) and masks (`boolx8`) highlighted as types; completion of their methods (`sum`, `dot_add`, `shuffle`, `lookup`, `store`, …).
+- `@cpu(...)` and the new built-ins (`select`, `concat`, `fma`, `muladd`, `cpu_has`, `f32_bits`, `f16_to_f32`, …) highlighted.
 
 ## 2.5.0
 

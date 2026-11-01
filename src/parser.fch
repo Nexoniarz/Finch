@@ -289,6 +289,22 @@ fn parseProgram(ptr[Parser] p) -> ast.Program {
             if e.flag {
                 prog.structs.push(sumStruct(e))       // an enum with values inside is stored as a struct (see sumStruct)
             }
+        } else if at(p, "@") {
+            // @cpu("avx2,fma") fn ...: a function that may use these processor features (check with cpu_has first)
+            a := next(p)
+            name := expect(p, "ident", "an attribute name, like @cpu(\"avx2\")").text
+            if name != "cpu" {
+                fail(p, a, "the attribute here is @cpu(\"...\"): the processor features a function may use")
+            }
+            expect(p, "(", "'('")
+            feats := expect(p, "string", "the features in quotes, like @cpu(\"avx2,fma\")").text
+            expect(p, ")", "')'")
+            if !at(p, "fn") && !at(p, "export") {
+                fail(p, cur(p), "@cpu(...) goes right before a function")
+            }
+            f := parseFn(p)
+            f.cpu = feats
+            prog.fns.push(f)
         } else {
             prog.fns.push(parseFn(p))
         }

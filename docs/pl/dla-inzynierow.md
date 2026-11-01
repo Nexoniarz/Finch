@@ -310,11 +310,18 @@ wszędzie tam, gdzie może stać typ; wywołanie `f32x8(…)` trafia do `vecMake
 | `f32x8(i32x8 v)` | `sitofp`, `fptosi`, `sext`, `trunc`… na całym wektorze |
 | `v + w`, `v * 2.0` | `fadd`/`add`… na wektorach; argument skalarny jest dopasowywany do typu elementu i rozpowielany |
 | `v[i]` | miejsce w pamięci: `getelementptr <element>, ptr %v, i64 i` po sprawdzeniu zakresu; albo `extractelement` na wartości tymczasowej |
-| `v == w` | `fcmp oeq`/`icmp eq` → `<N x i1>` → `llvm.vector.reduce.and` |
+| `v < w`, `v == w` … | `fcmp`/`icmp` → `<N x i1>`, maska (`boolxN`: `vec` z elementami `bool`) |
+| `select(m, a, b)` | `select <N x i1>` |
+| `m.any()`, `.all()`, `.count()` | `llvm.vector.reduce.or`/`.and`; `zext` + `llvm.vector.reduce.add` |
+| `f32x8(lista, i, wypelnienie)`, `v.store_part(lista, i)` | `llvm.masked.load`/`llvm.masked.store` z maską `<0, 1, …> < len - i` |
+| `v.shuffle(…)`, `.lo()`, `.hi()`, `concat(a, b)` | `shufflevector` ze stałą maską |
+| `tabela.lookup(idx)` | `and` z `len - 1`, potem `extractelement`/`insertelement` dla każdego elementu: wzorzec, który zaplecza x86 i ARM zamieniają na `pshufb`/`tbl` |
+| `acc.dot_add(a, b)` | `llvm.x86.avx512.vpdpbusd.{128,256,512}` albo `llvm.aarch64.neon.{usdot,sdot,udot}`, gdy funkcja ma te rozszerzenia; w przeciwnym razie `zext`/`sext`, `mul`, cztery `shufflevector` co czwarty element i `add` |
 | `min`, `max`, `abs` | `llvm.minnum`/`maxnum`, `llvm.smin`/`umin`…, `llvm.fabs`/`llvm.abs` |
 | `v.sum()`, `.min()`, `.max()` | `llvm.vector.reduce.fadd` (z `reassoc`), `.add`, `.fmin`, `.smin`… |
 | `v.sqrt()`, `.floor()`, `.ceil()`, `.round()` | funkcja wewnętrzna `llvm.*` o tej nazwie |
-| `v.fma(b, c)` | `llvm.fmuladd` (jedna instrukcja tam, gdzie procesor ma FMA; `llvm.fma` bez FMA wołałoby funkcję z libm dla każdego elementu) |
+| `v.fma(b, c)`, `fma(a, b, c)` | `llvm.fma` (jedno zaokrąglenie; bez sprzętowego FMA wywołanie libm dla każdego elementu) |
+| `v.muladd(b, c)`, `muladd(a, b, c)` | `llvm.fmuladd` (jedna instrukcja tam, gdzie procesor ma FMA, a gdzie nie, `fmul` + `fadd`) |
 | `v.store(lista, i)` | sprawdzenie zakresu, `store <8 x float> …, align 4` |
 
 Dzielenie całkowite `/` i `%` jest odrzucane: ani x86, ani ARM nie mają instrukcji dzielącej liczby całkowite element
@@ -329,6 +336,20 @@ użyć `vmovaps` na adresie wyrównanym do 16 i program by się wysypał.
 **Jakie instrukcje** wybiera clang: `--cpu <nazwa>` dodaje `-march=<nazwa>` (x86-64) albo `-mcpu=<nazwa>` (ARM64)
 do kompilacji IR, więc to samo IR staje się kodem SSE2, AVX2 + FMA, AVX-512 albo NEON. Wektory szersze niż rejestry
 procesora są dzielone na części.
+
+Niektóre działania muszą znać rozszerzenia procesora już przy generowaniu kodu (`dot_add` wybiera `vpdpbusd` tylko tam,
+gdzie ono istnieje). `linker.cpuFeatures()` pyta clanga o makra, które sam definiuje dla tego samego systemu i `--cpu`
+(`clang -march=X -dM -E pusty.c`: `__AVXVNNI__`, `__AVX512VNNI__`, `__ARM_FEATURE_MATMUL_INT8` …), zamienia je na nazwy
+rozszerzeń Fincha i zapamiętuje odpowiedź dla danego clanga i flag; do `gen` trafiają jako `Options.features`. `@cpu("…")`
+przy funkcji (`Node.cpu`) dodaje własne: `define … "target-features"="+avx2,+fma"` (z `+evex512` przy każdym rozszerzeniu
+AVX-512, którego LLVM 18+ wymaga dla rejestrów 512-bitowych), a `g.curFeatures` to suma obu na czas generowania tej
+funkcji. Rozszerzenia drugiej architektury są pomijane (`cpuOf`). `checkCpuCall` nie pozwala przekazać wektora szerszego
+niż 128 bitów jako parametru albo wyniku między funkcjami o różnym `@cpu`, bo wywołujący i wywoływany umieściliby go
+w innych rejestrach. `cpu_has(nazwa)` woła `finch_cpu_has` z runtime'u: na x86 CPUID (liście 1 i 7) z XGETBV dla stanu
+AVX/AVX-512, na Linuksie ARM64 `getauxval(AT_HWCAP/AT_HWCAP2)`, na macOS `sysctlbyname("hw.optional.arm.FEAT_…")`.
+
+Na Uniksach clang jest zawsze uruchamiany jako `NIX_ENFORCE_NO_NATIVE=0 clang …`: inaczej nakładka cc-wrapper z Niksa
+usuwa `-march=native` w `nix-shell`. Jeśli `--cpu native` mimo to nie daje na x86 makra SSE4.2, sterownik ostrzega.
 
 ---
 
@@ -515,6 +536,21 @@ Testem akceptacyjnym jest `tests/lsp_test.py`.
 | Brak `return` | UB, jeśli wynik jest użyty | błąd kompilacji |
 | Kolejność obliczania | w dużej mierze nieokreślona | od lewej do prawej; w przypisaniu najpierw prawa strona |
 | Przesunięcie o ≥ szerokość, liczba zmiennoprzecinkowa poza zakresem przy zamianie na całkowitą | UB | poison, jak w LLVM (niesprawdzane) |
+| `a * b + c` na liczbach zmiennoprzecinkowych | może zostać złożone w FMA (`-ffp-contract`) | nigdy nie jest łączone: dwa zaokrąglenia |
+
+### Liczby zmiennoprzecinkowe
+
+Działania na liczbach zmiennoprzecinkowych to zwykłe `fadd`/`fsub`/`fmul`/`fdiv`/`fneg` **bez flag fast-math**, więc LLVM
+nie może zmieniać kolejności działań, łączyć ich ani zakładać braku NaN; `linker.fch` kompiluje też IR z
+`-ffp-contract=on`, które łączy tylko wywołania `llvm.fmuladd`, o które prosi Finch. Jedyna instrukcja z flagą to
+`llvm.vector.reduce.fadd` w `v.sum()` (`reassoc`). `fma` → `llvm.fma`, `muladd` → `llvm.fmuladd`, na liczbach i wektorach
+(`fmaCall`, `fusedOp`).
+
+`f32_bits`/`f32_from_bits`/`f64_…` to `bitcast` (także między wektorami). `f16_to_f32` to `bitcast i16 → half` + `fpext`,
+`f32_to_f16` to `fptrunc` + `bitcast`: jedna instrukcja z F16C albo na ARM64, a gdzie indziej `__extendhfsf2`/`__truncsfhf2`
+z biblioteki uruchomieniowej kompilatora C. `bf16_to_f32` to `zext` + `shl 16` + `bitcast`; `f32_to_bf16` zaokrągla do
+najbliższej parzystej na liczbach całkowitych (`u + 0x7fff + ((u >> 16) & 1)`, potem `>> 16`) i zostawia NaN cichym
+(`| 0x40`), więc nie potrzebuje żadnej biblioteki.
 | Wiszący wskaźnik z `addr()` / `new` + `free` | UB | nadal UB |
 
 ### Ścieżka wywołań przy błędach w trakcie działania
@@ -569,4 +605,4 @@ nie jest obliczane dwa razy, a wskaźnik nigdy nie wskazuje na wartość tymczas
 - Typy generyczne są monomorfizowane (kod rośnie z każdą instancją); nie ma ograniczeń na parametry typu, więc złe
   użycie daje błąd wewnątrz ciała instancji.
 - Pamięć, którą miał nieudany test, nie jest zwalniana (uruchamianie testów wychodzi z niego przez `longjmp`).
-- Wektory nie mają masek (`v < w`), przetasowań ani dzielenia całkowitego.
+- Wektory nie mają dzielenia całkowitego, a `lookup` na podstawowym x86-64 (bez SSSE3) działa element po elemencie.

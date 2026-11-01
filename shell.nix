@@ -15,4 +15,7 @@ pkgs.mkShell {
     vulkan-headers
     vulkan-loader
   ];
+
+  # Nix's clang wrapper drops -march=native unless this is 0 (finch --cpu native also tells it so itself)
+  NIX_ENFORCE_NO_NATIVE = 0;
 }

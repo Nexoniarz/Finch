@@ -348,6 +348,41 @@ str(p)           // wskaźnik na znaki z C jako tekst
 **Liczby o stałym rozmiarze się zawijają**, jak w prawdziwym sprzęcie: `u8` równe 255 plus 1 daje 0.
 Obliczenia odbywają się w typie użytych wartości, więc `u8(250) + 10` to `4`, a nie `260`.
 
+### Liczby zmiennoprzecinkowe: co jest gwarantowane
+
+`f32` i `f64` to liczby w standardzie IEEE 754, a Finch liczy je **dokładnie tak, jak są zapisane**, tak samo na każdym
+procesorze i z każdym `--cpu`:
+
+- Każde działanie zaokrągla raz, w zapisanej kolejności. `a * b - c * d` to dwa mnożenia i odejmowanie, nigdy nie
+  złożone w jedno „mnożenie z dodawaniem” (FMA); kompilatory C często robią to domyślnie, co zmienia ostatnie cyfry.
+- Nic nie jest przestawiane ani upraszczane: `(a + b) + c` nie zamienia się w `a + (b + c)`, a `x * 0.0` nie jest
+  z góry uznawane za 0 (gdy `x` to NaN, wynik też jest NaN). Jedyny wyjątek to `v.sum()` na wektorze, które dodaje
+  elementy w najszybszej kolejności.
+
+Gdy szybkość jest ważniejsza niż ostatni bit, poproś o nią wprost:
+
+| | |
+|---|---|
+| `fma(a, b, c)` | `a * b + c` z jednym zaokrągleniem, zawsze. Jedna instrukcja tam, gdzie procesor ma FMA (z `--cpu`, na ARM64); gdzie indziej wolniejsza funkcja biblioteczna. |
+| `muladd(a, b, c)` | `a * b + c` najszybciej, jak się da na tym procesorze: jedną instrukcją, gdzie można, a gdzie nie, mnożeniem i dodawaniem. |
+
+Obie działają na liczbach i na wektorach (`v.fma(b, c)`, `v.muladd(b, c)`).
+
+**Liczby jako bity.** Formaty plików i wagi modeli zapisują liczby jako surowe bity. Te funkcje patrzą na bity bez
+przeliczania wartości (wszystkie działają też na wektorach, element po elemencie):
+
+| | |
+|---|---|
+| `f32_bits(x)` / `f32_from_bits(u)` | `f32` ↔ `u32` z tymi samymi bitami (`f32_bits(1.0)` to `0x3f800000`) |
+| `f64_bits(x)` / `f64_from_bits(u)` | `f64` ↔ `u64` |
+| `f16_to_f32(h)` / `f32_to_f16(x)` | liczba połówkowej precyzji, trzymana w `u16`, ↔ `f32` (zaokrąglenie do najbliższej) |
+| `bf16_to_f32(b)` / `f32_to_bf16(x)` | bfloat16, trzymany w `u16`, ↔ `f32` (zaokrąglenie do najbliższej, remisy do parzystej) |
+
+```c
+[]u16 wagi = wczytaj_wagi()                  // liczby f16 z pliku
+v := f16_to_f32(u16x8(wagi, 0))              // osiem z nich jako f32, naraz
+```
+
 ---
 
 ## 7. Operatory
@@ -700,6 +735,8 @@ Użycie `.value`, `.pole` albo `[i]` na wskaźniku `null` **zatrzymuje program**
 | `exit(kod)` | Natychmiast kończy program. |
 | `addr(x)` | Wskaźnik na `x`; `addr(funkcja)` daje C wskaźnik na funkcję (funkcję zwrotną). |
 | `new(wartosc)`, `free(p)` | Ręczna pamięć na stercie (zob. [Pamięć](#13-pamięć-kto-co-zwalnia)). |
+| `fma(a, b, c)`, `muladd(a, b, c)` | `a * b + c` z jednym zaokrągleniem / najszybciej (zob. [Liczby zmiennoprzecinkowe](#liczby-zmiennoprzecinkowe-co-jest-gwarantowane)). |
+| `f32_bits(x)`, `f32_from_bits(u)`, `f16_to_f32(h)`, … | Bity liczby i liczby połówkowej precyzji (zob. [Liczby zmiennoprzecinkowe](#liczby-zmiennoprzecinkowe-co-jest-gwarantowane)). |
 | `int(x)`, `str(x)`, `u8(x)`, … | Zamiany typów (zob. [Zamiana typów](#zamiana-typów)). `str(x)` działa na każdym typie i daje ten sam tekst, który pokazuje `print`. `int(tekst) or 0` obsługuje tekst, który nie jest liczbą. |
 
 ---
@@ -1371,16 +1408,14 @@ struktury, elementem tablicy, wartością w mapie i parametrem funkcji, a `print
 | `+ - * /` | element po elemencie (`/` tylko na liczbach zmiennoprzecinkowych: x86 i ARM nie dzielą liczb całkowitych element po elemencie) |
 | `& \| ^ << >> ~` | element po elemencie, na liczbach całkowitych |
 | `-v` | każdy element ze zmienionym znakiem |
-| `v == w`, `v != w` | `true`, jeśli wszystkie elementy są równe / jeśli któryś się różni |
 | `v[i]`, `v[i] = x`, `v.len` | jeden element; liczba elementów |
 | `min(v, w)`, `max(v, w)`, `abs(v)`, `clamp(v, lo, hi)` | element po elemencie; `lo`, `hi` i `w` mogą być zwykłymi liczbami |
 | `v.sum()`, `v.min()`, `v.max()` | wszystkie elementy złożone w jedną liczbę |
 | `v.dot(w)` | `(v * w).sum()` |
 | `v.sqrt()`, `v.floor()`, `v.ceil()`, `v.round()` | każdy element (liczby zmiennoprzecinkowe) |
-| `v.fma(b, c)` | `v * b + c`, jedną instrukcją tam, gdzie procesor ją ma |
+| `v.fma(b, c)` | `v * b + c` z jednym zaokrągleniem, zawsze (tak samo na każdym procesorze) |
+| `v.muladd(b, c)` | `v * b + c` najszybciej, jak się da: jedną instrukcją, gdzie procesor to potrafi (ostatni bit może się różnić między procesorami) |
 | `v.store(lista, i)` | zapisuje elementy do `lista[i]` … (albo przez `ptr`) |
-
-`<` i inne porównania dałyby osobną odpowiedź dla każdego elementu, więc ich nie ma; użyj `min`, `max` albo `v[i] < w[i]`.
 
 **Prawdziwa pętla.** Zwykły schemat: tyle całych wektorów, ile się zmieści, a resztę po jednej liczbie.
 
@@ -1389,7 +1424,7 @@ fn iloczyn([]f32 a, []f32 b) -> f32 {
     suma := f32x8(0.0)
     i := 0
     while i + 8 <= a.len {
-        suma = f32x8(a, i).fma(f32x8(b, i), suma)
+        suma = f32x8(a, i).muladd(f32x8(b, i), suma)
         i += 8
     }
     wynik := suma.sum()
@@ -1403,12 +1438,129 @@ fn iloczyn([]f32 a, []f32 b) -> f32 {
 
 `examples/simd.fch` mierzy czas tej pętli i porównuje go ze zwykłą.
 
-**Jakie instrukcje.** Domyślnie program działa na każdym procesorze swojego systemu (na x86-64 oznacza to SSE2, więc
-`f32x8` liczy się w dwóch połówkach). `--cpu native` (albo `cpu = "native"` w `finch.toml`) pozwala LLVM użyć wszystkiego,
-co ma procesor, na którym budujesz: AVX2 i FMA, AVX-512 albo nowszych części NEON na ARM. Taki program potrzebuje potem
+### Maski: porównywanie, wybieranie, koniec listy
+
+Porównanie wektorów porównuje każdy element, więc odpowiedzią jest **maska**: jedno `true`/`false` na element,
+typu `boolx8` (dla 8 elementów).
+
+```c
+v := f32x8(-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, -4.0, 5.0)
+m := v > 0.0                      // boolx8(false, false, false, true, true, true, false, true)
+relu := select(m, v, 0.0)         // v tam, gdzie maska jest prawdą, a gdzie indziej 0
+print(m.count(), m.any(), m.all())    // 4 true false
+if (v == w).all() { ... }         // warunek potrzebuje jednego bool: all() albo any()
+```
+
+| | |
+|---|---|
+| `v < w`, `<=`, `>`, `>=`, `==`, `!=` | maska (zwykła liczba po jednej stronie działa na każdy element) |
+| `select(m, a, b)` | element po elemencie: `a` tam, gdzie `m` jest prawdą, `b` tam, gdzie fałszem (każde z nich może być zwykłą liczbą) |
+| `m.any()`, `m.all()`, `m.count()` | czy któryś element jest prawdą, czy wszystkie, ile ich jest |
+| `m & n`, `m \| n`, `m ^ n`, `!m` | łączenie masek |
+| `m[i]` | jeden element jako `bool` |
+| `i32x8(m)`, `boolx8(v)` | prawda to 1; element różny od 0 to prawda |
+
+**Koniec listy.** Lista rzadko ma długość będącą wielokrotnością wektora. Dwie formy dotykają tylko elementów,
+które są w liście:
+
+| | |
+|---|---|
+| `f32x8(lista, i, wypelnienie)` | `lista[i]` … tak daleko, jak sięga lista; elementy za jej końcem dostają `wypelnienie` |
+| `v.store_part(lista, i)` | zapisuje tylko elementy, które mieszczą się w liście |
+
+```c
+fn dodaj_jeden([]f32 xs) {
+    i := 0
+    while i < xs.len {                          // bez osobnej pętli na resztę
+        (f32x8(xs, i, 0.0) + 1.0).store_part(xs, i)
+        i += 8
+    }
+}
+```
+
+### Przestawianie elementów
+
+| | |
+|---|---|
+| `v.shuffle(3, 2, 1, 0)` | elementy o tych numerach (zapisanych w kodzie), w tej kolejności; tyle elementów, ile numerów |
+| `v.lo()`, `v.hi()` | dolna i górna połowa |
+| `concat(a, b)` | elementy `a`, a po nich elementy `b` |
+| `tabela.lookup(idx)` | dla każdego elementu `idx`: `tabela[idx % tabela.len]`. Tabela bajtów (`u8x16`, `i8x16`) to jedno `pshufb` na x86 i `tbl` na ARM |
+
+Rozpakowanie liczb 4-bitowych (po dwie w bajcie, tak jak trzymają je skwantowane modele) to przestawienie, maska i tabela:
+
+```c
+fn rozpakuj4(u8x8 spakowane, i8x16 znaczenie) -> i8x16 {
+    pary := spakowane.shuffle(0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7)  // każdy bajt dwa razy
+    nieparzyste := u8x16(0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1) == 1
+    polowki := select(nieparzyste, pary >> 4, pary & 15)                      // najpierw dolne 4 bity, potem górne
+    return znaczenie.lookup(polowki)                                          // 0..15 -> to, co oznacza
+}
+```
+
+### Iloczyn skalarny na bajtach: dot_add
+
+`acc.dot_add(a, b)` to krok mnożenia macierzy w skwantowanym modelu. `acc` to `i32x8` z sumami; `a` i `b` mają cztery
+razy więcej bajtów (`u8x32` i `i8x32`; działają też `i8` × `i8` i `u8` × `u8`). Każdy element `acc` dostaje sumę czterech
+iloczynów, `a[4k]*b[4k] + … + a[4k+3]*b[4k+3]`, dokładnie (bez nasycania), a sumy zostają w wektorze:
+
+```c
+acc := i32x8(0)
+i := 0
+while i + 32 <= wagi.len {
+    acc = acc.dot_add(u8x32(aktywacje, i), i8x32(wagi, i))
+    i += 32
+}
+suma := acc.sum()                 // raz, na końcu
+```
+
+To jedna instrukcja tam, gdzie procesor ją ma: `vpdpbusd` z AVX-VNNI (Intel od Alder Lake, AMD Zen 5) albo
+AVX-512 VNNI, `usdot`/`sdot`/`udot` na ARM z rozszerzeniami do iloczynu skalarnego. Gdzie indziej to kilka instrukcji
+(`pmaddwd` i dodawania), z tym samym wynikiem. Wybór zależy od `--cpu` albo `@cpu` funkcji (niżej).
+
+### Wybór instrukcji: --cpu, @cpu i cpu_has
+
+Domyślnie program działa na każdym procesorze swojego systemu (na x86-64 oznacza to SSE2, więc `f32x8` liczy się
+w dwóch połówkach). Są trzy sposoby, żeby użyć więcej:
+
+**`--cpu`, dla całego programu.** `--cpu native` (albo `cpu = "native"` w `finch.toml`) pozwala LLVM użyć wszystkiego,
+co ma procesor, na którym budujesz: AVX2 i FMA, AVX-512, VNNI albo nowszych części NEON na ARM. Program potrzebuje wtedy
 podobnego procesora. Można też wybrać poziom: `--cpu x86-64-v3` (AVX2, większość komputerów od 2015 roku),
-`--cpu x86-64-v4` (AVX-512), `--cpu apple-m1`.
+`--cpu x86-64-v4` (AVX-512), `--cpu alderlake`, `--cpu apple-m1`, `--cpu neoverse-v1`.
+
+**`@cpu` dla jednej funkcji i `cpu_has` do wyboru w trakcie działania.** Jeden program może mieć wersję z AVX-512,
+wersję z AVX2 i zwykłą, i wybrać najlepszą, jaką ma komputer, na którym działa:
+
+```c
+@cpu("avx512f,avx512bw,avx512vl,avx512vnni")
+fn mnoz_avx512([]u8 a, []i8 b, []i32 wynik) { ... }      // może w środku używać AVX-512
+
+@cpu("x86-64-v3")
+fn mnoz_avx2([]u8 a, []i8 b, []i32 wynik) { ... }        // poziom też działa
+
+fn mnoz([]u8 a, []i8 b, []i32 wynik) {
+    if cpu_has("avx512vnni") && cpu_has("avx512vl") {
+        mnoz_avx512(a, b, wynik)
+    } else if cpu_has("avx2") {
+        mnoz_avx2(a, b, wynik)
+    } else {
+        mnoz_zwykle(a, b, wynik)
+    }
+}
+```
+
+- Rozszerzenia to dla x86 `sse3 ssse3 sse4.1 sse4.2 popcnt avx avx2 fma f16c bmi1 bmi2 avx512f avx512bw avx512dq avx512vl
+  avx512vnni avx512bf16 avx512fp16 avxvnni`, poziomy `x86-64-v2`/`v3`/`v4`, a dla ARM `neon fp16 dotprod i8mm bf16 sve sve2`.
+- Nazwy z drugiej architektury są przy budowaniu pomijane, więc wersje dla x86 i ARM mogą stać obok siebie w jednym pliku
+  (a `cpu_has` zwraca dla nich `false`).
+- Funkcję z `@cpu` wołaj dopiero wtedy, gdy `cpu_has` odpowie „tak”: na procesorze bez tego rozszerzenia program
+  zatrzyma się z *Illegal instruction*.
+- Wektora szerszego niż 16 bajtów (`f32x8`, `i32x16` …) nie da się przekazać między funkcjami o różnym `@cpu`: obie strony
+  oczekiwałyby go w innych rejestrach. Przekaż zamiast tego listę (albo `ptr`); Finch o tym powie, jeśli spróbujesz.
 
 Wektory szersze niż rejestry procesora LLVM dzieli na części, a ten sam kod buduje się tak samo na x86-64 i na ARM64.
 `v.sum()` na liczbach zmiennoprzecinkowych dodaje elementy w kolejności, która jest najszybsza, więc ostatnie cyfry mogą
 się różnić od dodawania ich po kolei.
+
+Na NixOS nakładka Niksa na clanga usuwa `-march=native` w `nix-shell`. Finch mówi jej, żeby to zostawiła, więc
+`--cpu native` działa i tam; gdyby kiedyś nie miało żadnego skutku, Finch ostrzeże.
