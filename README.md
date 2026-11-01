@@ -103,7 +103,8 @@ Pick the guide that fits you:
 | Arrays | `nums := [1, 2, 3]`, `nums.push(4)`, `nums[0]`, `nums.len`, `for i, n in nums { }` |
 | Maps | `ages := ["ann": 31]`, `ages["bob"] = 25`, `ages.has("cy")`, `counts[w] += 1`, `for k, v in ages { }` |
 | Errors | `fn parse(str s) -> int! { … return error("bad") }` → `parse(s) or 0`, `parse(s) or { … }`, `try parse(s)` |
-| Vectors (SIMD) | `v := f32x8(list, i)`, `v * 2.0 + w`, `v.sum()`, `v.dot(w)`, `min(v, 1.0)`, `v.store(list, i)`, `v[3]` |
+| Vectors (SIMD) | `v := f32x8(list, i)`, `v * 2.0 + w`, `v.sum()`, `select(v > 0.0, v, 0.0)`, `t.lookup(idx)`, `acc.dot_add(a, b)`, `v.store(list, i)` |
+| Processors | `--cpu native`; `@cpu("avx2") fn …` with `if cpu_has("avx2")`; floats computed as written (`fma`/`muladd` to fuse) |
 | Text | `"hp \(hp)"`, `"a" + "b"`, `str(42)`, `int("42")`, `s.split(",")`, `s.upper()`, `s[0]` |
 | Control | `if` / `else if` / `else` (also as a value), `while`, `for i in 0..10`, `break`, `continue`, `defer` |
 | Memory | automatic for arrays, text and structs; `new(...)` / `free(...)` for your own heap structures |
@@ -161,6 +162,7 @@ Pick the guide that fits you:
 - [x] Threads (`import thread`) and atomics; C++ files; `--target android`
 - [x] The compiler on every system it builds for: Linux, macOS (Apple Silicon and Intel), Windows; releases made by CI
 - [x] Vector types (`f32x8`, `i8x32`, …) for SIMD, and `--cpu native`
+- [x] Masks, shuffles, byte lookup and `dot_add` for kernels; `@cpu` and `cpu_has`; `fma`/`muladd`, float bits, f16 and bf16
 
 ## Layout
 

@@ -304,7 +304,13 @@ type goes; a call `f32x8(…)` goes to `vecMake()`.
 | `f32x8(i32x8 v)` | `sitofp`, `fptosi`, `sext`, `trunc`… on the whole vector |
 | `v + w`, `v * 2.0` | `fadd`/`add`… on vectors; a scalar operand is coerced to the lane type, then splatted |
 | `v[i]` | a place: `getelementptr <lane>, ptr %v, i64 i` after a bounds check; or `extractelement` on a temporary |
-| `v == w` | `fcmp oeq`/`icmp eq` → `<N x i1>` → `llvm.vector.reduce.and` |
+| `v < w`, `v == w` … | `fcmp`/`icmp` → `<N x i1>`, a mask (`boolxN`: `vec` with `bool` lanes) |
+| `select(m, a, b)` | `select <N x i1>` |
+| `m.any()`, `.all()`, `.count()` | `llvm.vector.reduce.or`/`.and`; `zext` + `llvm.vector.reduce.add` |
+| `f32x8(list, i, fill)`, `v.store_part(list, i)` | `llvm.masked.load`/`llvm.masked.store` with the mask `<0, 1, …> < len - i` |
+| `v.shuffle(…)`, `.lo()`, `.hi()`, `concat(a, b)` | `shufflevector` with a constant mask |
+| `table.lookup(idx)` | `and` with `len - 1`, then `extractelement`/`insertelement` per lane: the pattern the x86 and ARM backends turn into `pshufb`/`tbl` |
+| `acc.dot_add(a, b)` | `llvm.x86.avx512.vpdpbusd.{128,256,512}` or `llvm.aarch64.neon.{usdot,sdot,udot}` when the function's features have them; else `zext`/`sext`, `mul`, four strided `shufflevector`s and `add`s |
 | `min`, `max`, `abs` | `llvm.minnum`/`maxnum`, `llvm.smin`/`umin`…, `llvm.fabs`/`llvm.abs` |
 | `v.sum()`, `.min()`, `.max()` | `llvm.vector.reduce.fadd` (with `reassoc`), `.add`, `.fmin`, `.smin`… |
 | `v.sqrt()`, `.floor()`, `.ceil()`, `.round()` | the `llvm.*` intrinsic of that name |
@@ -322,6 +328,20 @@ aligned address and crash.
 
 **Which instructions** is clang's choice: `--cpu <name>` adds `-march=<name>` (x86-64) or `-mcpu=<name>` (ARM64) to the
 IR's compile, so the same IR becomes SSE2, AVX2 + FMA, AVX-512 or NEON code. Lanes wider than the registers are split.
+
+Some operations need to know the features at code generation time (`dot_add` picks `vpdpbusd` only where it exists).
+`linker.cpuFeatures()` asks clang for its predefined macros with the same target and `--cpu`
+(`clang -march=X -dM -E empty.c`: `__AVXVNNI__`, `__AVX512VNNI__`, `__ARM_FEATURE_MATMUL_INT8` …), maps them to Finch's
+feature names and caches the answer per clang and flags; they reach `gen` as `Options.features`. `@cpu("…")` on a function
+(`Node.cpu`) adds its own: `define … "target-features"="+avx2,+fma"` (with `+evex512` for any AVX-512 feature, which
+LLVM 18+ needs for 512-bit registers), and `g.curFeatures` is the union while that function is generated. Features of the
+other architecture are dropped (`cpuOf`). `checkCpuCall` refuses a vector wider than 128 bits as a parameter or result
+between functions whose `@cpu` differ, because caller and callee would lower it to different registers.
+`cpu_has(name)` calls `finch_cpu_has` in the runtime: CPUID leaves 1 and 7 with XGETBV for the AVX/AVX-512 state on x86,
+`getauxval(AT_HWCAP/AT_HWCAP2)` on Linux ARM64, `sysctlbyname("hw.optional.arm.FEAT_…")` on macOS.
+
+Clang is always run as `NIX_ENFORCE_NO_NATIVE=0 clang …` on Unix: Nix's cc-wrapper otherwise drops `-march=native`
+inside `nix-shell`. If `--cpu native` still yields no SSE4.2 macro on x86, the driver warns.
 
 ---
 
@@ -572,5 +592,5 @@ evaluated twice and temporaries are never pointed to.
 - Generics are monomorphised (code size grows with instantiations); there are no trait bounds, a wrong use is an error
   inside the instantiated body.
 - A failed test's owned memory is not freed (the test runner `longjmp`s out of it).
-- Vectors have no lane masks (`v < w`), shuffles or integer division.
+- Vectors have no integer division, and `lookup` on baseline x86-64 (no SSSE3) is done lane by lane.
 

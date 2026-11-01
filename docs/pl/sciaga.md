@@ -255,13 +255,19 @@ Typy: `f32x4/8/16`, `f64x2/4/8`, `i8x16/32/64`, `i16x8/16/32`, `i32x4/8/16`, `i6
 | `f32x8(v)` | 8-elementowy wektor przeliczony element po elemencie (`f32x8(calkowite)`, `i32x8(ulamki)`) |
 | `v + w`, `v * 2.0`, `-v` | element po elemencie; zwykła liczba działa na każdy element (`/` tylko dla liczb zmiennoprzecinkowych) |
 | `& \| ^ << >> ~` | element po elemencie, dla liczb całkowitych |
-| `v == w`, `v != w` | bool: czy wszystkie elementy są równe / czy któryś się różni |
+| `v < w`, `v == w`, … | maska `boolx8`: `m.all()`, `m.any()`, `m.count()`, `m & n`, `!m`, `m[i]` |
+| `select(m, a, b)` | element po elemencie: `a` tam, gdzie `m` jest prawdą, a gdzie nie, `b` |
 | `v[i]`, `v[i] = x`, `v.len` | jeden element; liczba elementów |
 | `min(v, w)`, `max`, `abs(v)`, `clamp(v, lo, hi)` | element po elemencie |
 | `v.sum()`, `v.min()`, `v.max()`, `v.dot(w)` | jedna liczba ze wszystkich elementów |
 | `v.sqrt()`, `v.floor()`, `v.ceil()`, `v.round()` | każdy element (liczby zmiennoprzecinkowe) |
 | `v.fma(b, c)`, `v.muladd(b, c)` | `v * b + c`: zawsze z jednym zaokrągleniem / najszybciej na tym procesorze |
 | `v.store(lista, i)` | zapisuje elementy do `lista[i]` … |
+| `f32x8(lista, i, wypelnienie)`, `v.store_part(lista, i)` | koniec listy: tylko elementy, które są w niej (pozostałe to `wypelnienie`) |
+| `v.shuffle(3, 2, 1, 0)`, `v.lo()`, `v.hi()`, `concat(a, b)` | przestawione elementy (shuffle przyjmuje numery zapisane w kodzie) |
+| `tabela.lookup(idx)` | `tabela[idx % tabela.len]` dla każdego elementu (`pshufb`, `tbl`) |
+| `acc.dot_add(a, b)` | sumy `i32x8` dostają po 4 iloczyny bajtów (`u8x32` × `i8x32`): `vpdpbusd`, `usdot` tam, gdzie są |
+| `@cpu("avx2,fma") fn …`, `cpu_has("avx2")` | funkcja, która może używać tych rozszerzeń; przed jej wywołaniem sprawdź procesor |
 
 ---
 
