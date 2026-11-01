@@ -1,0 +1,69 @@
+// The int8 dot product of quantized models: plain, with dot_add, and in @cpu functions picked by cpu_has
+
+fn plain([]u8 a, []i8 b) -> int {
+    total := 0
+    for i in 0..a.len {
+        total += int(a[i]) * int(b[i])
+    }
+    return total
+}
+
+// 32 bytes a step, 8 sums kept in a vector until the end
+fn with_vectors([]u8 a, []i8 b) -> int {
+    acc := i32x8(0)
+    i := 0
+    while i + 32 <= a.len {
+        acc = acc.dot_add(u8x32(a, i), i8x32(b, i))
+        i += 32
+    }
+    return int(acc.sum())
+}
+
+@cpu("avxvnni")
+fn with_vnni([]u8 a, []i8 b) -> int {
+    acc := i32x8(0)
+    i := 0
+    while i + 32 <= a.len {
+        acc = acc.dot_add(u8x32(a, i), i8x32(b, i))
+        i += 32
+    }
+    return int(acc.sum())
+}
+
+@cpu("avx512f,avx512bw,avx512vl,avx512vnni,i8mm")
+fn with_avx512([]u8 a, []i8 b) -> int {
+    acc := i32x16(0)
+    i := 0
+    while i + 64 <= a.len {
+        acc = acc.dot_add(u8x64(a, i), i8x64(b, i))
+        i += 64
+    }
+    return int(acc.sum())
+}
+
+fn best([]u8 a, []i8 b) -> int {
+    if cpu_has("avx512vnni") && cpu_has("avx512vl") && cpu_has("avx512bw") {
+        return with_avx512(a, b)
+    }
+    if cpu_has("avxvnni") {
+        return with_vnni(a, b)
+    }
+    return with_vectors(a, b)
+}
+
+fn main() {
+    []u8 a
+    []i8 b
+    for k in 0..1024 {
+        a.push(u8((k * 37 + 11) % 256))
+        b.push(i8((k * 53 + 7) % 256 - 128))
+    }
+    want := plain(a, b)
+    print(want, with_vectors(a, b) == want, best(a, b) == want)
+
+    // the extremes: 255 * -128 four times in a lane, no saturation
+    acc := i32x4(1, 2, 3, 4).dot_add(u8x16(255), i8x16(-128))
+    print(acc, i32x4(0).dot_add(i8x16(-128), i8x16(-128)), i32x4(0).dot_add(u8x16(255), u8x16(255)))
+    print(i32x4(0).dot_add(i8x16(-1), u8x16(200)))
+    print(cpu_has("avx2") || cpu_has("neon") || true)
+}

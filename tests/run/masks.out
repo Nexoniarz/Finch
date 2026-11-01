@@ -1,0 +1,9 @@
+boolx8(false, false, false, true, true, true, false, true) 4 true false true
+f32x8(0, 0, 0, 1, 2, 3, 0, 5) f32x8(-2, -1, 0, -1, -1, -1, -4, -1)
+boolx8(false, true, true, true, true, false, false, false) boolx8(false, false, true, false, false, false, false, true) boolx8(false, false, false, true, false, false, false, false)
+i32x4(4, 5, 4, 7) true true
+true i32x4(0, 1, 0, 1) f32x4(1, 0, 1, 0)
+boolx4(false, true, false, true) boolx4(true, false, true, false)
+78
+[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+f32x8(9, 10, 11, 12, 13, -1, -1, -1) f32x8(9, 9, 9, 9, 9, 9, 9, 9) f32x8(7, 7, 7, 7, 7, 7, 7, 7)

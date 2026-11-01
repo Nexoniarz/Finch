@@ -471,7 +471,15 @@ fn main([]str args) -> int {
             testModules.push(prog.module)       // your own files' tests, not the standard library's
         }
     }
-    ir := gen.generate(loader.progs, loader.files, ci, gen.Options(shared: shared, debug: debug, index: cmd == "index", cwd: host.cwd(), target: tg, test: cmd == "test", testModules: testModules, trace: trace))
+    // what the processor can do (dot_add and the like pick their instructions by it); not needed for the editor's index
+    []str features
+    if cmd != "index" {
+        features = linker.cpuFeatures(tg, cpu)
+        if cpu == "native" && !tg.arm64 && !features.contains("sse4.2") {
+            print("warning: --cpu native made no difference to clang (a clang wrapper may remove -march=native; try --cpu with a name, like x86-64-v3)")
+        }
+    }
+    ir := gen.generate(loader.progs, loader.files, ci, gen.Options(shared: shared, debug: debug, index: cmd == "index", cwd: host.cwd(), target: tg, test: cmd == "test", testModules: testModules, trace: trace, features: features))
     if cmd == "ir" || cmd == "index" {
         print(ir)
         return 0
@@ -501,14 +509,7 @@ fn main([]str args) -> int {
     if debug {
         extra = extra + " -g"      // or clang drops the debug info that is in the IR
     }
-    if cpu.len > 0 {
-        // x86-64 names a processor with -march, ARM with -mcpu
-        if tg.arm64 {
-            extra = extra + " -mcpu=" + linker.quote(cpu)
-        } else {
-            extra = extra + " -march=" + linker.quote(cpu)
-        }
-    }
+    extra = extra + linker.cpuFlag(tg, cpu)          // x86-64 names a processor with -march, ARM with -mcpu
     []str cflagList
     for d in dirs {
         cflagList.push(" -I" + linker.quote(d))      // also the program's own folders (its headers, for inline C functions)

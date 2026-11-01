@@ -1,0 +1,6 @@
+// expect: shuffle(...) takes lane numbers written in the code
+fn main() {
+    v := f32x4(1.0)
+    k := 2
+    print(v.shuffle(k, 0, 1, 3))
+}

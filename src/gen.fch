@@ -33,6 +33,7 @@ struct Options {
     bool trace          // runtime errors show the chain of calls (off for --shared and --no-trace)
     bool test           // finch test: main runs the test "..." blocks instead
     []str testModules   // the modules whose tests run ("" is the main file); not the standard library's
+    []str features      // what the processor it is built for has (from --cpu, asked of clang): avx2, i8mm ...
 }
 
 // A generic struct or function, kept as written until something asks for a version of it.
@@ -218,6 +219,8 @@ struct Gen {
     bool deferOn    // running a defer: variables declared after it are out of sight
     int deferLimit
     int inDefer
+    []str features      // the processor features of the whole program (--cpu)
+    []str curFeatures   // and of the function being built: those and its @cpu(...)
 }
 
 // ---------- basics ----------
@@ -1460,6 +1463,9 @@ fn coerce(ptr[Gen] g, Val v, ast.Type want, ast.Node at, str what) -> Val {
     if want.kind == "str" && (isNumber(v.ty) || v.ty.kind == "bool" || v.ty.kind == "char") {
         msg = msg + " (turn it into text with str(...))"
     }
+    if want.kind == "bool" && v.ty.kind == "vec" && v.ty.elem[0].kind == "bool" {
+        msg = msg + " (a comparison of vectors has an answer for every lane: use .all() or .any())"
+    }
     if want.kind == "vec" && isNumber(v.ty) {
         msg = msg + " (" + ast.show(want) + "(x) puts x in every lane)"
     }
@@ -2357,6 +2363,13 @@ fn define(ptr[Gen] g, int si) {
         g.instNote = " (while building " + g.cur.shown + ")"
     }
     f := g.progs[g.cur.prog].fns[g.cur.index]
+    ownCpu := cpuOf(g, f)
+    g.curFeatures = g.features
+    for x in ownCpu {
+        if !g.curFeatures.contains(x) {
+            g.curFeatures.push(x)
+        }
+    }
     []str empty
     g.body = empty
     g.allocas = empty
@@ -2441,8 +2454,20 @@ fn define(ptr[Gen] g, int si) {
         }
     }
     attach := ""
+    if ownCpu.len > 0 {
+        []str plus
+        wide := false
+        for x in ownCpu {
+            plus.push("+" + llvmFeature(x))
+            wide = wide || x.starts_with("avx512")
+        }
+        if wide {
+            plus.push("+evex512")       // LLVM 18 and later: the 512-bit registers themselves (clang adds it for C too)
+        }
+        attach = " \"target-features\"=\"" + plus.join(",") + "\""
+    }
     if dbgsp >= 0 {
-        attach = " !dbg !" + str(dbgsp)
+        attach = attach + " !dbg !" + str(dbgsp)
     }
     g.dbgScope = -1
     g.out.push("define internal " + retTy(g, g.cur) + " " + g.cur.ll + "(" + params.join(", ") + ")" + attach + " {\nentry:\n" +
@@ -3680,7 +3705,7 @@ fn expr(ptr[Gen] g, ast.Node e) -> Val {
 
 fn unary(ptr[Gen] g, ast.Node e) -> Val {
     v := expr(g, e.kids[0])
-    if v.ty.kind == "vec" && e.name != "!" {
+    if v.ty.kind == "vec" && (e.name != "!" || v.ty.elem[0].kind == "bool") {
         return vecUnary(g, e, v)
     }
     if e.name == "!" {
@@ -4453,6 +4478,18 @@ fn indexOf(ptr[Gen] g, ast.Node e, Ref obj, bool write) -> Ref {
         return mapIndex(g, e, obj, t, write)
     }
     i := coerce(g, expr(g, e.kids[1]), T("int"), e.kids[1], "an index").v
+    if t.kind == "vec" && t.elem[0].kind == "bool" {
+        // a mask keeps a lane in a bit, so a lane is read from the whole value
+        if write {
+            fail(g, e, "a lane of a mask can't be set by itself; make a new mask (with a comparison or select)")
+        }
+        boundsCheck(g, i, str(t.count), e)
+        mv := obj.val.v
+        if obj.isPlace {
+            mv = load(g, llty(g, t), obj.pl.addr)
+        }
+        return Ref(isPlace: false, val: Val(v: op(g, "extractelement " + llty(g, t) + " " + mv + ", i64 " + i), ty: T("bool")))
+    }
     if t.kind == "vec" {
         // a lane: v[2], v[i] = x
         boundsCheck(g, i, str(t.count), e)
@@ -5572,6 +5609,15 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     if ei >= 0 {
         return enumFrom(g, c, ei)
     }
+    if n == "select" && lookup(g, n) < 0 && findFn(g, g.module, n) < 0 && !g.ci.fns.has(n) {
+        return selectCall(g, c)
+    }
+    if n == "cpu_has" && lookup(g, n) < 0 && findFn(g, g.module, n) < 0 {
+        return cpuHasCall(g, c)
+    }
+    if n == "concat" && lookup(g, n) < 0 && findFn(g, g.module, n) < 0 && !g.ci.fns.has(n) {
+        return concatCall(g, c)
+    }
     if ["fma", "muladd"].contains(n) {
         return fmaCall(g, c)        // Finch's, also for f32 and vectors (C's fma is the same for one double)
     }
@@ -5816,6 +5862,7 @@ fn callFn(ptr[Gen] g, int fi, ast.Node c, int first, str shown, str selfAddr, st
 
 // The call itself, once the arguments are values ("i64 5"); the receiver's address, if any, is already first.
 fn emitCall(ptr[Gen] g, FnSig sig, ast.Node c, []str args, str shown) -> Val {
+    checkCpuCall(g, sig, c, shown)
     if sig.fallible && g.ftarget != nodeKey(c) {
         fail(g, c, "'" + shown + "' can fail, so say what happens then:  " + shown + "(...) or <value>,  " + shown + "(...) or { ... },  or  try " + shown + "(...)")
     }
@@ -6504,6 +6551,7 @@ fn runtimeDecls() -> str {
         "declare i32 @finch_test_summary()",
         "declare void @finch_input(ptr, ptr)",
         "declare i32 @finch_file_exists(ptr)",
+        "declare i32 @finch_cpu_has(ptr)",
         "declare i32 @finch_str_try_int(ptr, ptr, ptr)",
         "declare i32 @finch_str_try_float(ptr, ptr, ptr)",
         "declare i32 @finch_try_read_file(ptr, ptr, ptr)",
@@ -6552,7 +6600,7 @@ fn assemble(ptr[Gen] g) -> str {
 
 fn generate([]ast.Program progs, []str files, cimport.CImports ci, Options opt) -> str {
     shared := opt.shared
-    gen := Gen(progs: progs, files: files, ci: ci, shared: opt.shared, debug: opt.debug, index: opt.index, cwd: opt.cwd, tg: opt.target, dbgScope: -1)
+    gen := Gen(progs: progs, files: files, ci: ci, shared: opt.shared, debug: opt.debug, index: opt.index, cwd: opt.cwd, tg: opt.target, dbgScope: -1, features: opt.features)
     g := addr(gen)
     g.trace = opt.trace && !opt.shared
     if g.debug {
@@ -6743,8 +6791,14 @@ fn vecMake(ptr[Gen] g, ast.Node c, ast.Type vt) -> Val {
         ft = first.pl.ty
     }
     if ft.kind == "array" || ft.kind == "ptr" {
-        if c.kids.len != 2 {
+        if lane.kind == "bool" {
+            fail(g, c, "a mask isn't loaded from a list; compare instead, like f32x8(list, i) > 0.0")
+        }
+        if c.kids.len != 2 && c.kids.len != 3 {
             fail(g, c, shown + "(list, i): which index to start at? (" + shown + "(list, 0) for the first " + str(n) + ")")
+        }
+        if c.kids.len == 3 && ft.kind == "ptr" {
+            fail(g, c, shown + "(list, i, fill) needs a list: a ptr doesn't know where its numbers end")
         }
         if ft.elem.len == 0 || !ast.same(ft.elem[0], lane) {
             fail(g, c.kids[0], shown + "(list, i) loads " + ast.show(lane) + " numbers, but this is " + ast.show(ft))
@@ -6754,6 +6808,10 @@ fn vecMake(ptr[Gen] g, ast.Node c, ast.Type vt) -> Val {
             hold(g, first.val)
         }
         i := coerce(g, expr(g, c.kids[1]), T("int"), c.kids[1], "an index").v
+        fill := ""
+        if c.kids.len == 3 {
+            fill = coerce(g, expr(g, c.kids[2]), lane, c.kids[2], "the number for the lanes past the end").v
+        }
         heldEnd(g, mark)
         data := ""
         if ft.kind == "ptr" {
@@ -6766,8 +6824,22 @@ fn vecMake(ptr[Gen] g, ast.Node c, ast.Type vt) -> Val {
             if first.isPlace {
                 av = load(g, "{ ptr, i64, i64 }", first.pl.addr)
             }
-            vecBounds(g, i, n, op(g, "extractvalue { ptr, i64, i64 } " + av + ", 1"), c)
+            len := op(g, "extractvalue { ptr, i64, i64 } " + av + ", 1")
             data = op(g, "extractvalue { ptr, i64, i64 } " + av + ", 0")
+            if fill.len > 0 {
+                // the end of a list: the lanes that are in it are loaded, the others get `fill`
+                m := tailMask(g, i, n, len, c)
+                ep := op(g, "getelementptr " + llty(g, lane) + ", ptr " + data + ", i64 " + i)
+                ml := llty(g, shaped(vt, "bool"))
+                fname := "@llvm.masked.load." + vecSuffix(vt) + ".p0"
+                declareOnce(g, "declare " + lt + " " + fname + "(ptr, i32, " + ml + ", " + lt + ")")
+                out := op(g, "call " + lt + " " + fname + "(ptr " + ep + ", i32 " + laneBytes(vt) + ", " + ml + " " + m + ", " + lt + " " + splat(g, fill, vt) + ")")
+                if !first.isPlace {
+                    release(g, first.val)
+                }
+                return Val(v: out, ty: vt)
+            }
+            vecBounds(g, i, n, len, c)
         }
         ep := op(g, "getelementptr inbounds " + llty(g, lane) + ", ptr " + data + ", i64 " + i)
         out := op(g, "load " + lt + ", ptr " + ep + ", align " + laneBytes(vt))
@@ -6816,6 +6888,20 @@ fn vecConvert(ptr[Gen] g, Val v, ast.Type to, ast.Node at) -> Val {
     }
     fl := from.elem[0]
     tl := to.elem[0]
+    if tl.kind == "bool" {
+        // a lane that isn't 0 is true
+        if isFloat(fl) {
+            return Val(v: op(g, "fcmp une " + llty(g, from) + " " + v.v + ", zeroinitializer"), ty: to)
+        }
+        return Val(v: op(g, "icmp ne " + llty(g, from) + " " + v.v + ", zeroinitializer"), ty: to)
+    }
+    if fl.kind == "bool" {
+        // true is 1
+        if isFloat(tl) {
+            return Val(v: op(g, "uitofp " + llty(g, from) + " " + v.v + " to " + llty(g, to)), ty: to)
+        }
+        return Val(v: op(g, "zext " + llty(g, from) + " " + v.v + " to " + llty(g, to)), ty: to)
+    }
     inst := ""
     if isInt(fl) && isInt(tl) {
         if bitsOf(fl) == bitsOf(tl) {
@@ -6849,6 +6935,12 @@ fn vecConvert(ptr[Gen] g, Val v, ast.Type to, ast.Node at) -> Val {
 fn vecUnary(ptr[Gen] g, ast.Node e, Val v) -> Val {
     lane := v.ty.elem[0]
     lt := llty(g, v.ty)
+    if lane.kind == "bool" {
+        if e.name != "!" && e.name != "~" {
+            fail(g, e, "can't put '" + e.name + "' in front of a mask (" + ast.show(v.ty) + "); '!' flips it")
+        }
+        return Val(v: op(g, "xor " + lt + " " + v.v + ", " + splat(g, "true", v.ty)), ty: v.ty)
+    }
     if e.name == "~" {
         if !isInt(lane) {
             fail(g, e, "'~' flips the bits of whole numbers, not of " + ast.show(v.ty))
@@ -6869,6 +6961,9 @@ fn vecArith(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
     a := asVec(g, l, vt, o, at)
     b := asVec(g, r, vt, o, at)
     lane := vt.elem[0]
+    if lane.kind == "bool" && o != "&" && o != "|" && o != "^" {
+        fail(g, at, "can't use '" + o + "' on a mask (" + ast.show(vt) + "); masks take & | ^ and !")
+    }
     names := ["+", "-", "*", "/", "&", "|", "^", "<<", ">>"]
     insts := ["add", "sub", "mul", "", "and", "or", "xor", "shl", "ashr"]
     if isUnsigned(lane) {
@@ -6891,27 +6986,22 @@ fn vecArith(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
     return Val(v: op(g, insts[k] + " " + llty(g, vt) + " " + a.v + ", " + b.v), ty: vt)
 }
 
-// v == w: every lane is equal. (Lane by lane: min, max, or v[i] < w[i].)
+// v < w, v == w ...: a mask (boolxN), the answer for every lane. m.all(), m.any(), select(m, a, b) use it.
 fn vecCompare(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
     vt := vecOf(l, r)
-    if o != "==" && o != "!=" {
-        fail(g, at, "'" + o + "' on " + ast.show(vt) + " would have an answer for every lane; use min(v, w), max(v, w), or compare lanes: v[i] " + o + " w[i]")
-    }
     a := asVec(g, l, vt, o, at)
     b := asVec(g, r, vt, o, at)
-    cmp := ""
-    if isFloat(vt.elem[0]) {
-        cmp = op(g, "fcmp oeq " + llty(g, vt) + " " + a.v + ", " + b.v)
-    } else {
-        cmp = op(g, "icmp eq " + llty(g, vt) + " " + a.v + ", " + b.v)
+    lane := vt.elem[0]
+    mask := shaped(vt, "bool")
+    if lane.kind == "bool" && o != "==" && o != "!=" {
+        fail(g, at, "masks can only be compared with == and !=")
     }
-    bits := ast.Type(kind: "vec", count: vt.count)
-    bits.elem.push(T("bool"))
-    all := vecIntrinsic(g, "i1", "vector.reduce.and", bits, ["<" + str(vt.count) + " x i1>"], [cmp], "")
-    if o == "!=" {
-        return Val(v: op(g, "xor i1 " + all + ", true"), ty: T("bool"))
+    if isFloat(lane) {
+        ops := ["==", "!=", "<", "<=", ">", ">="]
+        preds := ["oeq", "une", "olt", "ole", "ogt", "oge"]
+        return Val(v: op(g, "fcmp " + preds[ops.find(o)] + " " + llty(g, vt) + " " + a.v + ", " + b.v), ty: mask)
     }
-    return Val(v: all, ty: T("bool"))
+    return Val(v: op(g, "icmp " + intPred(o, isSigned(lane)) + " " + llty(g, vt) + " " + a.v + ", " + b.v), ty: mask)
 }
 
 // min(v, w) and max(v, w), lane by lane (clamp is the two)
@@ -6979,6 +7069,9 @@ fn vecMethod(ptr[Gen] g, ast.Node m, Val v) -> Val {
     lane := vt.elem[0]
     lt := llty(g, vt)
     n := m.name
+    if lane.kind == "bool" && n != "shuffle" && n != "lo" && n != "hi" {
+        return maskMethod(g, m, v)
+    }
     if n == "sum" || n == "min" || n == "max" {
         need(g, m, 0)
         how := n
@@ -7009,7 +7102,7 @@ fn vecMethod(ptr[Gen] g, ast.Node m, Val v) -> Val {
         need(g, m, 0)
         return Val(v: vecIntrinsic(g, lt, n, vt, [lt], [v.v], ""), ty: vt)
     }
-    if n == "store" {
+    if n == "store" || n == "store_part" {
         need(g, m, 2)
         dst := ref(g, m.kids[1], true)
         dt := dst.val.ty
@@ -7020,7 +7113,10 @@ fn vecMethod(ptr[Gen] g, ast.Node m, Val v) -> Val {
             fail(g, m.kids[1], "store(list, i) writes " + ast.show(lane) + " numbers into a []" + ast.show(lane) + " or a ptr[" + ast.show(lane) + "], but this is " + ast.show(dt))
         }
         if dt.kind == "array" && !dst.isPlace {
-            fail(g, m.kids[1], "store(list, i) needs a list in a variable (this one would be thrown away)")
+            fail(g, m.kids[1], n + "(list, i) needs a list in a variable (this one would be thrown away)")
+        }
+        if n == "store_part" && dt.kind != "array" {
+            fail(g, m.kids[1], "store_part(list, i) needs a list: a ptr doesn't know where its numbers end")
         }
         i := coerce(g, expr(g, m.kids[2]), T("int"), m.kids[2], "an index").v
         data := ""
@@ -7031,14 +7127,31 @@ fn vecMethod(ptr[Gen] g, ast.Node m, Val v) -> Val {
             }
         } else {
             av := load(g, "{ ptr, i64, i64 }", dst.pl.addr)
-            vecBounds(g, i, vt.count, op(g, "extractvalue { ptr, i64, i64 } " + av + ", 1"), m)
+            len := op(g, "extractvalue { ptr, i64, i64 } " + av + ", 1")
             data = op(g, "extractvalue { ptr, i64, i64 } " + av + ", 0")
+            if n == "store_part" {
+                // only the lanes that are in the list are written
+                mk := tailMask(g, i, vt.count, len, m)
+                ep := op(g, "getelementptr " + llty(g, lane) + ", ptr " + data + ", i64 " + i)
+                ml := llty(g, shaped(vt, "bool"))
+                fname := "@llvm.masked.store." + vecSuffix(vt) + ".p0"
+                declareOnce(g, "declare void " + fname + "(" + lt + ", ptr, i32, " + ml + ")")
+                emit(g, "call void " + fname + "(" + lt + " " + v.v + ", ptr " + ep + ", i32 " + laneBytes(vt) + ", " + ml + " " + mk + ")")
+                return Val(ty: T("void"))
+            }
+            vecBounds(g, i, vt.count, len, m)
         }
         ep := op(g, "getelementptr inbounds " + llty(g, lane) + ", ptr " + data + ", i64 " + i)
         emit(g, "store " + lt + " " + v.v + ", ptr " + ep + ", align " + laneBytes(vt))
         return Val(ty: T("void"))
     }
-    fail(g, m, "a " + ast.show(vt) + " has no method '" + n + "' (it has: sum, min, max, dot, abs, sqrt, floor, ceil, round, fma, muladd, store)")
+    if n == "shuffle" || n == "lo" || n == "hi" || n == "lookup" {
+        return shuffleMethod(g, m, v)
+    }
+    if n == "dot_add" {
+        return dotAdd(g, m, v)
+    }
+    fail(g, m, "a " + ast.show(vt) + " has no method '" + n + "' (it has: sum, min, max, dot, abs, sqrt, floor, ceil, round, fma, muladd, store, store_part, shuffle, lo, hi, lookup, dot_add)")
     return v
 }
 
@@ -7212,4 +7325,417 @@ fn bitsCall(ptr[Gen] g, ast.Node c) -> Val {
     }
     h := op(g, "fptrunc " + il + " " + v.v + " to " + hl)
     return Val(v: op(g, "bitcast " + hl + " " + h + " to " + ol), ty: out)
+}
+
+// ---------- masks: boolxN ----------
+//
+// A comparison of vectors gives a mask, one true/false a lane (<N x i1>). It picks lanes with select, says
+// whether any or all lanes are true, and loads and stores the end of a list (f32x8(list, i, fill), store_part).
+
+// lanes 0, 1, ... n-1 that are inside a list of `len` from index i (i may be past the end: then none)
+fn tailMask(ptr[Gen] g, str i, int n, str len, ast.Node at) -> str {
+    panicIf(g, op(g, "icmp slt i64 " + i + ", 0"), "a vector's index is below 0", at)
+    rest := op(g, "sub i64 " + len + ", " + i)
+    []str lanes
+    for k in 0..n {
+        lanes.push("i64 " + str(k))
+    }
+    wide := ast.Type(kind: "vec", count: n)
+    wide.elem.push(T("int"))
+    return op(g, "icmp slt <" + str(n) + " x i64> <" + lanes.join(", ") + ">, " + splat(g, rest, wide))
+}
+
+// select(mask, a, b): a's lane where the mask is true, b's where it is false
+fn selectCall(ptr[Gen] g, ast.Node c) -> Val {
+    if g.index {
+        noteRef(g, c, c.col, c.name.len, docs.hover(docs.find(docs.builtins(), "select")), "", 0, 0)
+    }
+    checkArgs(g, c, 0, 3, "select")
+    m := expr(g, c.kids[0])
+    if m.ty.kind != "vec" || m.ty.elem[0].kind != "bool" {
+        fail(g, c.kids[0], "select(mask, a, b) takes a mask first, from a comparison of vectors like v > 0.0; this is " + ast.show(m.ty))
+    }
+    a := expr(g, c.kids[1])
+    b := expr(g, c.kids[2])
+    vt := a.ty
+    if vt.kind != "vec" {
+        vt = b.ty
+    }
+    if vt.kind != "vec" {
+        fail(g, c, "select(mask, a, b): a or b has to be a vector (the other may be a number for every lane)")
+    }
+    if vt.count != m.ty.count {
+        fail(g, c, "the mask has " + str(m.ty.count) + " lanes, but " + ast.show(vt) + " has " + str(vt.count))
+    }
+    av := asVec(g, a, vt, "select", c.kids[1])
+    bv := asVec(g, b, vt, "select", c.kids[2])
+    lt := llty(g, vt)
+    return Val(v: op(g, "select " + llty(g, m.ty) + " " + m.v + ", " + lt + " " + av.v + ", " + lt + " " + bv.v), ty: vt)
+}
+
+fn maskMethod(ptr[Gen] g, ast.Node m, Val v) -> Val {
+    n := m.name
+    ml := llty(g, v.ty)
+    if n == "any" || n == "all" {
+        need(g, m, 0)
+        how := "or"
+        if n == "all" {
+            how = "and"
+        }
+        return Val(v: vecIntrinsic(g, "i1", "vector.reduce." + how, v.ty, [ml], [v.v], ""), ty: T("bool"))
+    }
+    if n == "count" {
+        need(g, m, 0)
+        wide := shaped(v.ty, "i32")
+        wl := llty(g, wide)
+        z := op(g, "zext " + ml + " " + v.v + " to " + wl)
+        sum := vecIntrinsic(g, "i32", "vector.reduce.add", wide, [wl], [z], "")
+        return Val(v: op(g, "zext i32 " + sum + " to i64"), ty: T("int"))
+    }
+    fail(g, m, "a mask (" + ast.show(v.ty) + ") has .len, [i] and the methods any, all, count; pick lanes with select(mask, a, b)")
+    return v
+}
+
+// ---------- moving lanes around ----------
+
+fn indexList([]int idx) -> str {
+    []str parts
+    for k in idx {
+        parts.push("i32 " + str(k))
+    }
+    return "<" + parts.join(", ") + ">"
+}
+
+fn shuffleOf(ptr[Gen] g, Val v, []int idx, str v2) -> Val {
+    vt := v.ty
+    out := ast.Type(kind: "vec", count: idx.len)
+    out.elem.push(vt.elem[0])
+    second := v2
+    if second.len == 0 {
+        second = "poison"
+    }
+    return Val(v: op(g, "shufflevector " + llty(g, vt) + " " + v.v + ", " + llty(g, vt) + " " + second + ", <" + str(idx.len) + " x i32> " + indexList(idx)), ty: out)
+}
+
+fn fitsVector(ptr[Gen] g, ast.Node at, ast.Type lane, int n) {
+    if n != 2 && n != 4 && n != 8 && n != 16 && n != 32 && n != 64 {
+        fail(g, at, "a vector has 2, 4, 8, 16, 32 or 64 lanes, not " + str(n))
+    }
+    bits := bitsOf(lane)
+    if n * bits > 512 {
+        fail(g, at, "that would be " + str(n) + " lanes of " + ast.show(lane) + ", more than 512 bits")
+    }
+}
+
+// v.shuffle(3, 2, 1, 0): lanes picked by number (numbers written in the code); v.lo(), v.hi(): the halves;
+// table.lookup(idx): table[idx % table.len] for every lane of idx (pshufb on x86, tbl on ARM)
+fn shuffleMethod(ptr[Gen] g, ast.Node m, Val v) -> Val {
+    vt := v.ty
+    n := m.name
+    if n == "lo" || n == "hi" {
+        need(g, m, 0)
+        if vt.count < 4 {
+            fail(g, m, "a " + ast.show(vt) + " has only " + str(vt.count) + " lanes; take them with v[0] and v[1]")
+        }
+        []int idx
+        start := 0
+        if n == "hi" {
+            start = vt.count / 2
+        }
+        for k in 0..vt.count / 2 {
+            idx.push(start + k)
+        }
+        return shuffleOf(g, v, idx, "")
+    }
+    if n == "shuffle" {
+        []int idx
+        for q in 1..m.kids.len {
+            x := expr(g, m.kids[q])
+            if !isInt(x.ty) || !x.lit {
+                fail(g, m.kids[q], "shuffle(...) takes lane numbers written in the code (or constants), like v.shuffle(3, 2, 1, 0)")
+            }
+            k := int(x.v) or -1
+            if k < 0 || k >= vt.count {
+                fail(g, m.kids[q], "lane " + x.v + " isn't in a " + ast.show(vt) + " (its lanes are 0 to " + str(vt.count - 1) + ")")
+            }
+            idx.push(k)
+        }
+        fitsVector(g, m, vt.elem[0], idx.len)
+        return shuffleOf(g, v, idx, "")
+    }
+    // lookup
+    need(g, m, 1)
+    ix := expr(g, m.kids[1])
+    if ix.ty.kind != "vec" || !isInt(ix.ty.elem[0]) {
+        fail(g, m.kids[1], "lookup(indices) takes a vector of whole numbers (like u8x16), but this is " + ast.show(ix.ty))
+    }
+    if vt.elem[0].kind == "bool" {
+        fail(g, m, "a mask can't be a lookup table")
+    }
+    fitsVector(g, m.kids[1], vt.elem[0], ix.ty.count)
+    il := llty(g, ix.ty)
+    masked := op(g, "and " + il + " " + ix.v + ", " + splat(g, str(vt.count - 1), ix.ty))
+    out := shaped(ix.ty, vt.elem[0].kind)
+    ol := llty(g, out)
+    el := llty(g, vt.elem[0])
+    xl := llty(g, ix.ty.elem[0])
+    cur := "poison"
+    for k in 0..ix.ty.count {
+        at := op(g, "extractelement " + il + " " + masked + ", i64 " + str(k))
+        lane := op(g, "extractelement " + llty(g, vt) + " " + v.v + ", " + xl + " " + at)
+        cur = op(g, "insertelement " + ol + " " + cur + ", " + el + " " + lane + ", i64 " + str(k))
+    }
+    return Val(v: cur, ty: out)
+}
+
+// concat(a, b): a's lanes, then b's
+fn concatCall(ptr[Gen] g, ast.Node c) -> Val {
+    if g.index {
+        noteRef(g, c, c.col, c.name.len, docs.hover(docs.find(docs.builtins(), "concat")), "", 0, 0)
+    }
+    checkArgs(g, c, 0, 2, "concat")
+    a := expr(g, c.kids[0])
+    b := expr(g, c.kids[1])
+    if a.ty.kind != "vec" || !ast.same(a.ty, b.ty) {
+        fail(g, c, "concat(a, b) joins two vectors of the same type, but these are " + ast.show(a.ty) + " and " + ast.show(b.ty))
+    }
+    fitsVector(g, c, a.ty.elem[0], a.ty.count * 2)
+    []int idx
+    for k in 0..a.ty.count * 2 {
+        idx.push(k)
+    }
+    return shuffleOf(g, a, idx, b.v)
+}
+
+// ---------- processor features: @cpu(...), cpu_has(...) ----------
+//
+// --cpu gives the whole program a processor (main.fch asks clang which features that means); @cpu("avx2,fma") gives one
+// function more, as LLVM's "target-features". Such a function is only called after cpu_has("avx2") said yes. Features of
+// the other architecture are dropped, so one source holds the x86 and the ARM versions side by side.
+
+fn x86Features() -> []str {
+    return ["sse3", "ssse3", "sse4.1", "sse4.2", "popcnt", "avx", "avx2", "fma", "f16c", "bmi1", "bmi2", "avx512f", "avx512bw",
+            "avx512dq", "avx512vl", "avx512vnni", "avx512bf16", "avx512fp16", "avxvnni"]
+}
+
+fn armFeatures() -> []str {
+    return ["neon", "fp16", "dotprod", "i8mm", "bf16", "sve", "sve2"]
+}
+
+// the name LLVM uses for a feature
+fn llvmFeature(str x) -> str {
+    if x == "bmi1" {
+        return "bmi"
+    }
+    if x == "fp16" {
+        return "fullfp16"
+    }
+    return x
+}
+
+// the features of a level: x86-64-v3 is the AVX2 generation, v4 the AVX-512 one
+fn levelFeatures(str name) -> []str {
+    []str out
+    if name == "x86-64-v2" || name == "x86-64-v3" || name == "x86-64-v4" {
+        for x in ["sse3", "ssse3", "sse4.1", "sse4.2", "popcnt"] {
+            out.push(x)
+        }
+    }
+    if name == "x86-64-v3" || name == "x86-64-v4" {
+        for x in ["avx", "avx2", "bmi1", "bmi2", "f16c", "fma"] {
+            out.push(x)
+        }
+    }
+    if name == "x86-64-v4" {
+        for x in ["avx512f", "avx512bw", "avx512dq", "avx512vl"] {
+            out.push(x)
+        }
+    }
+    return out
+}
+
+// a function's own @cpu features, for the architecture it is built for
+fn cpuOf(ptr[Gen] g, ast.Node f) -> []str {
+    []str out
+    if f.cpu.len == 0 {
+        return out
+    }
+    for part in f.cpu.split(",") {
+        x := part.trim()
+        names := levelFeatures(x)
+        if names.len == 0 {
+            if !x86Features().contains(x) && !armFeatures().contains(x) {
+                fail(g, f, "@cpu: '" + x + "' isn't a feature Finch knows (x86: " + x86Features().join(", ") + ", x86-64-v2/v3/v4; ARM: " + armFeatures().join(", ") + ")")
+            }
+            names.push(x)
+        }
+        for y in names {
+            if armFeatures().contains(y) == g.tg.arm64 && !out.contains(y) {
+                out.push(y)
+            }
+        }
+    }
+    return out
+}
+
+// a vector wider than 16 bytes travels in different registers depending on the features (two xmm, or one ymm), so it
+// can't cross from a function with one set of features to a function with another
+fn checkCpuCall(ptr[Gen] g, FnSig sig, ast.Node c, str shown) {
+    if sig.prog < 0 || sig.prog >= g.progs.len || sig.index >= g.progs[sig.prog].fns.len {
+        return
+    }
+    callee := g.progs[sig.prog].fns[sig.index].cpu
+    mine := g.progs[g.cur.prog].fns[g.cur.index].cpu
+    if callee == mine {
+        return
+    }
+    []ast.Type ts = sig.params
+    ts.push(sig.ret)
+    for t in ts {
+        if t.kind == "vec" && t.count * bitsOf(t.elem[0]) > 128 {
+            fail(g, c, "'" + shown + "' has other @cpu features than this function, so a " + ast.show(t) + " can't be passed between them (its registers differ); pass a list or a ptr, or give both the same @cpu")
+        }
+    }
+}
+
+// cpu_has("avx2"): does the processor running the program have it? (false for the other architecture's names)
+fn cpuHasCall(ptr[Gen] g, ast.Node c) -> Val {
+    if g.index {
+        noteRef(g, c, c.col, c.name.len, docs.hover(docs.find(docs.builtins(), "cpu_has")), "", 0, 0)
+    }
+    checkArgs(g, c, 0, 1, "cpu_has")
+    if c.kids[0].kind == "str" {
+        x := c.kids[0].text
+        if !x86Features().contains(x) && !armFeatures().contains(x) {
+            fail(g, c.kids[0], "cpu_has: '" + x + "' isn't a feature Finch knows (x86: " + x86Features().join(", ") + "; ARM: " + armFeatures().join(", ") + ")")
+        }
+    }
+    s := strArg(g, c.kids[0], "the feature's name")
+    r := op(g, "call i32 @finch_cpu_has(ptr " + spill(g, s) + ")")
+    release(g, s)
+    return Val(v: op(g, "icmp ne i32 " + r + ", 0"), ty: T("bool"))
+}
+
+// ---------- acc.dot_add(a, b): the step of an int8 dot product ----------
+//
+// acc is i32xN; a and b have 4N bytes (a u8 or i8, b i8 or u8). Lane k of acc gains a[4k]*b[4k] + ... + a[4k+3]*b[4k+3],
+// exactly (no saturation). That is vpdpbusd (AVX-VNNI, AVX-512 VNNI) and usdot / sdot / udot (ARM), used when the
+// function's features have them; elsewhere the same sum is written out, which LLVM makes into pmaddwd and adds.
+fn dotAdd(ptr[Gen] g, ast.Node m, Val acc) -> Val {
+    need(g, m, 2)
+    at := acc.ty
+    if at.elem[0].kind != "i32" && at.elem[0].kind != "u32" {
+        fail(g, m, "dot_add is called on an i32 vector (the sums), like acc.dot_add(a, b) with acc an i32x8; this is " + ast.show(at))
+    }
+    a := expr(g, m.kids[1])
+    b := expr(g, m.kids[2])
+    for x in [a, b] {
+        if x.ty.kind != "vec" || (x.ty.elem[0].kind != "u8" && x.ty.elem[0].kind != "i8") || x.ty.count != at.count * 4 {
+            fail(g, m, "dot_add(a, b) on an " + ast.show(at) + " takes two vectors of " + str(at.count * 4) + " bytes (u8 or i8), but these are " + ast.show(a.ty) + " and " + ast.show(b.ty))
+        }
+    }
+    au := a.ty.elem[0].kind == "u8"
+    bu := b.ty.elem[0].kind == "u8"
+    if !au && bu {
+        // u8 x i8 is the same sum as i8 x u8: put the unsigned one first
+        t := a
+        a = b
+        b = t
+        au = true
+        bu = false
+    }
+    al := llty(g, at)
+    bits := at.count * 32
+    f := g.curFeatures
+    if !g.tg.arm64 && au && !bu {
+        vnni := (bits == 512 && f.contains("avx512vnni")) || (bits <= 256 && (f.contains("avxvnni") || (f.contains("avx512vnni") && f.contains("avx512vl"))))
+        if vnni {
+            a32 := op(g, "bitcast " + llty(g, a.ty) + " " + a.v + " to " + al)
+            b32 := op(g, "bitcast " + llty(g, b.ty) + " " + b.v + " to " + al)
+            name := "@llvm.x86.avx512.vpdpbusd." + str(bits)
+            declareOnce(g, "declare " + al + " " + name + "(" + al + ", " + al + ", " + al + ")")
+            return Val(v: op(g, "call " + al + " " + name + "(" + al + " " + acc.v + ", " + al + " " + a32 + ", " + al + " " + b32 + ")"), ty: at)
+        }
+    }
+    if g.tg.arm64 && bits % 128 == 0 {
+        which := ""
+        if au && !bu && f.contains("i8mm") {
+            which = "usdot"
+        } else if au && bu && f.contains("dotprod") {
+            which = "udot"
+        } else if !au && !bu && f.contains("dotprod") {
+            which = "sdot"
+        }
+        if which.len > 0 {
+            // one instruction per 16 bytes
+            name := "@llvm.aarch64.neon." + which + ".v4i32.v16i8"
+            declareOnce(g, "declare <4 x i32> " + name + "(<4 x i32>, <16 x i8>, <16 x i8>)")
+            parts := at.count / 4
+            []str outs
+            for q in 0..parts {
+                []int ai
+                for k in 0..4 {
+                    ai.push(q * 4 + k)
+                }
+                []int bi
+                for k in 0..16 {
+                    bi.push(q * 16 + k)
+                }
+                ac := shuffleOf(g, acc, ai, "").v
+                ap := shuffleOf(g, a, bi, "").v
+                bp := shuffleOf(g, b, bi, "").v
+                outs.push(op(g, "call <4 x i32> " + name + "(<4 x i32> " + ac + ", <16 x i8> " + ap + ", <16 x i8> " + bp + ")"))
+            }
+            return Val(v: joinParts(g, outs, 4), ty: at)
+        }
+    }
+    // written out: widen, multiply, add each group of four
+    w := shaped(a.ty, "i32")
+    wl := llty(g, w)
+    ext := "sext"
+    if au {
+        ext = "zext"
+    }
+    aw := op(g, ext + " " + llty(g, a.ty) + " " + a.v + " to " + wl)
+    ext = "sext"
+    if bu {
+        ext = "zext"
+    }
+    bw := op(g, ext + " " + llty(g, b.ty) + " " + b.v + " to " + wl)
+    prod := Val(v: op(g, "mul " + wl + " " + aw + ", " + bw), ty: w)
+    sum := acc.v
+    for k in 0..4 {
+        []int idx
+        for j in 0..at.count {
+            idx.push(4 * j + k)
+        }
+        sum = op(g, "add " + al + " " + sum + ", " + shuffleOf(g, prod, idx, "").v)
+    }
+    return Val(v: sum, ty: at)
+}
+
+// <4 x i32> pieces back into one vector of n * 4 lanes
+fn joinParts(ptr[Gen] g, []str parts, int each) -> str {
+    if parts.len == 1 {
+        return parts[0]
+    }
+    []str cur = parts
+    size := each
+    while cur.len > 1 {
+        []str next
+        t := ast.Type(kind: "vec", count: size)
+        t.elem.push(T("i32"))
+        k := 0
+        while k < cur.len {
+            []int idx
+            for j in 0..size * 2 {
+                idx.push(j)
+            }
+            next.push(shuffleOf(g, Val(v: cur[k], ty: t), idx, cur[k + 1]).v)
+            k += 2
+        }
+        cur = next
+        size = size * 2
+    }
+    return cur[0]
 }

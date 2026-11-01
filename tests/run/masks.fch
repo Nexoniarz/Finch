@@ -1,0 +1,50 @@
+// Masks: comparisons of vectors, select, any/all/count, and the end of a list
+
+fn relu(f32x8 v) -> f32x8 {
+    return select(v > 0.0, v, 0.0)
+}
+
+// the sum of a list of any length: whole vectors, then the last piece with its missing lanes as 0
+fn total([]f32 xs) -> f32 {
+    acc := f32x8(0.0)
+    i := 0
+    while i < xs.len {
+        acc = acc + f32x8(xs, i, 0.0)
+        i += 8
+    }
+    return acc.sum()
+}
+
+// add 1 to every number of a list, in place, the last piece too
+fn bump([]f32 xs) {
+    i := 0
+    while i < xs.len {
+        (f32x8(xs, i, 0.0) + 1.0).store_part(xs, i)
+        i += 8
+    }
+}
+
+fn main() {
+    v := f32x8(-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, -4.0, 5.0)
+    m := v > 0.0
+    print(m, m.count(), m.any(), m.all(), m[3])
+    print(relu(v), select(!m, v, -1.0))
+    print((v >= -1.0) & (v < 3.0), (v == 0.0) | (v == 5.0), m ^ (v > 1.0))
+
+    a := i32x4(1, 5, 3, 7)
+    b := i32x4(4, 4, 4, 4)
+    print(select(a > b, a, b), (a == a).all(), (a != b).all())
+    u := u8x16(200)
+    print((u > u8x16(100)).all(), i32x4(a > b), f32x4(a < b))
+    k := i32x4(0, 2, 0, -1)
+    print(boolx4(k), boolx4(true, false, true, false))
+
+    []f32 xs
+    for n in 0..13 {
+        xs.push(f32(n))
+    }
+    print(total(xs))
+    bump(xs)
+    print(xs)
+    print(f32x8(xs, 8, -1.0), f32x8(xs, 13, 9.0), f32x8(xs, 100, 7.0))
+}

@@ -1147,3 +1147,96 @@ __attribute__((noreturn, cold)) void finch_map_missing(const char *file, int64_t
              (int)(key->len > 100 ? 100 : key->len), key->ptr ? key->ptr : "");
     finch_panic(file, line, msg);
 }
+
+// ---------- cpu_has("avx2"): what the processor running the program can do ----------
+//
+// x86: CPUID, and for the AVX and AVX-512 families also XGETBV (the system must save those registers, or the
+// instructions fault). ARM64: the kernel's hwcaps on Linux and Android, sysctl on macOS. A name of the other
+// architecture is false.
+
+#if defined(__x86_64__) || defined(__i386__)
+#include <cpuid.h>
+static int x86_leaf(unsigned leaf, unsigned sub, unsigned r[4]) {
+    unsigned max = __get_cpuid_max(0, 0);
+    if (leaf > max) return 0;
+    __cpuid_count(leaf, sub, r[0], r[1], r[2], r[3]);
+    return 1;
+}
+static unsigned long long x86_xcr0(void) {
+    unsigned lo, hi;
+    __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    return ((unsigned long long)hi << 32) | lo;
+}
+static int finch_cpu_has_c(const char *n) {
+    unsigned l1[4] = {0}, l7[4] = {0}, l71[4] = {0};
+    x86_leaf(1, 0, l1);
+    x86_leaf(7, 0, l7);
+    x86_leaf(7, 1, l71);
+    int osx = (l1[2] >> 27) & 1;                                    // OSXSAVE
+    unsigned long long xcr0 = osx ? x86_xcr0() : 0;
+    int ymm = osx && (xcr0 & 6) == 6;                               // the system saves xmm and ymm
+    int zmm = ymm && (xcr0 & 0xe0) == 0xe0;                         // and the AVX-512 registers
+    if (!strcmp(n, "sse3")) return l1[2] & 1;
+    if (!strcmp(n, "ssse3")) return (l1[2] >> 9) & 1;
+    if (!strcmp(n, "sse4.1")) return (l1[2] >> 19) & 1;
+    if (!strcmp(n, "sse4.2")) return (l1[2] >> 20) & 1;
+    if (!strcmp(n, "popcnt")) return (l1[2] >> 23) & 1;
+    if (!strcmp(n, "avx")) return ymm && ((l1[2] >> 28) & 1);
+    if (!strcmp(n, "fma")) return ymm && ((l1[2] >> 12) & 1);
+    if (!strcmp(n, "f16c")) return ymm && ((l1[2] >> 29) & 1);
+    if (!strcmp(n, "avx2")) return ymm && ((l7[1] >> 5) & 1);
+    if (!strcmp(n, "bmi1")) return (l7[1] >> 3) & 1;
+    if (!strcmp(n, "bmi2")) return (l7[1] >> 8) & 1;
+    if (!strcmp(n, "avxvnni")) return ymm && ((l71[0] >> 4) & 1);
+    if (!strcmp(n, "avx512f")) return zmm && ((l7[1] >> 16) & 1);
+    if (!strcmp(n, "avx512dq")) return zmm && ((l7[1] >> 17) & 1);
+    if (!strcmp(n, "avx512bw")) return zmm && ((l7[1] >> 30) & 1);
+    if (!strcmp(n, "avx512vl")) return zmm && ((l7[1] >> 31) & 1);
+    if (!strcmp(n, "avx512vnni")) return zmm && ((l7[2] >> 11) & 1);
+    if (!strcmp(n, "avx512fp16")) return zmm && ((l7[3] >> 23) & 1);
+    if (!strcmp(n, "avx512bf16")) return zmm && ((l71[0] >> 5) & 1);
+    return 0;
+}
+#elif defined(__aarch64__) && defined(__APPLE__)
+#include <sys/sysctl.h>
+static int sysctl_flag(const char *name) {
+    int v = 0;
+    size_t len = sizeof v;
+    if (sysctlbyname(name, &v, &len, NULL, 0) != 0) return 0;
+    return v != 0;
+}
+static int finch_cpu_has_c(const char *n) {
+    if (!strcmp(n, "neon")) return 1;
+    if (!strcmp(n, "fp16")) return sysctl_flag("hw.optional.arm.FEAT_FP16");
+    if (!strcmp(n, "dotprod")) return sysctl_flag("hw.optional.arm.FEAT_DotProd");
+    if (!strcmp(n, "i8mm")) return sysctl_flag("hw.optional.arm.FEAT_I8MM");
+    if (!strcmp(n, "bf16")) return sysctl_flag("hw.optional.arm.FEAT_BF16");
+    return 0;                                                       // no SVE on Apple chips
+}
+#elif defined(__aarch64__) && defined(__linux__)
+#include <sys/auxv.h>
+static int finch_cpu_has_c(const char *n) {
+    unsigned long h = getauxval(AT_HWCAP), h2 = getauxval(AT_HWCAP2);
+    if (!strcmp(n, "neon")) return 1;
+    if (!strcmp(n, "fp16")) return (h >> 10) & 1;                    // HWCAP_ASIMDHP
+    if (!strcmp(n, "dotprod")) return (h >> 20) & 1;                 // HWCAP_ASIMDDP
+    if (!strcmp(n, "sve")) return (h >> 22) & 1;                     // HWCAP_SVE
+    if (!strcmp(n, "sve2")) return (h2 >> 1) & 1;                    // HWCAP2_SVE2
+    if (!strcmp(n, "i8mm")) return (h2 >> 13) & 1;                   // HWCAP2_I8MM
+    if (!strcmp(n, "bf16")) return (h2 >> 14) & 1;                   // HWCAP2_BF16
+    return 0;
+}
+#else
+static int finch_cpu_has_c(const char *n) {
+    (void)n;
+    return 0;
+}
+#endif
+
+int finch_cpu_has(const FStr *name) {
+    char n[32];
+    int64_t len = name->len < 31 ? name->len : 31;
+    memcpy(n, name->ptr ? name->ptr : "", (size_t)len);
+    n[len] = 0;
+    return finch_cpu_has_c(n) ? 1 : 0;
+}

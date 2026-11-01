@@ -1,0 +1,7 @@
+// expect: @cpu: 'avx3' isn't a feature Finch knows
+@cpu("avx2,avx3")
+fn f() {
+}
+fn main() {
+    f()
+}

@@ -371,10 +371,7 @@ struct Build {
 
 // IR -> program. 0 if it worked.
 fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
-    clang := getenv("FINCH_CLANG")
-    if clang.len == 0 {
-        clang = "clang"
-    }
+    clang := clangCmd()
     // the C compiler of the runtime and the linker: the target's own when building for another system
     cc := clang
     if tg.cross {
@@ -477,4 +474,75 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
         print(output)           // warnings, if any
     }
     return 0
+}
+
+// clang, as the program is compiled with it. Nix's clang wrapper removes -march=native when NIX_ENFORCE_NO_NATIVE
+// is 1, as it is in nix-shell; --cpu native asks for it on purpose, so the wrapper is told to keep it.
+fn clangCmd() -> str {
+    clang := getenv("FINCH_CLANG")
+    if clang.len == 0 {
+        clang = "clang"
+    }
+    if host.pathSeparator() != ";" {
+        return "NIX_ENFORCE_NO_NATIVE=0 " + clang
+    }
+    return clang
+}
+
+// -march=x86-64-v3 or -mcpu=apple-m1: how clang is told the processor
+fn cpuFlag(platform.Target tg, str cpu) -> str {
+    if cpu.len == 0 {
+        return ""
+    }
+    if tg.arm64 {
+        return " -mcpu=" + quote(cpu)
+    }
+    return " -march=" + quote(cpu)
+}
+
+// What the processor the program is for can do, as Finch's feature names (avx2, avxvnni, i8mm ...): clang says it in
+// the macros it predefines for that target and --cpu. Kept in the cache, one file per clang, target and cpu.
+fn cpuFeatures(platform.Target tg, str cpu) -> []str {
+    clang := clangCmd()
+    flags := cpuFlag(tg, cpu)
+    if tg.cross || tg.windows {
+        flags = " --target=" + tg.triple + flags
+    }
+    dir := host.cacheDir() + "/cpu"
+    host.makeDirs(dir)
+    slot := dir + "/" + fingerprint2(clang + flags)
+    text := read_file(slot + ".txt") or ""
+    if text.len == 0 {
+        empty := slot + ".part" + str(host.pid()) + ".c"
+        out := slot + ".part" + str(host.pid()) + ".txt"
+        write_file(empty, "")
+        host.run(clang + flags + " -dM -E " + quote(empty) + " > " + quote(out) + " 2> " + host.nullDevice())
+        host.remove(empty)
+        text = read_file(out) or ""
+        if text.len == 0 {
+            host.remove(out)
+            []str none
+            return none
+        }
+        host.move(out, slot + ".txt")
+    }
+    macros := ["__SSE3__", "__SSSE3__", "__SSE4_1__", "__SSE4_2__", "__POPCNT__", "__AVX__", "__AVX2__", "__FMA__", "__F16C__",
+               "__BMI__", "__BMI2__", "__AVX512F__", "__AVX512BW__", "__AVX512DQ__", "__AVX512VL__", "__AVX512VNNI__",
+               "__AVX512BF16__", "__AVX512FP16__", "__AVXVNNI__", "__ARM_NEON", "__ARM_FEATURE_FP16_VECTOR_ARITHMETIC",
+               "__ARM_FEATURE_DOTPROD", "__ARM_FEATURE_MATMUL_INT8", "__ARM_FEATURE_BF16_VECTOR_ARITHMETIC", "__ARM_FEATURE_SVE",
+               "__ARM_FEATURE_SVE2"]
+    names := ["sse3", "ssse3", "sse4.1", "sse4.2", "popcnt", "avx", "avx2", "fma", "f16c", "bmi1", "bmi2", "avx512f", "avx512bw",
+              "avx512dq", "avx512vl", "avx512vnni", "avx512bf16", "avx512fp16", "avxvnni", "neon", "fp16", "dotprod", "i8mm", "bf16",
+              "sve", "sve2"]
+    []str have
+    for line in text.split("\n") {
+        parts := line.split(" ")
+        if parts.len >= 2 && parts[0] == "#define" {
+            k := macros.find(parts[1])
+            if k >= 0 && !have.contains(names[k]) {
+                have.push(names[k])
+            }
+        }
+    }
+    return have
 }

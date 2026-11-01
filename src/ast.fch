@@ -44,7 +44,7 @@ fn vecType(str name) -> Type {
         return Type()
     }
     lane := name.sub(0, x)
-    if !["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"].contains(lane) {
+    if !["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "bool"].contains(lane) {
         return Type()
     }
     n := 0
@@ -57,7 +57,7 @@ fn vecType(str name) -> Type {
     if n != 2 && n != 4 && n != 8 && n != 16 && n != 32 && n != 64 {
         return Type()
     }
-    bits := int(lane.sub(1, lane.len)) or 0
+    bits := int(lane.sub(1, lane.len)) or 1        // bool: a mask, one bit a lane
     if n * bits > 512 {
         return Type()           // the widest registers (AVX-512) hold 512 bits
     }
@@ -147,6 +147,7 @@ struct Node {
     bool flag     // decl: has a type; or: the right side is a { block }
     bool fallible // fn: -> T!  or  -> !
     bool exported // export fn: a C function of a library (finch build --shared)
+    str cpu       // @cpu("avx2,fma") fn: the processor features the function may use
     []Node kids
     []str names   // named arguments: Point(x: 1)
     int line
