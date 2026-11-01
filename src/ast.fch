@@ -36,6 +36,41 @@ fn ptrTo(Type t) -> Type {
     return out
 }
 
+// f32x8, i8x32, u16x16, f64x4: N numbers of one type side by side, worked on all at once (SIMD).
+// Its kind is "vec", elem[0] the type of one lane, count the number of lanes. kind "" if `name` is no such type.
+fn vecType(str name) -> Type {
+    x := name.find("x")
+    if x < 2 || x + 1 >= name.len {
+        return Type()
+    }
+    lane := name.sub(0, x)
+    if !["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"].contains(lane) {
+        return Type()
+    }
+    n := 0
+    for c in name.sub(x + 1, name.len) {
+        if c < '0' || c > '9' {
+            return Type()
+        }
+        n = n * 10 + (int(c) - int('0'))
+    }
+    if n != 2 && n != 4 && n != 8 && n != 16 && n != 32 && n != 64 {
+        return Type()
+    }
+    bits := int(lane.sub(1, lane.len)) or 0
+    if n * bits > 512 {
+        return Type()           // the widest registers (AVX-512) hold 512 bits
+    }
+    if lane == "i64" {
+        lane = "int"
+    } else if lane == "f64" {
+        lane = "float"
+    }
+    out := Type(kind: "vec", count: n)
+    out.elem.push(simple(lane))
+    return out
+}
+
 fn same(Type a, Type b) -> bool {
     if a.kind != b.kind {
         return false
@@ -43,10 +78,10 @@ fn same(Type a, Type b) -> bool {
     if a.kind == "struct" || a.kind == "named" || a.kind == "enum" {
         return a.name == b.name && a.module == b.module
     }
-    if a.kind == "fixed" && a.count != b.count {
+    if (a.kind == "fixed" || a.kind == "vec") && a.count != b.count {
         return false
     }
-    if a.kind == "array" || a.kind == "ptr" || a.kind == "map" || a.kind == "fixed" {
+    if a.kind == "array" || a.kind == "ptr" || a.kind == "map" || a.kind == "fixed" || a.kind == "vec" {
         if a.elem.len != b.elem.len {
             return false
         }
@@ -66,6 +101,15 @@ fn show(Type t) -> str {
     }
     if t.kind == "fixed" {
         return "[" + str(t.count) + "]" + show(t.elem[0])
+    }
+    if t.kind == "vec" {
+        lane := t.elem[0].kind
+        if lane == "int" {
+            lane = "i64"
+        } else if lane == "float" {
+            lane = "f64"
+        }
+        return lane + "x" + str(t.count)
     }
     if t.kind == "map" {
         return "map[" + show(t.elem[0]) + "]" + show(t.elem[1])

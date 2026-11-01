@@ -5,7 +5,7 @@
   Install: copy to ~/.local/share/org.kde.syntax-highlighting/syntax/finch.xml
   (or run editors/kate/install.sh), then restart Kate.
 -->
-<language name="Finch" version="4" kateversion="5.0" section="Sources" extensions="*.fch"
+<language name="Finch" version="5" kateversion="5.0" section="Sources" extensions="*.fch"
           mimetype="text/x-finch" indenter="cstyle" author="The Finch authors" license="Apache-2.0">
   <highlighting>
     <list name="keywords">
@@ -103,6 +103,8 @@
         <keyword String="imports" attribute="Import"/>
         <keyword String="constants" attribute="Constant"/>
         <keyword String="types" attribute="Data Type"/>
+        <!-- vectors: f32x8, i8x32, u16x16, f64x4 ... -->
+        <RegExpr String="\b[iuf](8|16|32|64)x(2|4|8|16|32|64)\b" attribute="Data Type"/>
         <keyword String="builtins" attribute="Built-in"/>
 
         <RegExpr String="\b0[xX][0-9a-fA-F_]+\b" attribute="Hex"/>

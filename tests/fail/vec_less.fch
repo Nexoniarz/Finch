@@ -1,0 +1,5 @@
+// expect: use min(v, w), max(v, w), or compare lanes: v[i] < w[i]
+fn main() {
+    a := f32x4(1.0)
+    print(a < a)
+}

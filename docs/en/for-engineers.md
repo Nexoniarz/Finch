@@ -1,13 +1,11 @@
 # Finch for Engineers
 
-**The internals of Finch 2.5, whose compiler is written in Finch.** How source becomes tokens, an AST and LLVM IR *as text*,
+**The internals of Finch 2.6, whose compiler is written in Finch.** How source becomes tokens, an AST and LLVM IR *as text*,
 which `clang` compiles and links with a small C runtime; how C headers are read with libclang from Finch itself and how
 the C calling conventions are reproduced by hand; the type and ownership rules; how the compiler builds itself from a
 seed; and the language server.
 
 Assumed: you can read Finch (see the [technicians' guide](for-technicians.md)) and have at least seen LLVM IR.
-The compiler's first version, in C++ on LLVM's C++ API, is kept on the `before-bootstrap` branch; this guide describes
-the Finch one.
 
 > 🇵🇱 Polska wersja: [dla-inzynierow.md](../pl/dla-inzynierow.md)
 
@@ -34,7 +32,7 @@ the Finch one.
 ## 1. Architecture
 
 The compiler has no LLVM library inside it. It writes LLVM IR as **text** and lets `clang` do optimisation, code
-generation and linking. That is what makes it small (about 8k lines) and what lets it be written in Finch itself.
+generation and linking. That is what makes it small (about 12k lines) and what lets it be written in Finch itself.
 
 ```
  main.fch ─► loader ── lex ── parse ──► Program   (+ every imported module, recursively)
@@ -60,7 +58,7 @@ Design decisions that shape the rest:
   Finch type (a string kind: `int`, `f32`, `str`, `array`, `map`, `struct`, `enum`, `named`…) and flags.
 - **Let clang do the work.** Locals are `alloca`s promoted by `mem2reg`. Optimisation is clang's `-O2` (or `-O0` with `-g`).
 - **Values, not references.** Arrays, strings and structs have value semantics; ownership is decided at compile time (§8).
-- **A tiny C runtime** (`runtime/finch_rt.c`, ~760 lines) does what is tedious in IR: strings, array growth, maps, input,
+- **A small C runtime** (`runtime/finch_rt.c`, ~1150 lines) does what is tedious in IR: strings, array growth, maps, input,
   files, panics. It is compiled once and cached in `~/.cache/finch`.
 
 ---
@@ -70,17 +68,17 @@ Design decisions that shape the rest:
 | File | Lines | Responsibility |
 |---|---|---|
 | `src/lexer.fch` | 470 | Tokens, positions, `"""` text, `"\(x)"` turned into `("…" + str(x) + "…")` tokens |
-| `src/ast.fch` | 120 | One `Node` struct with a `kind` string, children, type names, positions (`line`, `endLine`) |
+| `src/ast.fch` | 170 | One `Node` struct with a `kind` string, children, type names, positions (`line`, `endLine`) |
 | `src/parser.fch` | 910 | Recursive descent: declarations, statements, expressions, generics (`[T]`), `enum`, `match`, `export`, `link`, `const`, `test "…" { }` |
-| `src/gen.fch` | 6450 | Type check + IR: structs, functions, methods, scopes and drops, statements, expressions, built-ins, maps, errors as values, generics (monomorphisation), enums and `match`, `-g` debug metadata, the `index` mode |
+| `src/gen.fch` | 7030 | Type check + IR: structs, functions, methods, scopes and drops, statements, expressions, built-ins, maps, errors as values, generics (monomorphisation), enums and `match`, vectors (SIMD), `-g` debug metadata, the `index` mode |
 | `src/cimport.fch` | 790 | libclang: functions, structs and unions (fields, offsets, padding), enums, constants, globals, macros (also struct-valued) |
-| `src/platform.fch` | 90 | `Target`: triple, data layout, C compiler, signedness of `char` per system |
-| `src/linker.fch` | 430 | The cache (runtime, program object, C/C++ files), libraries (`link`, pkg-config), link-error advice |
-| `src/main.fch` | 515 | Driver: CLI, loader with module lookup and overlays, `build/run/test/fmt/ir/index/lsp` |
+| `src/platform.fch` | 120 | `Target`: triple, data layout, C compiler, signedness of `char` per system |
+| `src/linker.fch` | 480 | The cache (runtime, program object, C/C++ files), libraries (`link`, pkg-config), link-error advice |
+| `src/main.fch` | 530 | Driver: CLI, loader with module lookup and overlays, `build/run/test/fmt/ir/index/lsp` |
 | `src/manifest.fch` | 240 | `finch.toml`: a small TOML reader, per-target lists |
 | `src/fmt.fch` | 225 | `finch fmt` and LSP formatting |
-| `src/lsp.fch` | 910 | The language server (§11) |
-| `src/docs.fch` | 110 | One description of the built-ins, shared by hover and completion |
+| `src/lsp.fch` | 950 | The language server (§11) |
+| `src/docs.fch` | 140 | One description of the built-ins, shared by hover and completion |
 | `std/*.fch` | 1040 | `json`, `path`, `time` (+`_windows`), `proc` (+`_windows`), `fs`, `thread` |
 | `runtime/finch_rt.c` | 1150 | The C runtime: text, arrays, maps, files, float printing, fs, threads, the test runner, the call chain |
 | `bootstrap/` | | `build.sh`, `install.sh`, the seeds (§10) |
@@ -116,18 +114,19 @@ dedented by the closing line's indentation in `longString()`.
 
 ## 4. Code generation
 
-`gen.fch` is one big `Gen` struct plus functions over it. The passes are:
+`gen.fch` is one big `Gen` struct plus functions over it. `generate()` runs:
 
-1. `declareStructs`: every Finch and C struct gets an LLVM type (C structs with their real padding); recursive-by-value
-   structs are refused.
-2. `declareFns`: signatures, with a *borrow analysis* for parameters (a parameter that is never stored is passed without
-   a copy).
-3. `define`: each body, type checked and emitted. Scopes track what must be dropped when they end (`defer` runs first).
-4. `defineMainWrapper`: the C `main(argc, argv)`, and `finch_on_fatal` for embedders.
-5. With `-g`, DWARF metadata is attached as the IR is written (use `-O0`).
+1. `declare()`: every Finch and C struct gets an LLVM type (C structs with their real padding; recursive-by-value
+   structs are refused), then every function gets its signature, with a *borrow analysis* for parameters (§8.2).
+2. `define()` for each function: the body, type checked and emitted. Scopes track what must be dropped when they end.
+   Instantiating a generic adds functions while this goes on, so the loop runs until no new ones appear.
+3. The C entry point `main(argc, argv)` (or, for `--shared`, `finch_module_on_fatal` and the `export fn` wrappers).
+4. `assemble()`: the declarations, struct types, string constants, helpers and bodies, as one `.ll` text.
+
+With `-g`, DWARF metadata is attached as the IR is written (use `-O0`).
 
 Generics are **monomorphised**: a call `max(1, 2)` infers `T`, then the template's AST is generated again with `T` bound,
-under a mangled name (`max$int`). `match` over an enum is exhaustive (a missing variant is an error, `else` covers the
+under its shown name (`max[int]`, a symbol `max.int`). `match` over an enum is exhaustive (a missing variant is an error, `else` covers the
 rest); on a value it is a chain of comparisons. Enum values are `i32`; `Color(n)` is range checked; printing uses a
 generated name table.
 
@@ -164,9 +163,12 @@ offset 0, and a field is read through memory. They can't be passed by value to C
 
 ## 6. Driver, linking and targets
 
-`finch build|run|ir|index file.fch [-o out] [-O0] [-g] [-l lib] [-I dir] [--target t] [--shared] [--overlay path=file]`.
+`finch build|run|ir|index file.fch [-o out] [-O0] [-g] [-l lib] [-I dir] [--target t] [--cpu c] [--shared] [--overlay path=file]`.
 `ir` prints the IR; `index` prints the records the language server uses (§11); `--shared` makes a shared library of the
 `export fn`s.
+
+`--cpu <name>` (or `cpu` in `finch.toml`) adds `-march=<name>` on x86-64 or `-mcpu=<name>` on ARM64 to the clang that
+compiles the IR (not the runtime); it is part of the cache key.
 
 `--target windows|linux|arm64|macos|android|<triple>` changes the triple and data layout, the C `char` signedness, the ABI rules
 above, the OS variant of modules (`name_windows.fch`), and the C compiler: `FINCH_CC` or `clang --target=…`. Linking
@@ -210,6 +212,7 @@ owned at that point is not freed.
 A line that starts at bracket depth 0 and doesn't continue a line ending in an operator or `,` is re-indented to
 4 × brace depth; other lines (continuations, `"""` bodies) are shifted by the same amount as the line that started the
 statement, so their shape (and the `"""` dedent) is kept.
+
 ---
 
 ## 7. Type system
@@ -222,9 +225,10 @@ statement, so their shape (and the `"""` dedent) is kept.
 | `char` `i8` `u8` / `i16` `u16` / `i32` `u32` / `int` `u64` | `i8` / `i16` / `i32` / `i64` |
 | `f32` / `float` | `float` / `double` |
 | `str`, `[]T` | `{ ptr, i64, i64 }` (pointer, length, capacity) |
-| `map[K]V` | `{ ptr, i64, i64, i64, ptr, i64 }` (entries, len, used, cap, index, icap; see src/gen.fch) |
+| `map[K]V` | `{ ptr, i64, i64, i64, ptr, i64, i64 }` (entries, len, used, cap, index, icap, adds; see src/gen.fch) |
 | `ptr`, `ptr[T]`, `null` | `ptr` (opaque) |
 | `[N]T` | `[N x T]` |
+| `f32x8`, `i8x32`, … | `<8 x float>`, `<32 x i8>` (§7, Vectors) |
 | Finch struct | named struct type, natural layout |
 | a method's `self` | `ptr` (the first parameter) |
 | the result of `-> T!` | `{ i1 ok, T value, str error }` (`i8` in place of `T` for `-> !`) |
@@ -235,11 +239,16 @@ Signedness lives only in the Finch type and selects `sdiv/udiv`, `ashr/lshr`, `i
 
 ### Values
 
-```cpp
-struct Value_ { Value *v; FType type; bool literal; bool fresh; };
+```c
+struct Val {
+    str v           // the IR operand: %t12, 42, @.str.3, zeroinitializer
+    ast.Type ty
+    bool fresh
+    bool lit
+}
 ```
 
-- **`literal`**: a number written in the code or an imported C constant. It may become any integer type
+- **`lit`**: a number written in the code or an imported C constant. It may become any integer type
   it fits (`fits()`), or `f32`. It survives unary minus and literal-only arithmetic that folds to a
   constant; explicit conversions clear it (`u8(250)` is a typed constant, so `u8(250) + 10` wraps to 4).
 - **`fresh`**: an owning value (str/array/owning struct) that nobody holds yet: the result of a call,
@@ -281,13 +290,43 @@ Pointers/null: `icmp eq/ne ptr` only. `str`: `finch_str_eq` (length + `memcmp`) 
 `finch_str_cmp` for ordering. Floats: `oeq olt ole ogt oge` and `une` for `!=`. Integers/char by
 signedness (char unsigned). Bool: equality only. Arrays/structs: error.
 
----
+### Vectors
+
+`ast.vecType(name)` recognises `<lane>x<N>` (lanes `i8`…`u64`, `f32`, `f64`; N = 2…64; at most 512 bits) and gives
+`Type(kind: "vec", elem: [lane], count: N)`, which is an LLVM vector `<N x T>`. The parser takes such a name wherever a
+type goes; a call `f32x8(…)` goes to `vecMake()`.
+
+| Finch | IR |
+|---|---|
+| `f32x8(x)` | `insertelement` into lane 0 + `shufflevector … zeroinitializer` (a splat) |
+| `f32x8(a, …, h)` | a chain of `insertelement` |
+| `f32x8(list, i)` | bounds check of `i … i+7`, then `load <8 x float>, ptr …, align 4` (the lane's alignment) |
+| `f32x8(i32x8 v)` | `sitofp`, `fptosi`, `sext`, `trunc`… on the whole vector |
+| `v + w`, `v * 2.0` | `fadd`/`add`… on vectors; a scalar operand is coerced to the lane type, then splatted |
+| `v[i]` | a place: `getelementptr <lane>, ptr %v, i64 i` after a bounds check; or `extractelement` on a temporary |
+| `v == w` | `fcmp oeq`/`icmp eq` → `<N x i1>` → `llvm.vector.reduce.and` |
+| `min`, `max`, `abs` | `llvm.minnum`/`maxnum`, `llvm.smin`/`umin`…, `llvm.fabs`/`llvm.abs` |
+| `v.sum()`, `.min()`, `.max()` | `llvm.vector.reduce.fadd` (with `reassoc`), `.add`, `.fmin`, `.smin`… |
+| `v.sqrt()`, `.floor()`, `.ceil()`, `.round()` | the `llvm.*` intrinsic of that name |
+| `v.fma(b, c)` | `llvm.fmuladd` (fused where the target has FMA; `llvm.fma` would be a libm call per lane without it) |
+| `v.store(list, i)` | bounds check, `store <8 x float> …, align 4` |
+
+Integer `/` and `%` are refused: neither x86 nor ARM has a lane-wise integer divide, and LLVM would scalarise it.
+Ordering comparisons are refused because their result would be a mask, which has no Finch type.
+
+**Alignment.** LLVM gives `<8 x float>` an ABI alignment of 32 (its size), but `malloc` and Finch's `alloca … align 16`
+promise only 16. `llty()` records every vector wider than 16 bytes in `g.wide`, and `resolveStructBody` records a struct
+that holds one; `load()` and `store()` add `, align 16` for those types. Without it LLVM may emit `vmovaps` on a 16-byte
+aligned address and crash.
+
+**Which instructions** is clang's choice: `--cpu <name>` adds `-march=<name>` (x86-64) or `-mcpu=<name>` (ARM64) to the
+IR's compile, so the same IR becomes SSE2, AVX2 + FMA, AVX-512 or NEON code. Lanes wider than the registers are split.
 
 ---
 
 ## 8. Ownership and memory
 
-### 9.1 The model
+### 8.1 The model
 
 Every value of an **owning type** (`str`, `[]T`, or a Finch struct with an owning field) has exactly one
 owner: a variable, an array element, a struct field, or a heap cell from `new()`. The owner drops the
@@ -311,21 +350,21 @@ A string literal is a fresh value with `cap = 0`: moving it costs nothing, dropp
 (`release()` ignores constants), and writing into it (`s[i] = c`) first makes a heap copy
 (`finch_str_own`). Strings from C are borrowed with `cap = -1` and always copied before being kept.
 
-### 9.2 Parameter borrowing: `mutates()`
+### 8.2 Parameter borrowing: `mutates()`
 
 When declaring a function, every owning parameter is checked with `mutates(name, body)`: an
 assignment whose root variable (`rootVar()`: through `.field` and `[i]`) is the parameter, a changing
 method on it (`push pop insert remove clear resize sort reverse`), or `addr(…)` of it. Unchanged
-parameters are borrowed (`Fn::borrowParam`); changed ones are copied once at entry. The analysis is
+parameters are borrowed (`FnSig.borrow`); changed ones are copied once at entry. The analysis is
 syntactic and conservative: anything that *might* change the parameter makes a copy, which is always correct.
 The same analysis decides whether `for x in list` must copy elements.
 
-Methods take part: `declareFns()` first finds which methods change `self` (`mutates("self", body)`),
+Methods take part: `declare()` first finds which methods change `self` (`mutates("self", body)`),
 repeating until nothing changes, because calling a changing method on `self` changes `self` too. Their
-names go into `mutatingMethods`, which `mutatesExpr()` treats like `push`: `p.move(1)` changes `p`.
-Only then is `borrowParam` computed for every function and method.
+names go into `g.mm`, which `mutates()` treats like `push`: `p.move(1)` changes `p`.
+Only then is `borrow` computed for every function and method.
 
-### 9.3 Copy and drop
+### 8.3 Copy and drop
 
 `dropAt(addr, T)` / `copyAt(dst, src, T)` work on addresses:
 
@@ -335,10 +374,10 @@ Only then is `borrowParam` computed for every function and method.
   element and then `finch_arr_free`; copies call `finch_arr_clone_raw` and then deep-copy owning
   elements over the raw bits. Structs drop/copy only their owning fields.
 
-Helpers are emitted in their own functions (`HelperScope` saves the builder position and switches off
-debug locations), may call each other recursively (`struct Node { []Node kids }`), and are inlined by O2.
+Helpers are emitted in their own functions (`beginHelper()` / `endHelper()` set the function being written aside
+and switch off debug locations), may call each other recursively (`struct Node { []Node kids }`), and are inlined by O2.
 
-### 9.4 What it looks like
+### 8.4 What it looks like
 
 ```c
 fn greet(str name) -> str {
@@ -381,29 +420,27 @@ The `-O0` IR of `main` (abridged):
 
 and `greet` returns `msg` without copying (`ret … %5` after loading the slot: the variable was moved out).
 
-### 9.5 defer
+### 8.5 defer
 
-`defer stmt` pushes a `Cleanup{isDefer, body, order = current varOrder}` into the current scope; it
-emits nothing there. Whenever the scope's cleanups are emitted (falling off the end of the block,
+`defer stmt` records the statement in the current scope (`Scope.defers`, with `orders`: how many variables existed
+then) and a `Cleanup{isDefer}`; it emits nothing there. Whenever the scope's cleanups are emitted (falling off the end of the block,
 `return`, `break`/`continue` leaving it) the body is generated **at that exit**, with `deferLimit = order`
 so that `lookup()` hides variables declared after the defer: those are already dropped by then
 (cleanups run in reverse). `return`/`break`/`continue` inside a deferred statement are errors (`inDefer`).
 Defer bodies are therefore duplicated per exit path, which is what makes them free on the normal path.
 
-### 9.6 Manual memory
+### 8.6 Manual memory
 
 `new(v)` allocates `sizeof(T)` with `finch_alloc`, stores `own(v)` and returns `ptr[T]`. `free(p)` drops
 the pointee if `T` is owning (skipping null) and calls libc `free`. Pointers never own anything:
 `addr(x)` can dangle after `x`'s block ends; this is not checked.
 
-### 9.7 Verifying it
+### 8.7 Verifying it
 
 `MEMCHECK=1 tests/run.sh` builds every test program and runs it under valgrind with
 `--leak-check=full --errors-for-leak-kinds=all`: zero leaks and zero invalid accesses across all of them,
 including returns from inside loops, `continue`/`break` with owned locals, defers, mutation during
 iteration, nested arrays of structs, and C struct passing.
-
----
 
 ---
 
@@ -428,8 +465,9 @@ and stops unless `finch1` and `finch` produce byte-identical IR (a fixpoint: the
 whatever built it). `bootstrap/build.sh seed` rewrites the seed from the current compiler; do it whenever the compiler's
 own source starts to use a feature the committed seed lacks.
 
-A seed is per system because the C calling convention for the libclang calls is baked into it (§5).
-Linux x86-64 and Linux ARM64 have seeds. macOS and Windows would need seeds made with Apple's and Microsoft's headers.
+A seed is per system because the C calling convention for the libclang calls is baked into it (§5). There are seeds
+for Linux x86-64 and ARM64, macOS ARM64 and x86-64 (made with Apple's SDK headers), and Windows x86-64 (made with
+llvm-mingw's headers). CI builds the compiler from each one on that system and runs the tests there.
 
 ---
 
@@ -445,16 +483,17 @@ mode the compiler prints, besides IR-free output, tab-separated records:
 | `@V name type file line col fnFile fnLine fnEnd` | a variable and the function it lives in |
 | `@F module name recv file line col endLine signature params` | a function or method |
 | `@S` / `@SF`, `@E`, `@I` | structs (and fields), enums, imports |
+| `@W` | a warning |
 
 The first error is printed as `path:line:col: error: message` and becomes a diagnostic. When code does not compile, the
 server keeps answering completion and signature help from the last version that did. `tests/lsp_test.py` is the acceptance
-test (22 checks).
+test.
 
 ---
 
 ## 12. Semantics vs. C
 
-| Situation | C | Finch 2.0 |
+| Situation | C | Finch |
 |---|---|---|
 | Signed integer overflow | UB | defined wraparound (no `nsw`) |
 | Integer division by zero, `INT_MIN / -1` | UB | compile error if constant, otherwise runtime error |
@@ -467,12 +506,8 @@ test (22 checks).
 | Uninitialized variables | UB | impossible (zero or defaults) |
 | Missing return | UB if used | compile error |
 | Order of evaluation | mostly unspecified | left to right; in an assignment the right side first |
-| Shift ≥ width, out-of-range float→int | UB | still poison (not checked yet) |
+| Shift ≥ width, out-of-range float→int | UB | poison, as in LLVM (not checked) |
 | Dangling pointer from `addr()` / `new` + `free` | UB | still UB |
-
----
-
----
 
 ### The chain of calls on runtime errors
 
@@ -518,13 +553,10 @@ evaluated twice and temporaries are never pointed to.
 
 ## 13. Known limitations
 
-- The compiler runs on Linux x86-64 and ARM64 only (no seed for macOS or Windows yet). Programs can be built for all three.
-- macOS output is only checked as IR; Windows and ARM64 are run under Wine and qemu in CI.
 - One error per run, no recovery.
 - `-g` debug info is best with `-O0`.
-- The driver uses `sh` utilities (`rm`, `mkdir`), so it needs a POSIX shell.
 - Generics are monomorphised (code size grows with instantiations); there are no trait bounds, a wrong use is an error
   inside the instantiated body.
 - A failed test's owned memory is not freed (the test runner `longjmp`s out of it).
-- `--target android` is checked to the object file only; linking needs the NDK and has not been run on a device.
+- Vectors have no lane masks (`v < w`), shuffles or integer division.
 

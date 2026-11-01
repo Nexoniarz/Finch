@@ -1,0 +1,69 @@
+// Vectors: N numbers side by side, worked on all at once (SIMD)
+
+struct Particle {
+    f32x8 pos
+    int id = 7
+}
+
+fn scale(f32x8 v, f32 k) -> f32x8 {
+    return v * k
+}
+
+// a dot product of two lists, 8 at a time, with the rest one by one
+fn dot([]f32 a, []f32 b) -> f32 {
+    acc := f32x8(0.0)
+    i := 0
+    while i + 8 <= a.len {
+        acc = f32x8(a, i).fma(f32x8(b, i), acc)
+        i += 8
+    }
+    total := acc.sum()
+    while i < a.len {
+        total += a[i] * b[i]
+        i += 1
+    }
+    return total
+}
+
+fn main() {
+    a := f32x4(1.0, 2.0, 3.0, 4.0)
+    b := f32x4(0.5)
+    print(a + b, a * 2.0, 10.0 - a, -a)
+    print(a.sum(), a.min(), a.max(), a.dot(a), a.len)
+    print((a * a).sqrt(), f32x4(1.5, -1.5, 2.5, -0.2).round(), f32x4(1.7).floor(), f32x4(1.2).ceil())
+    print(abs(f32x4(-1.0, 2.0, -3.0, 4.0)), min(a, 2.5), max(a, f32x4(2.0)), clamp(a, 1.5, 3.5))
+
+    // lanes
+    a[0] = 9.0
+    print(a[0], a[3], a)
+    print(a == f32x4(9.0, 2.0, 3.0, 4.0), a != a)
+
+    // whole numbers, bits, conversions
+    n := i32x8(1, 2, 3, 4, 5, 6, 7, 8)
+    print(n * 3 - 1, n << 2, n & 1, ~n, n.sum(), n.max())
+    print(f32x8(n) / 2.0, i32x8(f32x8(2.9)), i16x8(n), u8x16(200).sum())
+    print(abs(i32x4(-3, 3, -7, 0)), min(u8x16(5), u8x16(9)).max())
+
+    // from lists and back
+    []f32 data
+    for i in 0..20 {
+        data.push(f32(i))
+    }
+    v := f32x8(data, 4)
+    print(v)
+    (v * 10.0).store(data, 12)
+    print(data)
+    print(dot(data, data))
+
+    // in structs, arrays, functions, and str()
+    p := Particle(pos: f32x8(1.0))
+    p.pos = scale(p.pos, 3.0)
+    p.pos[7] = 0.5
+    print(p)
+    []f64x4 list
+    list.push(f64x4(1.0, 2.0, 3.0, 4.0))
+    list.push(list[0] * list[0])
+    print(list, str(list[1]).len)
+    i64x2 big = i64x2(1 << 40, -5)
+    print(big + big)
+}

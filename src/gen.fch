@@ -1,8 +1,7 @@
 // Type checking and LLVM IR generation (as text), written in Finch.
 //
-// The output is a .ll file that clang turns into a program, linked with the same
-// C runtime the main compiler uses. This compiler copies values like the main one
-// (so programs behave the same) but never frees them: it is the bootstrap compiler.
+// The output is a .ll file that clang turns into a program, linked with Finch's C runtime
+// (runtime/finch_rt.c). Values are copied when assigned and freed when their block ends.
 import ast
 import docs
 import cimport
@@ -206,6 +205,7 @@ struct Gen {
     str cwd
     []str md            // the metadata, numbered by position: !0 = md[0]
     map[str]int mdcache // metadata made already: types by key, locations by line:column
+    map[str]int wide    // LLVM types that want more than the 16 bytes malloc and the stack promise: loaded with align 16
     []int mdfiles       // the DIFile of each source file
     int dbgScope        // the DISubprogram of the function being built, or -1 (helpers have none)
     int dbgLine
@@ -367,7 +367,7 @@ fn byteSize(ptr[Gen] g, ast.Type t) -> int {
         }
         return n
     }
-    if k == "fixed" && t.elem.len > 0 {
+    if (k == "fixed" || k == "vec") && t.elem.len > 0 {
         return t.count * byteSize(g, t.elem[0])
     }
     if k == "str" || k == "array" || k == "map" {
@@ -436,12 +436,22 @@ fn alloca(ptr[Gen] g, str ty) -> str {
 
 fn load(ptr[Gen] g, str ty, str at) -> str {
     t := tmpName(g)
-    emit(g, t + " = load " + ty + ", ptr " + at)
+    emit(g, t + " = load " + ty + ", ptr " + at + alignFor(g, ty))
     return t
 }
 
 fn store(ptr[Gen] g, str ty, str v, str at) {
-    emit(g, "store " + ty + " " + v + ", ptr " + at)
+    emit(g, "store " + ty + " " + v + ", ptr " + at + alignFor(g, ty))
+}
+
+// A vector of 32 or 64 bytes (f32x8, i8x64) wants to sit at an address that many bytes apart, and so does a struct
+// that holds one; memory from malloc and the stack is 16 apart. Telling LLVM so keeps it from using the
+// instructions that crash on a smaller alignment.
+fn alignFor(ptr[Gen] g, str ty) -> str {
+    if g.wide.len > 0 && g.wide.has(ty) {
+        return ", align 16"
+    }
+    return ""
 }
 
 fn spill(ptr[Gen] g, Val v) -> str {
@@ -466,7 +476,7 @@ fn T(str kind) -> ast.Type {
     return ast.simple(kind)
 }
 
-// `int` is i64 and `float` is f64, as in the C++ compiler: the everyday names
+// `int` is i64 and `float` is f64: the everyday names
 // for the two default sizes, and the only way they are ever written back.
 fn isSigned(ast.Type t) -> bool {
     k := t.kind
@@ -703,6 +713,13 @@ fn llty(ptr[Gen] g, ast.Type t) -> str {
     if k == "fixed" {
         return "[" + str(t.count) + " x " + llty(g, t.elem[0]) + "]"
     }
+    if k == "vec" {
+        out := "<" + str(t.count) + " x " + llty(g, t.elem[0]) + ">"
+        if t.count * bitsOf(t.elem[0]) > 128 && !g.wide.has(out) {
+            g.wide[out] = 1
+        }
+        return out
+    }
     if k == "enum" {
         return "i32"
     }
@@ -773,6 +790,9 @@ fn typeKey(ast.Type t) -> str {
     }
     if t.kind == "enum" {
         return "E_" + modName(t.module) + "_" + t.name
+    }
+    if t.kind == "vec" {
+        return ast.show(t)
     }
     if t.kind == "struct" {
         return "S_" + modName(t.module) + "_" + mangle(t.name)
@@ -1221,7 +1241,19 @@ fn formatFn(ptr[Gen] g, ast.Type t) -> str {
     }
     g.done.push(name)
     s := beginHelper(g)
-    if t.kind == "array" {
+    if t.kind == "vec" {
+        // f32x4(1, 2.5, 3, 4)
+        v := load(g, llty(g, t), "%a")
+        bufText(g, "%buf", ast.show(t) + "(")
+        for k in 0..t.count {
+            if k > 0 {
+                bufText(g, "%buf", ", ")
+            }
+            lane := op(g, "extractelement " + llty(g, t) + " " + v + ", i64 " + str(k))
+            emitFormat(g, "%buf", lane, t.elem[0], false)
+        }
+        bufText(g, "%buf", ")")
+    } else if t.kind == "array" {
         et := t.elem[0]
         d := load(g, "ptr", "%a")
         len := load(g, "i64", op(g, "getelementptr inbounds { ptr, i64, i64 }, ptr %a, i32 0, i32 1"))
@@ -1427,6 +1459,12 @@ fn coerce(ptr[Gen] g, Val v, ast.Type want, ast.Node at, str what) -> Val {
     }
     if want.kind == "str" && (isNumber(v.ty) || v.ty.kind == "bool" || v.ty.kind == "char") {
         msg = msg + " (turn it into text with str(...))"
+    }
+    if want.kind == "vec" && isNumber(v.ty) {
+        msg = msg + " (" + ast.show(want) + "(x) puts x in every lane)"
+    }
+    if want.kind == "vec" && v.ty.kind == "vec" {
+        msg = msg + " (convert it: " + ast.show(want) + "(...))"
     }
     fail(g, at, msg)
     return v
@@ -2054,7 +2092,13 @@ fn resolveStructBody(ptr[Gen] g, int i) {
     g.structs[i].owning = owns
     g.module = saved
     g.structs[i].state = 2
-    g.head.push("%S." + modName(g.structs[i].module) + "." + mangle(g.structs[i].name) + " = type { " + fields.join(", ") + " }")
+    name := "%S." + modName(g.structs[i].module) + "." + mangle(g.structs[i].name)
+    for f in fields {
+        if g.wide.has(f) {
+            g.wide[name] = 1            // it holds a wide vector (or a struct that does)
+        }
+    }
+    g.head.push(name + " = type { " + fields.join(", ") + " }")
 }
 
 // ---------- debug info (-g) ----------
@@ -2107,6 +2151,10 @@ fn sizeAlign(ptr[Gen] g, ast.Type t) -> SizeAlign {
     if k == "fixed" {
         e := sizeAlign(g, t.elem[0])
         return SizeAlign(size: e.size * t.count, align: e.align)
+    }
+    if k == "vec" {
+        n := t.count * sizeAlign(g, t.elem[0]).size
+        return SizeAlign(size: n, align: n)         // LLVM lays a vector out at a multiple of its size
     }
     if k == "struct" {
         sd := g.structs[findStruct(g, t.module, t.name)]
@@ -2196,6 +2244,10 @@ fn diType(ptr[Gen] g, ast.Type t) -> int {
                 base = diType(g, t.elem[0])
             }
             g.md[id] = "!DIDerivedType(tag: DW_TAG_pointer_type, baseType: " + mdRef(base) + ", size: 64)"
+        } else if k == "vec" {
+            e := sizeAlign(g, t.elem[0])
+            sub := md(g, "!DISubrange(count: " + str(t.count) + ")")
+            g.md[id] = "!DICompositeType(tag: DW_TAG_array_type, baseType: " + mdRef(diType(g, t.elem[0])) + ", size: " + str(e.size * t.count * 8) + ", flags: DIFlagVector, elements: !{!" + str(sub) + "})"
         } else if k == "fixed" {
             e := sizeAlign(g, t.elem[0])
             sub := md(g, "!DISubrange(count: " + str(t.count) + ")")
@@ -3628,6 +3680,9 @@ fn expr(ptr[Gen] g, ast.Node e) -> Val {
 
 fn unary(ptr[Gen] g, ast.Node e) -> Val {
     v := expr(g, e.kids[0])
+    if v.ty.kind == "vec" && e.name != "!" {
+        return vecUnary(g, e, v)
+    }
     if e.name == "!" {
         c := coerce(g, v, T("bool"), e.kids[0], "the value after '!'")
         return Val(v: op(g, "xor i1 " + c.v + ", true"), ty: T("bool"))
@@ -3651,6 +3706,13 @@ fn unary(ptr[Gen] g, ast.Node e) -> Val {
         return Val(v: op(g, "sub " + llty(g, v.ty) + " 0, " + v.v), ty: v.ty)
     }
     if isFloat(v.ty) {
+        if v.lit {
+            // -1.5 is still a number written in the code: f32 x = -1.5 works like f32 x = 1.5
+            if v.v.starts_with("-") {
+                return Val(v: v.v.sub(1, v.v.len), ty: v.ty, lit: true)
+            }
+            return Val(v: "-" + v.v, ty: v.ty, lit: true)
+        }
         return Val(v: op(g, "fneg " + llty(g, v.ty) + " " + v.v), ty: v.ty)
     }
     fail(g, e, "can't put '-' in front of " + ast.show(v.ty))
@@ -3745,6 +3807,9 @@ fn arith(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
         release(g, l)
         release(g, r)
         return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: T("str"), fresh: true)
+    }
+    if l.ty.kind == "vec" || r.ty.kind == "vec" {
+        return vecArith(g, o, l, r, at)
     }
     if !unify(g, addr(l), addr(r)) {
         badOperands(g, o, l, r, at)
@@ -3846,6 +3911,9 @@ fn compare(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
         release(g, l)
         release(g, r)
         return Val(v: res, ty: T("bool"))
+    }
+    if l.ty.kind == "vec" || r.ty.kind == "vec" {
+        return vecCompare(g, o, l, r, at)
     }
     if !unify(g, addr(l), addr(r)) {
         badOperands(g, o, l, r, at)
@@ -4281,6 +4349,15 @@ fn member(ptr[Gen] g, ast.Node m, bool write) -> Ref {
         obj = Ref(isPlace: true, pl: Place(addr: pv, ty: target))
         t = target
     }
+    if t.kind == "vec" {
+        if m.name != "len" {
+            fail(g, m, "a " + ast.show(t) + " has .len and [i] (and methods like .sum()), not '." + m.name + "'")
+        }
+        if write {
+            fail(g, m, ".len can't be changed")
+        }
+        return Ref(isPlace: false, val: Val(v: str(t.count), ty: T("int"), lit: true))
+    }
     if t.kind == "fixed" {
         if write {
             fail(g, m, "." + m.name + " can't be changed directly")
@@ -4376,6 +4453,15 @@ fn indexOf(ptr[Gen] g, ast.Node e, Ref obj, bool write) -> Ref {
         return mapIndex(g, e, obj, t, write)
     }
     i := coerce(g, expr(g, e.kids[1]), T("int"), e.kids[1], "an index").v
+    if t.kind == "vec" {
+        // a lane: v[2], v[i] = x
+        boundsCheck(g, i, str(t.count), e)
+        if obj.isPlace {
+            ep := op(g, "getelementptr inbounds " + llty(g, t.elem[0]) + ", ptr " + obj.pl.addr + ", i64 " + i)
+            return Ref(isPlace: true, pl: Place(addr: ep, ty: t.elem[0]))
+        }
+        return Ref(isPlace: false, val: Val(v: op(g, "extractelement " + llty(g, t) + " " + obj.val.v + ", i64 " + i), ty: t.elem[0]))
+    }
     if t.kind == "fixed" {
         base := ""
         if obj.isPlace {
@@ -4555,11 +4641,12 @@ fn convert(ptr[Gen] g, ast.Node c, ast.Type to) -> Val {
     return v
 }
 
-// ---------- the C calling convention for structs passed by value (System V x86-64) ----------
+// ---------- the C calling convention for structs passed by value ----------
 //
-// A struct of up to 16 bytes travels in registers, one INTEGER or SSE class per eightbyte;
+// System V x86-64: a struct of up to 16 bytes travels in registers, one INTEGER or SSE class per eightbyte;
 // bigger ones are copied to the stack (byval) and returned through a hidden pointer (sret).
-// Other targets (Windows, ARM64) have their own rules and are not done here yet.
+// ARM64 (AAPCS64, and Apple's variant) and Windows x64 have their own rules: classifyArm64, and the
+// windows branch of classify.
 
 struct Abi {
     str kind            // "direct", "expand" (in registers: `parts`) or "memory"
@@ -5307,7 +5394,7 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
             store(g, "{ ptr, i64, i64 }", "zeroinitializer", out)
             emit(g, "call void @finch_str_from_bytes(ptr " + out + ", ptr " + spill(g, v) + ")")
             release(g, v)
-        } else if k == "bool" || k == "char" || k == "array" || k == "map" || k == "struct" || k == "enum" {
+        } else if k == "bool" || k == "char" || k == "array" || k == "map" || k == "struct" || k == "enum" || k == "vec" {
             store(g, "{ ptr, i64, i64 }", "zeroinitializer", out)
             emitFormat(g, out, v.v, v.ty, false)
             release(g, v)
@@ -5319,6 +5406,10 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     to := numType(n)
     if to.len > 0 {
         return convert(g, c, T(to))
+    }
+    vt := ast.vecType(n)
+    if vt.kind.len > 0 {
+        return vecMake(g, c, vt)
     }
     if n == "read_file" || n == "file_exists" {
         checkArgs(g, c, 0, 1, n)
@@ -5570,7 +5661,7 @@ fn mathCall(ptr[Gen] g, ast.Node c) -> Val {
     []Val vals
     for a in c.kids {
         v := expr(g, a)
-        if !isNumber(v.ty) {
+        if !isNumber(v.ty) && v.ty.kind != "vec" {
             fail(g, a, n + "(...) is for numbers, but this is " + ast.show(v.ty))
         }
         vals.push(v)
@@ -5578,6 +5669,9 @@ fn mathCall(ptr[Gen] g, ast.Node c) -> Val {
     if n == "abs" {
         checkArgs(g, c, 0, 1, n)
         x := vals[0]
+        if x.ty.kind == "vec" {
+            return vecAbs(g, x)
+        }
         if isUnsigned(x.ty) {
             return x
         }
@@ -5659,6 +5753,9 @@ fn atomicCall(ptr[Gen] g, ast.Node c) -> Val {
 
 // the smaller (o "<") or bigger (o ">") of two numbers, in the type both fit
 fn pick(ptr[Gen] g, str o, Val a, Val b, ast.Node at) -> Val {
+    if a.ty.kind == "vec" || b.ty.kind == "vec" {
+        return vecPick(g, o, a, b, at)
+    }
     l := a
     r := b
     if !unify(g, addr(l), addr(r)) {
@@ -5901,6 +5998,15 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
     t := r.val.ty
     if r.isPlace {
         t = r.pl.ty
+    }
+    if t.kind == "vec" {
+        v := r.val
+        if r.isPlace {
+            v = Val(v: load(g, llty(g, t), r.pl.addr), ty: t)
+        }
+        noteMethod(g, m, docs.vecMethods())
+        heldEnd(g, mark)
+        return vecMethod(g, m, v)
     }
     if t.kind == "array" {
         a := ""
@@ -6529,4 +6635,399 @@ fn generate([]ast.Program progs, []str files, cimport.CImports ci, Options opt) 
     }
     g.out.push("define i32 @main(i32 %argc, ptr %argv) {\nentry:\n" + traceInit() + pre + "  " + callText + "\n" + after + ret + "}\n")
     return assemble(g)
+}
+
+// ---------- vectors: f32x8, i8x32, f64x4, ... (SIMD) ----------
+//
+// A vector is N numbers of one type side by side: <8 x float> in LLVM. + - * / work on every lane at once, and
+// LLVM picks the instructions: SSE, AVX2 or AVX-512 on x86-64, NEON on ARM64 (with --cpu native, the ones of the
+// machine that builds it). A plain number next to a vector counts for every lane: v * 2.0.
+
+fn laneBytes(ast.Type vt) -> str {
+    return str(bitsOf(vt.elem[0]) / 8)
+}
+
+// v8f32, v32i8: how LLVM's vector intrinsics are named for this type
+fn vecSuffix(ast.Type vt) -> str {
+    if isFloat(vt.elem[0]) {
+        return "v" + str(vt.count) + "f" + str(bitsOf(vt.elem[0]))
+    }
+    return "v" + str(vt.count) + "i" + str(bitsOf(vt.elem[0]))
+}
+
+fn declareOnce(ptr[Gen] g, str decl) {
+    if !has(g.done, decl) {
+        g.done.push(decl)
+        g.head.push(decl)
+    }
+}
+
+// call @llvm.<name>.<suffix>(args...), declared the first time
+fn vecIntrinsic(ptr[Gen] g, str ret, str name, ast.Type vt, []str argTypes, []str args, str flags) -> str {
+    fname := "@llvm." + name + "." + vecSuffix(vt)
+    declareOnce(g, "declare " + ret + " " + fname + "(" + argTypes.join(", ") + ")")
+    []str both
+    for i in 0..args.len {
+        both.push(argTypes[i] + " " + args[i])
+    }
+    return op(g, "call " + flags + ret + " " + fname + "(" + both.join(", ") + ")")
+}
+
+// the same number in every lane
+fn splat(ptr[Gen] g, str v, ast.Type vt) -> str {
+    lt := llty(g, vt)
+    one := op(g, "insertelement " + lt + " poison, " + llty(g, vt.elem[0]) + " " + v + ", i64 0")
+    return op(g, "shufflevector " + lt + " " + one + ", " + lt + " poison, <" + str(vt.count) + " x i32> zeroinitializer")
+}
+
+// a value next to a vector: the vector itself, or a number put in every lane
+fn asVec(ptr[Gen] g, Val v, ast.Type vt, str o, ast.Node at) -> Val {
+    if v.ty.kind == "vec" {
+        if !ast.same(v.ty, vt) {
+            fail(g, at, "can't use '" + o + "' on " + ast.show(vt) + " and " + ast.show(v.ty) + " (convert one: " + ast.show(vt) + "(...))")
+        }
+        return v
+    }
+    s := coerce(g, v, vt.elem[0], at, "a number used with " + ast.show(vt))
+    return Val(v: splat(g, s.v, vt), ty: vt)
+}
+
+fn vecOf(Val l, Val r) -> ast.Type {
+    if l.ty.kind == "vec" {
+        return l.ty
+    }
+    return r.ty
+}
+
+// i, i+1, ..., i+n-1 are all in a list of `len`
+fn vecBounds(ptr[Gen] g, str i, int n, str len, ast.Node at) {
+    end := op(g, "add i64 " + i + ", " + str(n))
+    before := op(g, "icmp slt i64 " + i + ", 0")
+    after := op(g, "icmp sgt i64 " + end + ", " + len)
+    panicIf(g, op(g, "or i1 " + before + ", " + after), "the " + str(n) + " numbers of the vector don't all fit in the list there", at)
+}
+
+// f32x8(x), f32x8(a, b, ..., h), f32x8(list, i), f32x8(i32x8 v)
+fn vecMake(ptr[Gen] g, ast.Node c, ast.Type vt) -> Val {
+    if g.index {
+        noteRef(g, c, c.col, c.name.len, docs.hover(docs.find(docs.builtins(), "f32x8")), "", 0, 0)
+    }
+    for nm in c.names {
+        if nm.len > 0 {
+            fail(g, c, "named arguments (" + nm + ": ...) are only for creating structs")
+        }
+    }
+    shown := ast.show(vt)
+    lane := vt.elem[0]
+    lt := llty(g, vt)
+    n := vt.count
+    usage := shown + "(x) puts x in every lane, " + shown + "(a, b, ...) takes " + str(n) + " numbers, " + shown + "(list, i) loads them from a list"
+    if c.kids.len == 0 {
+        fail(g, c, usage)
+    }
+    first := ref(g, c.kids[0], false)
+    ft := first.val.ty
+    if first.isPlace {
+        ft = first.pl.ty
+    }
+    if ft.kind == "array" || ft.kind == "ptr" {
+        if c.kids.len != 2 {
+            fail(g, c, shown + "(list, i): which index to start at? (" + shown + "(list, 0) for the first " + str(n) + ")")
+        }
+        if ft.elem.len == 0 || !ast.same(ft.elem[0], lane) {
+            fail(g, c.kids[0], shown + "(list, i) loads " + ast.show(lane) + " numbers, but this is " + ast.show(ft))
+        }
+        mark := g.pending.len
+        if !first.isPlace {
+            hold(g, first.val)
+        }
+        i := coerce(g, expr(g, c.kids[1]), T("int"), c.kids[1], "an index").v
+        heldEnd(g, mark)
+        data := ""
+        if ft.kind == "ptr" {
+            data = first.val.v
+            if first.isPlace {
+                data = load(g, "ptr", first.pl.addr)
+            }
+        } else {
+            av := first.val.v
+            if first.isPlace {
+                av = load(g, "{ ptr, i64, i64 }", first.pl.addr)
+            }
+            vecBounds(g, i, n, op(g, "extractvalue { ptr, i64, i64 } " + av + ", 1"), c)
+            data = op(g, "extractvalue { ptr, i64, i64 } " + av + ", 0")
+        }
+        ep := op(g, "getelementptr inbounds " + llty(g, lane) + ", ptr " + data + ", i64 " + i)
+        out := op(g, "load " + lt + ", ptr " + ep + ", align " + laneBytes(vt))
+        if !first.isPlace {
+            release(g, first.val)
+        }
+        return Val(v: out, ty: vt)
+    }
+    v := first.val
+    if first.isPlace {
+        v = Val(v: load(g, llty(g, ft), first.pl.addr), ty: ft)
+    }
+    if c.kids.len == 1 {
+        if ft.kind == "vec" {
+            return vecConvert(g, v, vt, c.kids[0])
+        }
+        if !isNumber(ft) {
+            fail(g, c.kids[0], usage + "; this is " + ast.show(ft))
+        }
+        s := coerce(g, v, lane, c.kids[0], "the number for every lane")
+        return Val(v: splat(g, s.v, vt), ty: vt)
+    }
+    if c.kids.len != n {
+        fail(g, c, usage + "; this has " + str(c.kids.len) + " values")
+    }
+    cur := "poison"
+    for k in 0..n {
+        x := v
+        if k > 0 {
+            x = expr(g, c.kids[k])
+        }
+        s := coerce(g, x, lane, c.kids[k], "lane " + str(k))
+        cur = op(g, "insertelement " + lt + " " + cur + ", " + llty(g, lane) + " " + s.v + ", i64 " + str(k))
+    }
+    return Val(v: cur, ty: vt)
+}
+
+// every lane converted, as the same conversion of one number would: f32x8(ints), i32x8(floats) cuts fractions
+fn vecConvert(ptr[Gen] g, Val v, ast.Type to, ast.Node at) -> Val {
+    from := v.ty
+    if ast.same(from, to) {
+        return v
+    }
+    if from.count != to.count {
+        fail(g, at, "can't turn " + ast.show(from) + " into " + ast.show(to) + ": they have a different number of lanes")
+    }
+    fl := from.elem[0]
+    tl := to.elem[0]
+    inst := ""
+    if isInt(fl) && isInt(tl) {
+        if bitsOf(fl) == bitsOf(tl) {
+            return Val(v: v.v, ty: to)          // i32x8 <-> u32x8: the same bits
+        }
+        if bitsOf(tl) < bitsOf(fl) {
+            inst = "trunc"
+        } else if isSigned(fl) {
+            inst = "sext"
+        } else {
+            inst = "zext"
+        }
+    } else if isInt(fl) {
+        inst = "uitofp"
+        if isSigned(fl) {
+            inst = "sitofp"
+        }
+    } else if isInt(tl) {
+        inst = "fptoui"
+        if isSigned(tl) {
+            inst = "fptosi"
+        }
+    } else if bitsOf(tl) > bitsOf(fl) {
+        inst = "fpext"
+    } else {
+        inst = "fptrunc"
+    }
+    return Val(v: op(g, inst + " " + llty(g, from) + " " + v.v + " to " + llty(g, to)), ty: to)
+}
+
+fn vecUnary(ptr[Gen] g, ast.Node e, Val v) -> Val {
+    lane := v.ty.elem[0]
+    lt := llty(g, v.ty)
+    if e.name == "~" {
+        if !isInt(lane) {
+            fail(g, e, "'~' flips the bits of whole numbers, not of " + ast.show(v.ty))
+        }
+        return Val(v: op(g, "xor " + lt + " " + v.v + ", " + splat(g, "-1", v.ty)), ty: v.ty)
+    }
+    if isUnsigned(lane) {
+        fail(g, e, ast.show(v.ty) + " can't be negative (its lanes are unsigned)")
+    }
+    if isFloat(lane) {
+        return Val(v: op(g, "fneg " + lt + " " + v.v), ty: v.ty)
+    }
+    return Val(v: op(g, "sub " + lt + " zeroinitializer, " + v.v), ty: v.ty)
+}
+
+fn vecArith(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
+    vt := vecOf(l, r)
+    a := asVec(g, l, vt, o, at)
+    b := asVec(g, r, vt, o, at)
+    lane := vt.elem[0]
+    names := ["+", "-", "*", "/", "&", "|", "^", "<<", ">>"]
+    insts := ["add", "sub", "mul", "", "and", "or", "xor", "shl", "ashr"]
+    if isUnsigned(lane) {
+        insts[8] = "lshr"
+    }
+    if isFloat(lane) {
+        names = ["+", "-", "*", "/"]
+        insts = ["fadd", "fsub", "fmul", "fdiv"]
+    }
+    k := names.find(o)
+    if k < 0 || insts[k].len == 0 {
+        msg := "can't use '" + o + "' on " + ast.show(vt)
+        if o == "/" || o == "%" {
+            msg = msg + " (x86 and ARM have no instruction that divides whole numbers lane by lane; convert to floats: f32x" + str(vt.count) + "(v))"
+        } else if isFloat(lane) {
+            msg = msg + " (bit operators work on whole numbers only)"
+        }
+        fail(g, at, msg)
+    }
+    return Val(v: op(g, insts[k] + " " + llty(g, vt) + " " + a.v + ", " + b.v), ty: vt)
+}
+
+// v == w: every lane is equal. (Lane by lane: min, max, or v[i] < w[i].)
+fn vecCompare(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
+    vt := vecOf(l, r)
+    if o != "==" && o != "!=" {
+        fail(g, at, "'" + o + "' on " + ast.show(vt) + " would have an answer for every lane; use min(v, w), max(v, w), or compare lanes: v[i] " + o + " w[i]")
+    }
+    a := asVec(g, l, vt, o, at)
+    b := asVec(g, r, vt, o, at)
+    cmp := ""
+    if isFloat(vt.elem[0]) {
+        cmp = op(g, "fcmp oeq " + llty(g, vt) + " " + a.v + ", " + b.v)
+    } else {
+        cmp = op(g, "icmp eq " + llty(g, vt) + " " + a.v + ", " + b.v)
+    }
+    bits := ast.Type(kind: "vec", count: vt.count)
+    bits.elem.push(T("bool"))
+    all := vecIntrinsic(g, "i1", "vector.reduce.and", bits, ["<" + str(vt.count) + " x i1>"], [cmp], "")
+    if o == "!=" {
+        return Val(v: op(g, "xor i1 " + all + ", true"), ty: T("bool"))
+    }
+    return Val(v: all, ty: T("bool"))
+}
+
+// min(v, w) and max(v, w), lane by lane (clamp is the two)
+fn vecPick(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
+    vt := vecOf(l, r)
+    a := asVec(g, l, vt, o, at)
+    b := asVec(g, r, vt, o, at)
+    lane := vt.elem[0]
+    name := ""
+    if isFloat(lane) {
+        name = "minnum"
+        if o == ">" {
+            name = "maxnum"
+        }
+    } else {
+        sign := "u"
+        if isSigned(lane) {
+            sign = "s"
+        }
+        name = sign + "min"
+        if o == ">" {
+            name = sign + "max"
+        }
+    }
+    lt := llty(g, vt)
+    return Val(v: vecIntrinsic(g, lt, name, vt, [lt, lt], [a.v, b.v], ""), ty: vt)
+}
+
+fn vecAbs(ptr[Gen] g, Val v) -> Val {
+    lane := v.ty.elem[0]
+    lt := llty(g, v.ty)
+    if isUnsigned(lane) {
+        return v
+    }
+    if isFloat(lane) {
+        return Val(v: vecIntrinsic(g, lt, "fabs", v.ty, [lt], [v.v], ""), ty: v.ty)
+    }
+    return Val(v: vecIntrinsic(g, lt, "abs", v.ty, [lt, "i1"], [v.v, "false"], ""), ty: v.ty)
+}
+
+// all the lanes made into one number: "add", "min" or "max"
+fn vecReduce(ptr[Gen] g, Val v, str how) -> Val {
+    lane := v.ty.elem[0]
+    lt := llty(g, v.ty)
+    et := llty(g, lane)
+    if isFloat(lane) {
+        if how == "add" {
+            // reassoc: the lanes may be added in any order, which is what makes it fast
+            return Val(v: vecIntrinsic(g, et, "vector.reduce.fadd", v.ty, [et, lt], ["-0.0", v.v], "reassoc "), ty: lane)
+        }
+        return Val(v: vecIntrinsic(g, et, "vector.reduce.f" + how, v.ty, [lt], [v.v], ""), ty: lane)
+    }
+    if how == "add" {
+        return Val(v: vecIntrinsic(g, et, "vector.reduce.add", v.ty, [lt], [v.v], ""), ty: lane)
+    }
+    sign := "u"
+    if isSigned(lane) {
+        sign = "s"
+    }
+    return Val(v: vecIntrinsic(g, et, "vector.reduce." + sign + how, v.ty, [lt], [v.v], ""), ty: lane)
+}
+
+fn vecMethod(ptr[Gen] g, ast.Node m, Val v) -> Val {
+    vt := v.ty
+    lane := vt.elem[0]
+    lt := llty(g, vt)
+    n := m.name
+    if n == "sum" || n == "min" || n == "max" {
+        need(g, m, 0)
+        how := n
+        if n == "sum" {
+            how = "add"
+        }
+        return vecReduce(g, v, how)
+    }
+    if n == "dot" {
+        need(g, m, 1)
+        w := asVec(g, expr(g, m.kids[1]), vt, "dot", m.kids[1])
+        return vecReduce(g, vecArith(g, "*", v, w, m), "add")
+    }
+    if n == "abs" {
+        need(g, m, 0)
+        return vecAbs(g, v)
+    }
+    if n == "sqrt" || n == "floor" || n == "ceil" || n == "round" || n == "fma" {
+        if !isFloat(lane) {
+            fail(g, m, n + "() is for f32 and f64 lanes, but this is " + ast.show(vt))
+        }
+        if n == "fma" {
+            need(g, m, 2)
+            b := asVec(g, expr(g, m.kids[1]), vt, "fma", m.kids[1])
+            c := asVec(g, expr(g, m.kids[2]), vt, "fma", m.kids[2])
+            // fmuladd: one fused instruction where the processor has one (FMA, NEON), a multiply and an add where
+            // it doesn't (llvm.fma would call a slow library function there, to round only once)
+            return Val(v: vecIntrinsic(g, lt, "fmuladd", vt, [lt, lt, lt], [v.v, b.v, c.v], ""), ty: vt)
+        }
+        need(g, m, 0)
+        return Val(v: vecIntrinsic(g, lt, n, vt, [lt], [v.v], ""), ty: vt)
+    }
+    if n == "store" {
+        need(g, m, 2)
+        dst := ref(g, m.kids[1], true)
+        dt := dst.val.ty
+        if dst.isPlace {
+            dt = dst.pl.ty
+        }
+        if (dt.kind != "array" && dt.kind != "ptr") || dt.elem.len == 0 || !ast.same(dt.elem[0], lane) {
+            fail(g, m.kids[1], "store(list, i) writes " + ast.show(lane) + " numbers into a []" + ast.show(lane) + " or a ptr[" + ast.show(lane) + "], but this is " + ast.show(dt))
+        }
+        if dt.kind == "array" && !dst.isPlace {
+            fail(g, m.kids[1], "store(list, i) needs a list in a variable (this one would be thrown away)")
+        }
+        i := coerce(g, expr(g, m.kids[2]), T("int"), m.kids[2], "an index").v
+        data := ""
+        if dt.kind == "ptr" {
+            data = dst.val.v
+            if dst.isPlace {
+                data = load(g, "ptr", dst.pl.addr)
+            }
+        } else {
+            av := load(g, "{ ptr, i64, i64 }", dst.pl.addr)
+            vecBounds(g, i, vt.count, op(g, "extractvalue { ptr, i64, i64 } " + av + ", 1"), m)
+            data = op(g, "extractvalue { ptr, i64, i64 } " + av + ", 0")
+        }
+        ep := op(g, "getelementptr inbounds " + llty(g, lane) + ", ptr " + data + ", i64 " + i)
+        emit(g, "store " + lt + " " + v.v + ", ptr " + ep + ", align " + laneBytes(vt))
+        return Val(ty: T("void"))
+    }
+    fail(g, m, "a " + ast.show(vt) + " has no method '" + n + "' (it has: sum, min, max, dot, abs, sqrt, floor, ceil, round, fma, store)")
+    return v
 }

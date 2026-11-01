@@ -53,8 +53,9 @@ The computer reads your program from top to bottom, line by line.
 
 ## 2. Getting Finch ready
 
-Finch runs on **Linux** computers. If a teacher, parent or friend has already set it up
-for you, skip to the next section.
+Finch runs on **Linux**, **macOS** and **Windows** computers. If a teacher, parent or friend has already set it up
+for you, skip to the next section. (On a Mac or on Windows, ask someone to follow the
+[guide for technicians](for-technicians.md#2-installing): it has a ready-made Finch for both.)
 
 Otherwise, open the **Terminal** program (a window where you type commands) and type
 these lines one by one, pressing **Enter** after each:
@@ -76,7 +77,7 @@ To check it works, type:
 ./build/finch version
 ```
 
-You should see something like `Finch 2.5.0`.
+You should see something like `Finch 2.6.0`.
 
 ---
 

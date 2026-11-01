@@ -2,7 +2,7 @@
 // It is embedded in the compiler, compiled once into a cache folder, and linked
 // statically into every Finch program. Everything here is plain C with no state.
 //
-// Layout shared with the compiler (src/codegen.cpp):
+// Layout shared with the compiler (src/gen.fch):
 //   str  = { char *ptr; int64 len; int64 cap }   ptr is always NUL-terminated
 //          cap > 0  : heap memory owned by the value (cap bytes allocated)
 //          cap == 0 : a string literal, valid forever, never written to

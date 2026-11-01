@@ -21,8 +21,9 @@ Everything in Finch on one page. For explanations, see the [guides](../../README
 | `finch version` | version |
 | `-l lib` | link a C library (like `link "lib"`) |
 | `--target windows` / `linux` / `arm64` / `macos` / `android` / triple | build for another system (`android`: the NDK's clang from `ANDROID_NDK_HOME`, usually with `--shared`) |
-| `-g` | debug info (gdb, lldb, Visual Studio) |
+| `-g` | debug info (gdb, lldb) |
 | `-O0` | no optimizations |
+| `--cpu native` / `x86-64-v3` / `apple-m1` … | use every instruction of that processor (AVX2, AVX-512, NEON); the program then needs one like it |
 | `--trace` / `--no-trace` | runtime errors show the chain of calls; on for `run`, `test`, `-g`, `-O0`, off for a plain `build` (it costs speed) |
 
 Environment: `FINCH_PATH` (folders with modules), `FINCH_CC` (the C compiler that links), `FINCH_CXX` (for `.cpp` files).
@@ -39,6 +40,7 @@ links = ["SDL3", "native/glue.cpp"] # libraries and your own .c / .cpp / .o / .a
 libdirs = ["vendor/SDL3/lib"]
 cflags = ["-DFAST"]                 # for your .c / .cpp files
 ldflags = ["-Wl,-rpath,."]
+cpu = "native"                      # the same as --cpu native
 
 [target.windows]                    # only when building for that system (also linux, macos, android, linux-arm64)
 links = ["ws2_32"]
@@ -96,6 +98,7 @@ One statement per line, no semicolons, `{` on the same line, no brackets around 
 | `[]T` | array: `[1, 2, 3]`, `[]str names` |
 | `map[K]V` | map: `["a": 1]`, `map[str]int counts`, `[:]` |
 | `ptr[T]`, `ptr` | pointer, untyped pointer |
+| `f32x8`, `i8x32`, `f64x4`, `u16x16` … | vector: N numbers worked on at once (SIMD), see below |
 | `Name` / `module.Name` | a struct |
 
 Escapes: `\n \t \r \0 \\ \" \'`.
@@ -237,6 +240,27 @@ Fallible built-ins: `int(s)`, `float(s)`, `read_file`, `write_file`, `delete_fil
 | `m.remove(k)` | bool: was it there |
 | `m.clear()` | empty it |
 | `m.keys()`, `m.values()` | arrays, insertion order |
+
+---
+
+## Vectors `f32x8` (SIMD)
+
+Types: `f32x4/8/16`, `f64x2/4/8`, `i8x16/32/64`, `i16x8/16/32`, `i32x4/8/16`, `i64x2/4/8`, and `u…` the same; at most 512 bits.
+
+| Code | Gives |
+|---|---|
+| `f32x8(x)` | `x` in every lane |
+| `f32x8(a, b, …, h)` | one number per lane |
+| `f32x8(list, i)` | `list[i]` … `list[i+7]` (a `[]f32` or `ptr[f32]`) |
+| `f32x8(v)` | an 8-lane vector converted lane by lane (`f32x8(ints)`, `i32x8(floats)`) |
+| `v + w`, `v * 2.0`, `-v` | lane by lane; a plain number counts for every lane (`/` only on floats) |
+| `& \| ^ << >> ~` | lane by lane, whole-number lanes |
+| `v == w`, `v != w` | bool: every lane equal / not |
+| `v[i]`, `v[i] = x`, `v.len` | a lane; the number of lanes |
+| `min(v, w)`, `max`, `abs(v)`, `clamp(v, lo, hi)` | lane by lane |
+| `v.sum()`, `v.min()`, `v.max()`, `v.dot(w)` | one number from all the lanes |
+| `v.sqrt()`, `v.floor()`, `v.ceil()`, `v.round()`, `v.fma(b, c)` | every lane (float lanes; `fma` = `v * b + c`) |
+| `v.store(list, i)` | lanes into `list[i]` … |
 
 ---
 

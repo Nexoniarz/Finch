@@ -1,0 +1,4 @@
+// expect: f32x4(a, b, ...) takes 4 numbers
+fn main() {
+    print(f32x4(1.0, 2.0, 3.0))
+}

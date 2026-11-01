@@ -41,6 +41,7 @@ compiler works inside. For that, see the [guide for engineers](for-engineers.md)
 28. [A project: finch.toml](#28-a-project-finchtoml)
 29. [Threads](#29-threads)
 30. [C++, Rust and Android](#30-c-rust-and-android)
+31. [Vectors (SIMD)](#31-vectors-simd)
 
 ---
 
@@ -67,19 +68,24 @@ messages that tell you how to fix the problem.
 
 ## 2. Installing
 
-The Finch compiler is written in Finch (see the [engineers' guide](for-engineers.md)). It runs on **Linux**
-(x86-64 and ARM64) and builds programs for **Linux, Windows and macOS**. It needs **clang 21** and **libclang**
-(LLVM 21) to read C headers and to compile its output.
+The Finch compiler is written in Finch (see the [engineers' guide](for-engineers.md)). It runs on **Linux** (x86-64 and
+ARM64), **macOS** (Apple Silicon and Intel) and **Windows** (x86-64), and builds programs for all of them. On every
+system it needs **clang** (it compiles each program with it) and **libclang** from LLVM 21 (it reads C headers with it).
 
-The compiler does not run on macOS or Windows yet; it needs a seed made with that system's headers
-([bootstrap/README.md](../../bootstrap/README.md) says why). Until then, build your Windows and macOS programs from Linux
-with `--target` (below), or use the older C++ compiler from the `before-bootstrap` branch.
+### Option A: a ready build
 
-### Option A: a ready build (Linux)
+Download the archive for your system from the [releases](https://github.com/Nexoniarz/Finch/releases) and unpack it.
+Keep `runtime/` and `std/` next to the `finch` file (or install it, below).
 
-Download `finch-linux-x64.tar.gz` or `finch-linux-arm64.tar.gz` from the
-[releases](https://github.com/Nexoniarz/Finch/releases) and unpack it. Keep `runtime/` and `std/` next to the `finch` file
-(or install it, below). You also need `clang` 21 and its libclang library:
+| System | Archive | Also install |
+|---|---|---|
+| Linux x86-64 | `finch-linux-x64.tar.gz` | clang 21 and libclang (table below) |
+| Linux ARM64 (Raspberry Pi 4/5, Graviton…) | `finch-linux-arm64.tar.gz` | the same |
+| macOS, Apple Silicon | `finch-macos-arm64.tar.gz` | `xcode-select --install` (clang and the system headers), `brew install llvm@21` (libclang) |
+| macOS, Intel | `finch-macos-x64.tar.gz` | the same |
+| Windows x64 | `finch-windows-x64.zip` (`finch.exe` with `libclang.dll`) | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw/releases) (the `ucrt-x86_64` zip): unpack it and put its `bin` folder on your PATH |
+
+On Linux:
 
 | Distribution | Packages |
 |---|---|
@@ -88,12 +94,15 @@ Download `finch-linux-x64.tar.gz` or `finch-linux-arm64.tar.gz` from the
 | Arch | `clang pkgconf` |
 | Nix | `nix-shell` in the repository gives all of it |
 
+On Windows, llvm-mingw gives Finch `clang`, the C headers and the linker in one folder; Windows programs built with it
+need nothing else to run. Keep `libclang.dll` next to `finch.exe`.
+
 ### Option B: build it yourself
 
 ```sh
 git clone https://github.com/Nexoniarz/Finch.git
 cd Finch
-nix-shell                        # clang, libclang, pkg-config (or install them with your distribution)
+nix-shell                        # Linux: clang, libclang, pkg-config (or install them with your distribution)
 bootstrap/build.sh               # build/finch
 ./build/finch version
 ```
@@ -101,6 +110,26 @@ bootstrap/build.sh               # build/finch
 `bootstrap/build.sh` compiles the seed (`bootstrap/<system>.ll`, the compiler's own LLVM IR) into a first compiler, builds
 `src/` with it, builds `src/` again with the result and checks the two are identical. If libclang isn't where the linker
 looks, tell it: `FINCH_LIBCLANG="-L/usr/lib/llvm-21/lib -lclang-21" bootstrap/build.sh`.
+
+On a Mac, with Homebrew's LLVM:
+
+```sh
+brew install llvm@21
+export FINCH_CLANG="$(brew --prefix llvm@21)/bin/clang"
+export FINCH_LIBCLANG="-L$(brew --prefix llvm@21)/lib -lclang"
+export FINCH_LLVM_INCLUDE="$(brew --prefix llvm@21)/include"
+bootstrap/build.sh
+```
+
+On Windows, in Git Bash, with llvm-mingw on the PATH and the official LLVM for Windows (for `libclang.dll` and its headers)
+unpacked to `C:/llvm`:
+
+```sh
+export FINCH_LIBCLANG="C:/llvm/bin/libclang.dll"
+export FINCH_LLVM_INCLUDE="C:/llvm/include"
+export FINCH_LDFLAGS="-LC:/llvm/bin"
+bootstrap/build.sh               # build/finch.exe, with libclang.dll copied next to it
+```
 
 ### Building for another system
 
@@ -151,7 +180,9 @@ options:
   -l <lib>          link a C library, same as  link "lib"  in the file
   -I <dir>          look for C headers there too
   --target <name>   build for another system: windows, linux, arm64, macos, android, or an LLVM triple
-  -g                add debug info (for gdb / lldb / Visual Studio)
+  --cpu <name>      use every instruction of a processor: native (this one), x86-64-v3 (AVX2),
+                    x86-64-v4 (AVX-512), apple-m1, ... (section 31)
+  -g                add debug info (for gdb and lldb)
   -O0               skip optimizations
   --trace           runtime errors show the chain of calls (on anyway for run, test, -g and -O0)
   --no-trace        they don't (a plain finch build doesn't: keeping the chain makes calls slower)
@@ -946,8 +977,7 @@ gdb ./game
 ```
 
 `-g` adds debug info (lines, functions, variables, struct fields). `-O0` keeps every variable
-visible; without it the optimizer may remove some. On Windows, `-g` writes CodeView, which the
-Visual Studio debugger and WinDbg read.
+visible; without it the optimizer may remove some. On Windows the debug info is DWARF as well: use the `lldb` that comes with llvm-mingw, or gdb.
 
 ---
 
@@ -959,10 +989,11 @@ Visual Studio debugger and WinDbg read.
 | `… come from "x.h", but its library isn't linked` | Add `link "name"` at the top of the file. |
 | `the library 'x' wasn't found` | Not installed, or a wrong name. On Nix, add it to `shell.nix` and run inside `nix-shell`. |
 | `the C function 'f' can't be used from Finch yet` | It uses a union, bit fields or another unsupported type by value. Look for a variant that takes pointers. |
+| `--cpu native`: the program stops with `Illegal instruction` on another computer | It was built for the processor that built it. Build without `--cpu`, or with an older one (`x86-64-v2`). |
 | `can't find the module 'x'` | Put `x.fch` next to the importing file, or set `FINCH_PATH`. |
 | `couldn't build the Finch runtime` | No working C compiler. Install gcc or clang, or set `CC`. |
 | A library is not found when the program starts | It was linked from a folder the system doesn't search. Run inside the same `nix-shell`, or install it system-wide. |
-| Windows: `finch` can't link (`LNK…` errors about `libcmt`, `kernel32`) | Install Visual Studio Build Tools with *Desktop development with C++*. |
+| Windows: `no C compiler found to link with ('clang')` | Put llvm-mingw's `bin` folder on your PATH (section 2). |
 | Windows: `finch.exe` doesn't start (missing `libclang.dll`) | Keep `libclang.dll` next to `finch.exe`. |
 | macOS: `finch` doesn't start (`Library not loaded: …libLLVM…`) | `brew install llvm@21`. |
 | macOS: `can't find the C header 'stdio.h'` | Install the command line tools: `xcode-select --install`. |
@@ -980,7 +1011,7 @@ Finch/
 ├── std/            the standard library, in Finch: json, path, time, proc, fs, thread
 ├── runtime/        finch_rt.c: the small runtime (text, arrays, maps, input, files)
 ├── bootstrap/      build.sh, install.sh and the seeds (the compiler's own IR, one per system)
-├── examples/       hello, tour, types, structs, todo, guess, c_import, window, opengl, vulkan, raylib, llvm
+├── examples/       hello, tour, types, structs, todo, guess, wordcount, c_import, simd, window, opengl, vulkan, raylib, llvm
 ├── tests/
 │   ├── run/ new/   programs + the exact output they must print (.out), input (.in)
 │   ├── fail/ new/fail/   programs that must fail, with the expected error in line 1
@@ -994,34 +1025,11 @@ Finch/
 ```
 
 ```sh
-tests/run.sh                 # programs, refusals, -g builds, a shared library, the language server
+tests/run.sh                 # programs, expected errors, -g builds, a shared library, the language server
 MEMCHECK=1 tests/run.sh      # the same under valgrind: no leaks, no bad memory access
 tests/cross.sh windows       # every test built for Windows and run with Wine
 tests/cross.sh arm64         # every test built for ARM64 Linux and run with QEMU
 ```
-
-### Variants that hold values
-
-A variant can carry values. Make one with `Shape.Circle(2.0)`, take them out with `match`, which names them:
-
-```c
-enum Shape {
-    Circle(float)
-    Rect(float, float)
-    Point
-}
-
-fn Shape.area() -> float {
-    return match self {
-        Circle(r) -> 3.14 * r * r
-        Rect(w, h) -> w * h
-        Point -> 0.0
-    }
-}
-```
-
-`_` ignores a value. `match` must handle every variant (or end with `else`). Printing shows `Rect(2, 3.5)`. Such an enum is
-copied and freed like a struct; it can't be compared with `==` (match on it). Variants of these enums can't have numbers.
 
 ---
 
@@ -1068,6 +1076,29 @@ match word {
 `match` works on enums, whole numbers, chars, text and bools. The arms are tried in order. A match on an enum has to
 handle **every variant** or end with `else` (the compiler says which are missing); any other match needs `else`.
 In an expression, every arm gives the same type.
+
+### Variants that hold values
+
+A variant can carry values. Make one with `Shape.Circle(2.0)`, take them out with `match`, which names them:
+
+```c
+enum Shape {
+    Circle(float)
+    Rect(float, float)
+    Point
+}
+
+fn Shape.area() -> float {
+    return match self {
+        Circle(r) -> 3.14 * r * r
+        Rect(w, h) -> w * h
+        Point -> 0.0
+    }
+}
+```
+
+`_` ignores a value. `match` must handle every variant (or end with `else`). Printing shows `Rect(2, 3.5)`. Such an enum is
+copied and freed like a struct; it can't be compared with `==` (match on it). Variants of these enums can't have numbers.
 
 ## 24. Generics
 
@@ -1134,7 +1165,7 @@ Not there yet:
 - Interfaces.
 - Unicode-aware text: `.len`, `s[i]` and `upper()` work on bytes / ASCII.
 - Checks that stop two threads from changing the same array at once (use a mutex).
-- Windows on ARM64, 32-bit systems, WebAssembly. `--target android` makes code for Android, but linking with the NDK and running on a device are untried.
+- Windows on ARM64, 32-bit systems, WebAssembly.
 
 ### Warnings about big copies
 
@@ -1193,6 +1224,7 @@ links = ["SDL3", "native/glue.cpp"]  # libraries, and your own .c / .cpp / .o / 
 libdirs = ["vendor/SDL3/lib"]        # folders with libraries
 cflags = ["-DFAST"]                  # for your .c / .cpp files
 ldflags = ["-Wl,-rpath,$ORIGIN"]     # for the linker
+cpu = "native"                       # the same as --cpu native (section 31)
 
 [target.windows]                     # added only when building for Windows
 links = ["ws2_32"]
@@ -1292,6 +1324,82 @@ Write the header (`float path_len(float x, float y);`, or let `cbindgen` write i
 
 **Android**: `finch build game.fch --target android --shared` makes `libgame.so` for 64-bit ARM Android (API 24 and
 up) with the NDK's clang, found through `ANDROID_NDK_HOME` (or `FINCH_CC`). Load it from an app, for example through
-SDL3's Android project (the library's `SDL_main` is an `export fn`). This is new and only partly checked: Finch's
-output compiles for Android (thread-local data goes through the emulated TLS older Android needs), but linking with the
-NDK and running on a device have not been tried yet.
+SDL3's Android project (the library's `SDL_main` is an `export fn`). Thread-local data goes through the emulated TLS
+that older Android versions need.
+
+---
+
+## 31. Vectors (SIMD)
+
+A processor can add or multiply several numbers with one instruction: 4 floats at once with SSE, 8 with AVX2, 16 with
+AVX-512, 4 with ARM's NEON. That is SIMD (single instruction, multiple data), and it is how image filters, audio, physics
+and neural networks get their speed. In Finch it is a type: **`f32x8` is 8 `f32` side by side**.
+
+```c
+a := f32x4(1.0, 2.0, 3.0, 4.0)
+b := f32x4(0.5)                  // 0.5 in every lane
+print(a + b)                     // f32x4(1.5, 2.5, 3.5, 4.5)
+print(a * 2.0)                   // a plain number counts for every lane: f32x4(2, 4, 6, 8)
+print(a.sum(), a[2], a.len)      // 10 3 4
+```
+
+**The types** are a number type, `x`, and how many lanes: `f32x4` `f32x8` `f32x16`, `f64x2` `f64x4` `f64x8`,
+`i8x16` `i8x32` `i8x64`, `i16x8` `i16x16`, `i32x4` `i32x8` `i32x16`, `i64x2` `i64x4`, and the same with `u` (unsigned).
+2 to 64 lanes, at most 512 bits in all. A vector is a plain value like an `int`: it goes into variables, struct fields,
+arrays, maps and function parameters, and `print` and `str` show it.
+
+**Making one:**
+
+| | |
+|---|---|
+| `f32x8(x)` | `x` in every lane |
+| `f32x8(a, b, c, d, e, f, g, h)` | one number per lane |
+| `f32x8(list, i)` | `list[i]` … `list[i+7]` from a `[]f32` (or through a `ptr[f32]`); stops the program if they aren't all in the list |
+| `f32x8(v)` | another 8-lane vector converted lane by lane: `f32x8(ints)`, `i32x8(floats)` (cuts the fractions), `i16x8(i32s)` |
+
+**Working with it:**
+
+| | |
+|---|---|
+| `+ - * /` | lane by lane (`/` on floats only: x86 and ARM can't divide whole numbers lane by lane) |
+| `& \| ^ << >> ~` | lane by lane, on whole-number lanes |
+| `-v` | every lane negated |
+| `v == w`, `v != w` | `true` if every lane is equal / if any differs |
+| `v[i]`, `v[i] = x`, `v.len` | one lane; the number of lanes |
+| `min(v, w)`, `max(v, w)`, `abs(v)`, `clamp(v, lo, hi)` | lane by lane; `lo`, `hi` and `w` can be plain numbers |
+| `v.sum()`, `v.min()`, `v.max()` | all the lanes made into one number |
+| `v.dot(w)` | `(v * w).sum()` |
+| `v.sqrt()`, `v.floor()`, `v.ceil()`, `v.round()` | every lane (float lanes) |
+| `v.fma(b, c)` | `v * b + c`, as one instruction where the processor has one |
+| `v.store(list, i)` | writes the lanes to `list[i]` … (or through a `ptr`) |
+
+`<` and the other comparisons would give an answer per lane, so they aren't there; use `min`, `max` or `v[i] < w[i]`.
+
+**A real loop.** The usual shape: as many whole vectors as fit, then the rest one by one.
+
+```c
+fn dot([]f32 a, []f32 b) -> f32 {
+    acc := f32x8(0.0)
+    i := 0
+    while i + 8 <= a.len {
+        acc = f32x8(a, i).fma(f32x8(b, i), acc)
+        i += 8
+    }
+    total := acc.sum()
+    while i < a.len {
+        total += a[i] * b[i]
+        i += 1
+    }
+    return total
+}
+```
+
+`examples/simd.fch` times this against the plain loop.
+
+**Which instructions.** By default a program runs on every processor of its system (on x86-64 that means SSE2, so an
+`f32x8` is done as two halves). `--cpu native` (or `cpu = "native"` in `finch.toml`) lets LLVM use everything the processor
+that builds it has: AVX2 and FMA, AVX-512, or NEON's newer parts on ARM. Such a program needs a processor like that one to
+run. To pick a level instead: `--cpu x86-64-v3` (AVX2, most PCs since 2015), `--cpu x86-64-v4` (AVX-512), `--cpu apple-m1`.
+
+Lanes wider than the processor's registers are split by LLVM, and the same code builds for x86-64 and ARM64 alike.
+`v.sum()` on float lanes adds them in whatever order is fastest, so the last digits can differ from adding them one by one.

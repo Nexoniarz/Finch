@@ -1,0 +1,5 @@
+// expect: f32x8(x) puts x in every lane
+fn main() {
+    f32x8 v = 1.0
+    print(v)
+}

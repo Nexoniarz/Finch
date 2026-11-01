@@ -1,10 +1,9 @@
 // C headers, read through libclang, written in Finch.
 //
 // What `import "stdio.h"` teaches the compiler: the C functions, the constants (enum values and
-// plain #define numbers), the extern variables (stdout) and the structs. The same job as
-// src/cimport.cpp, done by calling libclang's C API through Finch's own C import -- which is
-// what makes this the part that closes the bootstrap: to compile this file the self-hosted
-// compiler has to read libclang's headers with this very code.
+// plain #define numbers), the extern variables (stdout) and the structs. It calls libclang's C API
+// through Finch's own C import -- so to compile this file, the compiler reads libclang's headers
+// with this very code.
 //
 // C structs by value appear in types as the named type `module "C"`.
 import ast

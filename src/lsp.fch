@@ -7,6 +7,7 @@
 import json
 import host
 import docs
+import ast
 import fmt
 import "stdio.h"
 import "stdlib.h"
@@ -621,6 +622,8 @@ fn completionAt(Analysis a, str text, str path, int line, int col) -> json.Json 
             methodItems(addr(items), docs.strMethods())
         } else if type.starts_with("map[") {
             methodItems(addr(items), docs.mapMethods())
+        } else if ast.vecType(type).kind.len > 0 {
+            methodItems(addr(items), docs.vecMethods())     // f32x8, i8x32, ...
         } else {
             base := type
             for st in a.structs {
