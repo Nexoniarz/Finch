@@ -308,7 +308,8 @@ type goes; a call `f32x8(…)` goes to `vecMake()`.
 | `min`, `max`, `abs` | `llvm.minnum`/`maxnum`, `llvm.smin`/`umin`…, `llvm.fabs`/`llvm.abs` |
 | `v.sum()`, `.min()`, `.max()` | `llvm.vector.reduce.fadd` (with `reassoc`), `.add`, `.fmin`, `.smin`… |
 | `v.sqrt()`, `.floor()`, `.ceil()`, `.round()` | the `llvm.*` intrinsic of that name |
-| `v.fma(b, c)` | `llvm.fmuladd` (fused where the target has FMA; `llvm.fma` would be a libm call per lane without it) |
+| `v.fma(b, c)`, `fma(a, b, c)` | `llvm.fma` (one rounding; a libm call per lane without FMA hardware) |
+| `v.muladd(b, c)`, `muladd(a, b, c)` | `llvm.fmuladd` (fused where the target has FMA, `fmul` + `fadd` where not) |
 | `v.store(list, i)` | bounds check, `store <8 x float> …, align 4` |
 
 Integer `/` and `%` are refused: neither x86 nor ARM has a lane-wise integer divide, and LLVM would scalarise it.
@@ -507,6 +508,19 @@ test.
 | Missing return | UB if used | compile error |
 | Order of evaluation | mostly unspecified | left to right; in an assignment the right side first |
 | Shift ≥ width, out-of-range float→int | UB | poison, as in LLVM (not checked) |
+| `a * b + c` on floats | may be fused into an FMA (`-ffp-contract`) | never fused: two roundings |
+
+### Floating point
+
+Float operations are emitted as plain `fadd`/`fsub`/`fmul`/`fdiv`/`fneg` with **no fast-math flags**, so LLVM may not
+reassociate, contract or assume no NaNs; `linker.fch` also compiles the IR with `-ffp-contract=on`, which fuses only the
+`llvm.fmuladd` calls Finch asks for. The only flagged instruction is `v.sum()`'s `llvm.vector.reduce.fadd` (`reassoc`).
+`fma` → `llvm.fma`, `muladd` → `llvm.fmuladd`, on scalars and vectors (`fmaCall`, `fusedOp`).
+
+`f32_bits`/`f32_from_bits`/`f64_…` are `bitcast` (also between vectors). `f16_to_f32` is `bitcast i16 → half` + `fpext`,
+`f32_to_f16` is `fptrunc` + `bitcast`: one instruction with F16C or on ARM64, `__extendhfsf2`/`__truncsfhf2` from the C
+compiler's runtime library elsewhere. `bf16_to_f32` is `zext` + `shl 16` + `bitcast`; `f32_to_bf16` rounds to nearest even
+in integer ops (`u + 0x7fff + ((u >> 16) & 1)`, then `>> 16`) and keeps NaNs quiet (`| 0x40`), so it needs no library.
 | Dangling pointer from `addr()` / `new` + `free` | UB | still UB |
 
 ### The chain of calls on runtime errors

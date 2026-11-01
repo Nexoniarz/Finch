@@ -345,6 +345,40 @@ str(p)           // a C char pointer as text
 **Fixed-size numbers wrap around**, like real hardware: a `u8` holding 255 plus 1 becomes 0.
 Calculations happen in the type of the values involved, so `u8(250) + 10` is `4`, not `260`.
 
+### Decimal numbers: what is guaranteed
+
+`f32` and `f64` are IEEE 754 numbers, and Finch computes them **exactly as written**, the same on every processor and
+with every `--cpu`:
+
+- Each operation rounds once, in the order written. `a * b - c * d` is two multiplies and a subtract, never folded into a
+  fused multiply-add (C compilers often do that by default, which changes the last digits).
+- Nothing is reordered or simplified: `(a + b) + c` is not turned into `a + (b + c)`, and `x * 0.0` is not assumed to be 0
+  (it is NaN when `x` is). The one exception is `v.sum()` on a vector, which adds the lanes in the fastest order.
+
+When speed matters more than the last bit, ask for it by name:
+
+| | |
+|---|---|
+| `fma(a, b, c)` | `a * b + c` with a single rounding, always. One instruction where the processor has FMA (with `--cpu`, on ARM64); a slower library call elsewhere. |
+| `muladd(a, b, c)` | `a * b + c` the fastest way on this processor: fused where it can be, a multiply and an add where not. |
+
+Both work on numbers and on vectors (`v.fma(b, c)`, `v.muladd(b, c)`).
+
+**Numbers as bits.** File formats and model weights store numbers as raw bits. These look at the bits without
+converting the value (all of them also work lane by lane on vectors):
+
+| | |
+|---|---|
+| `f32_bits(x)` / `f32_from_bits(u)` | `f32` ↔ the `u32` with the same bits (`f32_bits(1.0)` is `0x3f800000`) |
+| `f64_bits(x)` / `f64_from_bits(u)` | `f64` ↔ `u64` |
+| `f16_to_f32(h)` / `f32_to_f16(x)` | half precision, kept in a `u16`, ↔ `f32` (rounded to the nearest) |
+| `bf16_to_f32(b)` / `f32_to_bf16(x)` | bfloat16, kept in a `u16`, ↔ `f32` (rounded to the nearest, ties to even) |
+
+```c
+[]u16 weights = read_weights()               // f16 numbers from a file
+v := f16_to_f32(u16x8(weights, 0))           // 8 of them as f32, at once
+```
+
 ---
 
 ## 7. Operators
@@ -697,6 +731,8 @@ Using `.value`, `.field` or `[i]` on a `null` pointer **stops the program** with
 | `exit(code)` | Ends the program right away. |
 | `addr(x)` | A pointer to `x`; `addr(function)` gives C a function pointer (callback). |
 | `new(value)`, `free(p)` | Manual heap memory (see [Memory](#13-memory-who-frees-what)). |
+| `fma(a, b, c)`, `muladd(a, b, c)` | `a * b + c` with one rounding / the fastest way (see [Decimal numbers](#decimal-numbers-what-is-guaranteed)). |
+| `f32_bits(x)`, `f32_from_bits(u)`, `f16_to_f32(h)`, … | A number's bits, and half-precision numbers (see [Decimal numbers](#decimal-numbers-what-is-guaranteed)). |
 | `int(x)`, `str(x)`, `u8(x)`, … | Conversions (see [Conversions](#conversions)). `str(x)` works on every type and gives the same text `print` shows. `int(text) or 0` handles text that isn't a number. |
 
 ---
@@ -1370,7 +1406,8 @@ arrays, maps and function parameters, and `print` and `str` show it.
 | `v.sum()`, `v.min()`, `v.max()` | all the lanes made into one number |
 | `v.dot(w)` | `(v * w).sum()` |
 | `v.sqrt()`, `v.floor()`, `v.ceil()`, `v.round()` | every lane (float lanes) |
-| `v.fma(b, c)` | `v * b + c`, as one instruction where the processor has one |
+| `v.fma(b, c)` | `v * b + c` with one rounding, always |
+| `v.muladd(b, c)` | `v * b + c` the fastest way here: one instruction where the processor can |
 | `v.store(list, i)` | writes the lanes to `list[i]` … (or through a `ptr`) |
 
 `<` and the other comparisons would give an answer per lane, so they aren't there; use `min`, `max` or `v[i] < w[i]`.
@@ -1382,7 +1419,7 @@ fn dot([]f32 a, []f32 b) -> f32 {
     acc := f32x8(0.0)
     i := 0
     while i + 8 <= a.len {
-        acc = f32x8(a, i).fma(f32x8(b, i), acc)
+        acc = f32x8(a, i).muladd(f32x8(b, i), acc)
         i += 8
     }
     total := acc.sum()

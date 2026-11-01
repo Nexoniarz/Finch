@@ -391,7 +391,8 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
         target = " --target=" + tg.triple
     }
     log := b.out + ".log"
-    obj := irObject(clang, target + " " + b.opt + b.extra, b.ir, b.name + "\n" + tg.triple, log) or {
+    // -ffp-contract=on: only what asks to be fused is (muladd); a * b + c stays two roundings, whatever clang's default
+    obj := irObject(clang, target + " " + b.opt + " -ffp-contract=on" + b.extra, b.ir, b.name + "\n" + tg.triple, log) or {
         print(err)
         host.remove(log)
         return 1

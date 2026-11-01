@@ -14,7 +14,7 @@ fn dot([]f32 a, []f32 b) -> f32 {
     acc := f32x8(0.0)
     i := 0
     while i + 8 <= a.len {
-        acc = f32x8(a, i).fma(f32x8(b, i), acc)
+        acc = f32x8(a, i).muladd(f32x8(b, i), acc)
         i += 8
     }
     total := acc.sum()

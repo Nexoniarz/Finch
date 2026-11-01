@@ -1,0 +1,31 @@
+// a * b + c is never fused; fma rounds once; numbers as their bits; f16 and bf16
+
+fn plain(float a, float b, float c) -> float {
+    return a * b + c
+}
+
+fn main() {
+    // 0.1 * 10 is 1.0000000000000000555..., which rounds to 1 before the - 1 (two roundings), but not inside fma
+    print(plain(0.1, 10.0, -1.0), fma(0.1, 10.0, -1.0))
+    print(fma(f32(0.1), 10.0, -1.0), fma(2, 3, 4))
+    m := muladd(1.5, 2.0, 0.25)          // fused or not, exact here
+    print(m, f32x4(1.5).muladd(2.0, 0.25), fma(f32x4(0.1), 10.0, f32x4(-1.0))[0])
+    det := f32x4(0.1) * f32x4(10.0) - f32x4(1.0)
+    print(det[0])
+
+    // bits
+    print(f32_bits(1.0), f64_bits(1.0), f32_bits(-0.0))
+    print(f32_from_bits(0x40490fdb), f64_from_bits(f64_bits(2.5)), f32_from_bits(i32(-1082130432)))
+    u32 inf = 0x7f800000
+    print(f32_from_bits(inf), f32_bits(f32x4(1.0, 2.0, -2.0, 0.5)))
+
+    // f16
+    print(f16_to_f32(0x3c00), f16_to_f32(0xc000), f16_to_f32(0x7bff), f16_to_f32(0x0001))
+    print(f32_to_f16(0.1), f32_to_f16(65504.0), f32_to_f16(1.0e6), f16_to_f32(f32_to_f16(0.333)))
+    print(f16_to_f32(u16x8(0x3c00, 0x4000, 0x4200, 0x4400, 0, 0x8000, 0x3800, 0x3400)))
+
+    // bf16
+    print(bf16_to_f32(0x3f80), bf16_to_f32(0x4049), f32_to_bf16(3.14159))
+    print(f32_to_bf16(f32_from_bits(0x3f808000)), f32_to_bf16(f32_from_bits(0x3f818000)), f32_to_bf16(f32_from_bits(0x7fc00001)))
+    print(f32_to_bf16(f32x4(1.0, -2.0, 0.5, 3.14159)), bf16_to_f32(u16x4(0x3f80, 0xc000, 0x3f00, 0x4049)))
+}

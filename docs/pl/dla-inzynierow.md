@@ -314,7 +314,8 @@ wszędzie tam, gdzie może stać typ; wywołanie `f32x8(…)` trafia do `vecMake
 | `min`, `max`, `abs` | `llvm.minnum`/`maxnum`, `llvm.smin`/`umin`…, `llvm.fabs`/`llvm.abs` |
 | `v.sum()`, `.min()`, `.max()` | `llvm.vector.reduce.fadd` (z `reassoc`), `.add`, `.fmin`, `.smin`… |
 | `v.sqrt()`, `.floor()`, `.ceil()`, `.round()` | funkcja wewnętrzna `llvm.*` o tej nazwie |
-| `v.fma(b, c)` | `llvm.fmuladd` (jedna instrukcja tam, gdzie procesor ma FMA; `llvm.fma` bez FMA wołałoby funkcję z libm dla każdego elementu) |
+| `v.fma(b, c)`, `fma(a, b, c)` | `llvm.fma` (jedno zaokrąglenie; bez sprzętowego FMA wywołanie libm dla każdego elementu) |
+| `v.muladd(b, c)`, `muladd(a, b, c)` | `llvm.fmuladd` (jedna instrukcja tam, gdzie procesor ma FMA, a gdzie nie, `fmul` + `fadd`) |
 | `v.store(lista, i)` | sprawdzenie zakresu, `store <8 x float> …, align 4` |
 
 Dzielenie całkowite `/` i `%` jest odrzucane: ani x86, ani ARM nie mają instrukcji dzielącej liczby całkowite element
@@ -515,6 +516,21 @@ Testem akceptacyjnym jest `tests/lsp_test.py`.
 | Brak `return` | UB, jeśli wynik jest użyty | błąd kompilacji |
 | Kolejność obliczania | w dużej mierze nieokreślona | od lewej do prawej; w przypisaniu najpierw prawa strona |
 | Przesunięcie o ≥ szerokość, liczba zmiennoprzecinkowa poza zakresem przy zamianie na całkowitą | UB | poison, jak w LLVM (niesprawdzane) |
+| `a * b + c` na liczbach zmiennoprzecinkowych | może zostać złożone w FMA (`-ffp-contract`) | nigdy nie jest łączone: dwa zaokrąglenia |
+
+### Liczby zmiennoprzecinkowe
+
+Działania na liczbach zmiennoprzecinkowych to zwykłe `fadd`/`fsub`/`fmul`/`fdiv`/`fneg` **bez flag fast-math**, więc LLVM
+nie może zmieniać kolejności działań, łączyć ich ani zakładać braku NaN; `linker.fch` kompiluje też IR z
+`-ffp-contract=on`, które łączy tylko wywołania `llvm.fmuladd`, o które prosi Finch. Jedyna instrukcja z flagą to
+`llvm.vector.reduce.fadd` w `v.sum()` (`reassoc`). `fma` → `llvm.fma`, `muladd` → `llvm.fmuladd`, na liczbach i wektorach
+(`fmaCall`, `fusedOp`).
+
+`f32_bits`/`f32_from_bits`/`f64_…` to `bitcast` (także między wektorami). `f16_to_f32` to `bitcast i16 → half` + `fpext`,
+`f32_to_f16` to `fptrunc` + `bitcast`: jedna instrukcja z F16C albo na ARM64, a gdzie indziej `__extendhfsf2`/`__truncsfhf2`
+z biblioteki uruchomieniowej kompilatora C. `bf16_to_f32` to `zext` + `shl 16` + `bitcast`; `f32_to_bf16` zaokrągla do
+najbliższej parzystej na liczbach całkowitych (`u + 0x7fff + ((u >> 16) & 1)`, potem `>> 16`) i zostawia NaN cichym
+(`| 0x40`), więc nie potrzebuje żadnej biblioteki.
 | Wiszący wskaźnik z `addr()` / `new` + `free` | UB | nadal UB |
 
 ### Ścieżka wywołań przy błędach w trakcie działania

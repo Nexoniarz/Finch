@@ -259,7 +259,8 @@ Typy: `f32x4/8/16`, `f64x2/4/8`, `i8x16/32/64`, `i16x8/16/32`, `i32x4/8/16`, `i6
 | `v[i]`, `v[i] = x`, `v.len` | jeden element; liczba elementów |
 | `min(v, w)`, `max`, `abs(v)`, `clamp(v, lo, hi)` | element po elemencie |
 | `v.sum()`, `v.min()`, `v.max()`, `v.dot(w)` | jedna liczba ze wszystkich elementów |
-| `v.sqrt()`, `v.floor()`, `v.ceil()`, `v.round()`, `v.fma(b, c)` | każdy element (liczby zmiennoprzecinkowe; `fma` = `v * b + c`) |
+| `v.sqrt()`, `v.floor()`, `v.ceil()`, `v.round()` | każdy element (liczby zmiennoprzecinkowe) |
+| `v.fma(b, c)`, `v.muladd(b, c)` | `v * b + c`: zawsze z jednym zaokrągleniem / najszybciej na tym procesorze |
 | `v.store(lista, i)` | zapisuje elementy do `lista[i]` … |
 
 ---
@@ -324,6 +325,9 @@ Automatycznie tylko wtedy, gdy nic nie ginie: mniejsza liczba → większa, licz
 | `shell(polecenie)` | uruchamia polecenie, zwraca jego kod wyjścia |
 | `exit(kod)` | od razu kończy program (kończy też blok `or { }`) |
 | `min(a, b, …)`, `max(a, b, …)`, `abs(x)`, `clamp(x, lo, hi)` | dla dowolnych liczb (twoja funkcja o tej samej nazwie ma pierwszeństwo) |
+| `fma(a, b, c)`, `muladd(a, b, c)` | `a * b + c` z jednym zaokrągleniem / jedną instrukcją, gdzie procesor potrafi (zapisane `a * b + c` nigdy nie jest łączone) |
+| `f32_bits(x)`, `f32_from_bits(u)`, `f64_bits`, `f64_from_bits` | bity liczby zmiennoprzecinkowej jako `u32`/`u64` i z powrotem, bez zmian |
+| `f16_to_f32(h)`, `f32_to_f16(x)`, `bf16_to_f32(b)`, `f32_to_bf16(x)` | liczby połówkowej precyzji i bfloat16 (w `u16`) ↔ `f32`; także na wektorach |
 | `error(komunikat)` | `return error("…")` w funkcji `-> T!` |
 | `addr(x)` | wskaźnik na x; `addr(fn)` = funkcja zwrotna dla C |
 | `assert(warunek)`, `assert(warunek, "dlaczego")` | zatrzymuje program, gdy warunek jest fałszywy (w bloku `test`: ten test nie przechodzi) |

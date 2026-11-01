@@ -348,6 +348,41 @@ str(p)           // wskaźnik na znaki z C jako tekst
 **Liczby o stałym rozmiarze się zawijają**, jak w prawdziwym sprzęcie: `u8` równe 255 plus 1 daje 0.
 Obliczenia odbywają się w typie użytych wartości, więc `u8(250) + 10` to `4`, a nie `260`.
 
+### Liczby zmiennoprzecinkowe: co jest gwarantowane
+
+`f32` i `f64` to liczby w standardzie IEEE 754, a Finch liczy je **dokładnie tak, jak są zapisane**, tak samo na każdym
+procesorze i z każdym `--cpu`:
+
+- Każde działanie zaokrągla raz, w zapisanej kolejności. `a * b - c * d` to dwa mnożenia i odejmowanie, nigdy nie
+  złożone w jedno „mnożenie z dodawaniem” (FMA); kompilatory C często robią to domyślnie, co zmienia ostatnie cyfry.
+- Nic nie jest przestawiane ani upraszczane: `(a + b) + c` nie zamienia się w `a + (b + c)`, a `x * 0.0` nie jest
+  z góry uznawane za 0 (gdy `x` to NaN, wynik też jest NaN). Jedyny wyjątek to `v.sum()` na wektorze, które dodaje
+  elementy w najszybszej kolejności.
+
+Gdy szybkość jest ważniejsza niż ostatni bit, poproś o nią wprost:
+
+| | |
+|---|---|
+| `fma(a, b, c)` | `a * b + c` z jednym zaokrągleniem, zawsze. Jedna instrukcja tam, gdzie procesor ma FMA (z `--cpu`, na ARM64); gdzie indziej wolniejsza funkcja biblioteczna. |
+| `muladd(a, b, c)` | `a * b + c` najszybciej, jak się da na tym procesorze: jedną instrukcją, gdzie można, a gdzie nie, mnożeniem i dodawaniem. |
+
+Obie działają na liczbach i na wektorach (`v.fma(b, c)`, `v.muladd(b, c)`).
+
+**Liczby jako bity.** Formaty plików i wagi modeli zapisują liczby jako surowe bity. Te funkcje patrzą na bity bez
+przeliczania wartości (wszystkie działają też na wektorach, element po elemencie):
+
+| | |
+|---|---|
+| `f32_bits(x)` / `f32_from_bits(u)` | `f32` ↔ `u32` z tymi samymi bitami (`f32_bits(1.0)` to `0x3f800000`) |
+| `f64_bits(x)` / `f64_from_bits(u)` | `f64` ↔ `u64` |
+| `f16_to_f32(h)` / `f32_to_f16(x)` | liczba połówkowej precyzji, trzymana w `u16`, ↔ `f32` (zaokrąglenie do najbliższej) |
+| `bf16_to_f32(b)` / `f32_to_bf16(x)` | bfloat16, trzymany w `u16`, ↔ `f32` (zaokrąglenie do najbliższej, remisy do parzystej) |
+
+```c
+[]u16 wagi = wczytaj_wagi()                  // liczby f16 z pliku
+v := f16_to_f32(u16x8(wagi, 0))              // osiem z nich jako f32, naraz
+```
+
 ---
 
 ## 7. Operatory
@@ -700,6 +735,8 @@ Użycie `.value`, `.pole` albo `[i]` na wskaźniku `null` **zatrzymuje program**
 | `exit(kod)` | Natychmiast kończy program. |
 | `addr(x)` | Wskaźnik na `x`; `addr(funkcja)` daje C wskaźnik na funkcję (funkcję zwrotną). |
 | `new(wartosc)`, `free(p)` | Ręczna pamięć na stercie (zob. [Pamięć](#13-pamięć-kto-co-zwalnia)). |
+| `fma(a, b, c)`, `muladd(a, b, c)` | `a * b + c` z jednym zaokrągleniem / najszybciej (zob. [Liczby zmiennoprzecinkowe](#liczby-zmiennoprzecinkowe-co-jest-gwarantowane)). |
+| `f32_bits(x)`, `f32_from_bits(u)`, `f16_to_f32(h)`, … | Bity liczby i liczby połówkowej precyzji (zob. [Liczby zmiennoprzecinkowe](#liczby-zmiennoprzecinkowe-co-jest-gwarantowane)). |
 | `int(x)`, `str(x)`, `u8(x)`, … | Zamiany typów (zob. [Zamiana typów](#zamiana-typów)). `str(x)` działa na każdym typie i daje ten sam tekst, który pokazuje `print`. `int(tekst) or 0` obsługuje tekst, który nie jest liczbą. |
 
 ---
@@ -1377,7 +1414,8 @@ struktury, elementem tablicy, wartością w mapie i parametrem funkcji, a `print
 | `v.sum()`, `v.min()`, `v.max()` | wszystkie elementy złożone w jedną liczbę |
 | `v.dot(w)` | `(v * w).sum()` |
 | `v.sqrt()`, `v.floor()`, `v.ceil()`, `v.round()` | każdy element (liczby zmiennoprzecinkowe) |
-| `v.fma(b, c)` | `v * b + c`, jedną instrukcją tam, gdzie procesor ją ma |
+| `v.fma(b, c)` | `v * b + c` z jednym zaokrągleniem, zawsze |
+| `v.muladd(b, c)` | `v * b + c` najszybciej, jak się da: jedną instrukcją, gdzie procesor to potrafi |
 | `v.store(lista, i)` | zapisuje elementy do `lista[i]` … (albo przez `ptr`) |
 
 `<` i inne porównania dałyby osobną odpowiedź dla każdego elementu, więc ich nie ma; użyj `min`, `max` albo `v[i] < w[i]`.
@@ -1389,7 +1427,7 @@ fn iloczyn([]f32 a, []f32 b) -> f32 {
     suma := f32x8(0.0)
     i := 0
     while i + 8 <= a.len {
-        suma = f32x8(a, i).fma(f32x8(b, i), suma)
+        suma = f32x8(a, i).muladd(f32x8(b, i), suma)
         i += 8
     }
     wynik := suma.sum()

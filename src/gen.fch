@@ -5572,6 +5572,12 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     if ei >= 0 {
         return enumFrom(g, c, ei)
     }
+    if ["fma", "muladd"].contains(n) {
+        return fmaCall(g, c)        // Finch's, also for f32 and vectors (C's fma is the same for one double)
+    }
+    if ["f32_bits", "f32_from_bits", "f64_bits", "f64_from_bits", "f16_to_f32", "f32_to_f16", "bf16_to_f32", "f32_to_bf16"].contains(n) && !g.ci.fns.has(n) {
+        return bitsCall(g, c)
+    }
     if g.ci.fns.has(n) && !["min", "max", "abs", "clamp"].contains(n) {
         return callC(g, c, g.ci.fns[n])        // (C's abs only takes an int; Finch's takes any number)
     }
@@ -6647,8 +6653,14 @@ fn laneBytes(ast.Type vt) -> str {
     return str(bitsOf(vt.elem[0]) / 8)
 }
 
-// v8f32, v32i8: how LLVM's vector intrinsics are named for this type
+// v8f32, v32i8 (or f32, i64 for a plain number): how LLVM's intrinsics are named for this type
 fn vecSuffix(ast.Type vt) -> str {
+    if vt.kind != "vec" {
+        if isFloat(vt) {
+            return "f" + str(bitsOf(vt))
+        }
+        return "i" + str(bitsOf(vt))
+    }
     if isFloat(vt.elem[0]) {
         return "v" + str(vt.count) + "f" + str(bitsOf(vt.elem[0]))
     }
@@ -6984,17 +6996,15 @@ fn vecMethod(ptr[Gen] g, ast.Node m, Val v) -> Val {
         need(g, m, 0)
         return vecAbs(g, v)
     }
-    if n == "sqrt" || n == "floor" || n == "ceil" || n == "round" || n == "fma" {
+    if n == "sqrt" || n == "floor" || n == "ceil" || n == "round" || n == "fma" || n == "muladd" {
         if !isFloat(lane) {
             fail(g, m, n + "() is for f32 and f64 lanes, but this is " + ast.show(vt))
         }
-        if n == "fma" {
+        if n == "fma" || n == "muladd" {
             need(g, m, 2)
-            b := asVec(g, expr(g, m.kids[1]), vt, "fma", m.kids[1])
-            c := asVec(g, expr(g, m.kids[2]), vt, "fma", m.kids[2])
-            // fmuladd: one fused instruction where the processor has one (FMA, NEON), a multiply and an add where
-            // it doesn't (llvm.fma would call a slow library function there, to round only once)
-            return Val(v: vecIntrinsic(g, lt, "fmuladd", vt, [lt, lt, lt], [v.v, b.v, c.v], ""), ty: vt)
+            b := asVec(g, expr(g, m.kids[1]), vt, n, m.kids[1])
+            c := asVec(g, expr(g, m.kids[2]), vt, n, m.kids[2])
+            return Val(v: fusedOp(g, n, vt, v.v, b.v, c.v), ty: vt)
         }
         need(g, m, 0)
         return Val(v: vecIntrinsic(g, lt, n, vt, [lt], [v.v], ""), ty: vt)
@@ -7028,6 +7038,178 @@ fn vecMethod(ptr[Gen] g, ast.Node m, Val v) -> Val {
         emit(g, "store " + lt + " " + v.v + ", ptr " + ep + ", align " + laneBytes(vt))
         return Val(ty: T("void"))
     }
-    fail(g, m, "a " + ast.show(vt) + " has no method '" + n + "' (it has: sum, min, max, dot, abs, sqrt, floor, ceil, round, fma, store)")
+    fail(g, m, "a " + ast.show(vt) + " has no method '" + n + "' (it has: sum, min, max, dot, abs, sqrt, floor, ceil, round, fma, muladd, store)")
     return v
+}
+
+// ---------- fused multiply-add, and numbers as bits ----------
+//
+// Finch never fuses on its own: a * b + c is a multiply and an add, two roundings, on every processor and with every
+// --cpu (the IR has no fast-math flags, and clang compiles it with -ffp-contract=on, which fuses only what asks to be).
+// Fusing is asked for by name:
+//   fma(a, b, c)      one rounding, always (one instruction with FMA hardware, a library call without it)
+//   muladd(a, b, c)   whichever is faster here: fused where the processor can, a multiply and an add where it can't
+
+// the llvm.fma / llvm.fmuladd call for a number or a vector type
+fn fusedOp(ptr[Gen] g, str name, ast.Type t, str a, str b, str c) -> str {
+    lt := llty(g, t)
+    which := "fma"
+    if name == "muladd" {
+        which = "fmuladd"
+    }
+    return vecIntrinsic(g, lt, which, t, [lt, lt, lt], [a, b, c], "")
+}
+
+fn fmaCall(ptr[Gen] g, ast.Node c) -> Val {
+    n := c.name
+    if g.index {
+        noteRef(g, c, c.col, n.len, docs.hover(docs.find(docs.builtins(), n)), "", 0, 0)
+    }
+    checkArgs(g, c, 0, 3, n)
+    []Val vals
+    for a in c.kids {
+        v := expr(g, a)
+        if !isNumber(v.ty) && v.ty.kind != "vec" {
+            fail(g, a, n + "(...) is for numbers, but this is " + ast.show(v.ty))
+        }
+        vals.push(v)
+    }
+    // the type all three take: a vector if one is, else the float type they fit
+    t := T("void")
+    for v in vals {
+        if v.ty.kind == "vec" {
+            t = v.ty
+        }
+    }
+    if t.kind == "vec" {
+        if !isFloat(t.elem[0]) {
+            fail(g, c, n + "(...) is for f32 and f64 lanes, but this is " + ast.show(t))
+        }
+        []str vs
+        for i in 0..3 {
+            vs.push(asVec(g, vals[i], t, n, c.kids[i]).v)
+        }
+        return Val(v: fusedOp(g, n, t, vs[0], vs[1], vs[2]), ty: t)
+    }
+    // f32 when an f32 takes part and nothing wider does (numbers written in the code adapt), else float
+    narrow := false
+    wide := false
+    for v in vals {
+        if v.ty.kind == "f32" {
+            narrow = true
+        } else if !v.lit {
+            wide = true
+        }
+    }
+    t = T("float")
+    if narrow && !wide {
+        t = T("f32")
+    }
+    []str vs
+    for i in 0..3 {
+        vs.push(coerce(g, vals[i], t, c.kids[i], "each number of " + n + "(...)").v)
+    }
+    return Val(v: fusedOp(g, n, t, vs[0], vs[1], vs[2]), ty: t)
+}
+
+// the same shape as t (a number, or a vector of as many lanes) with lanes of another kind
+fn shaped(ast.Type t, str lane) -> ast.Type {
+    if t.kind != "vec" {
+        return T(lane)
+    }
+    out := ast.Type(kind: "vec", count: t.count)
+    out.elem.push(T(lane))
+    return out
+}
+
+// a constant in every lane of t (or just the number)
+fn konst(ptr[Gen] g, ast.Type t, str n) -> str {
+    if t.kind != "vec" {
+        return n
+    }
+    return splat(g, n, t)
+}
+
+// f32_bits(x) -> u32 and back, f64 the same; f16 and bf16 (as the u16 that holds them) to f32 and back.
+// Each works on a number or on a vector, lane by lane: f16_to_f32(u16x8) is an f32x8.
+fn bitsCall(ptr[Gen] g, ast.Node c) -> Val {
+    n := c.name
+    if g.index {
+        noteRef(g, c, c.col, n.len, docs.hover(docs.find(docs.builtins(), n)), "", 0, 0)
+    }
+    checkArgs(g, c, 0, 1, n)
+    v := expr(g, c.kids[0])
+    from := ""          // the lane type it takes
+    to := ""
+    if n == "f32_bits" || n == "f32_to_f16" || n == "f32_to_bf16" {
+        from = "f32"
+        to = "u32"
+        if n != "f32_bits" {
+            to = "u16"
+        }
+    } else if n == "f64_bits" {
+        from = "float"
+        to = "u64"
+    } else if n == "f32_from_bits" {
+        from = "u32"
+        to = "f32"
+    } else if n == "f64_from_bits" {
+        from = "u64"
+        to = "float"
+    } else {
+        from = "u16"
+        to = "f32"
+    }
+    lane := v.ty
+    if v.ty.kind == "vec" {
+        lane = v.ty.elem[0]
+    }
+    // the bits may come as a signed number of the same size (i32 for u32), and a number written in the code fits
+    if isInt(T(from)) && isInt(lane) && bitsOf(lane) == bitsOf(T(from)) {
+        v = Val(v: v.v, ty: shaped(v.ty, from))
+    } else if v.ty.kind != "vec" && v.lit {
+        v = coerce(g, v, T(from), c.kids[0], "the value of " + n + "(...)")
+    } else if lane.kind != from {
+        fail(g, c.kids[0], n + "(...) takes " + ast.show(T(from)) + " (or a vector of them), but this is " + ast.show(v.ty))
+    }
+    src := shaped(v.ty, from)
+    out := shaped(v.ty, to)
+    il := llty(g, src)
+    ol := llty(g, out)
+    if n == "f32_bits" || n == "f64_bits" || n == "f32_from_bits" || n == "f64_from_bits" {
+        return Val(v: op(g, "bitcast " + il + " " + v.v + " to " + ol), ty: out)
+    }
+    if n == "bf16_to_f32" {
+        // bf16 is the top half of an f32
+        wide := shaped(v.ty, "u32")
+        wl := llty(g, wide)
+        z := op(g, "zext " + il + " " + v.v + " to " + wl)
+        sh := op(g, "shl " + wl + " " + z + ", " + konst(g, wide, "16"))
+        return Val(v: op(g, "bitcast " + wl + " " + sh + " to " + ol), ty: out)
+    }
+    if n == "f32_to_bf16" {
+        // the top half, rounded to the nearest (ties to even); a NaN stays a NaN
+        wide := shaped(v.ty, "u32")
+        wl := llty(g, wide)
+        u := op(g, "bitcast " + il + " " + v.v + " to " + wl)
+        hi := op(g, "lshr " + wl + " " + u + ", " + konst(g, wide, "16"))
+        odd := op(g, "and " + wl + " " + hi + ", " + konst(g, wide, "1"))
+        bias := op(g, "add " + wl + " " + odd + ", " + konst(g, wide, "32767"))
+        rounded := op(g, "lshr " + wl + " " + op(g, "add " + wl + " " + u + ", " + bias) + ", " + konst(g, wide, "16"))
+        quiet := op(g, "or " + wl + " " + hi + ", " + konst(g, wide, "64"))
+        isNan := op(g, "fcmp uno " + il + " " + v.v + ", " + v.v)
+        pickd := op(g, "select " + llty(g, shaped(v.ty, "bool")) + " " + isNan + ", " + wl + " " + quiet + ", " + wl + " " + rounded)
+        return Val(v: op(g, "trunc " + wl + " " + pickd + " to " + ol), ty: out)
+    }
+    // f16: LLVM's half type (one instruction with F16C or on ARM64, a small library function elsewhere)
+    hl := "half"
+    if v.ty.kind == "vec" {
+        hl = "<" + str(v.ty.count) + " x half>"
+    }
+    if n == "f16_to_f32" {
+        h := op(g, "bitcast " + il + " " + v.v + " to " + hl)
+        return Val(v: op(g, "fpext " + hl + " " + h + " to " + ol), ty: out)
+    }
+    h := op(g, "fptrunc " + il + " " + v.v + " to " + hl)
+    return Val(v: op(g, "bitcast " + hl + " " + h + " to " + ol), ty: out)
 }
