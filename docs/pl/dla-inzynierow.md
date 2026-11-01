@@ -5,7 +5,7 @@ drzewo AST i LLVM IR *w postaci tekstu*, który `clang` kompiluje i linkuje z ma
 czytane przez libclang z poziomu samego Fincha i jak ręcznie odtworzono konwencje wywołań C; reguły typów i własności
 wartości; jak kompilator buduje sam siebie z pliku startowego; i jak działa serwer języka.
 
-Zakładam, że umiesz czytać kod w Finchu (zob. [przewodnik dla techników](dla-technikow.md)) i że widziałeś już LLVM IR.
+Zakładam, że umiesz czytać kod w Finchu (zob. [przewodnik dla techników](dla-technikow.md)) i że LLVM IR nie jest ci obcy.
 
 > 🇬🇧 English version: [for-engineers.md](../en/for-engineers.md)
 

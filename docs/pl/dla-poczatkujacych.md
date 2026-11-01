@@ -1,8 +1,8 @@
 # Finch dla początkujących
 
-**Ten przewodnik jest dla ciebie, jeśli jeszcze nigdy nie pisałeś programu.**
-Nie potrzebujesz żadnego doświadczenia ani matematyki ponad to, czego uczy się w podstawówce.
-Czytaj powoli, po jednym rozdziale, i przepisuj każdy przykład samodzielnie. Tak zostaje w głowie najlepiej.
+**Programowanie to dla ciebie coś zupełnie nowego? Ten przewodnik jest dla ciebie.**
+Nie musisz nic umieć: wystarczy matematyka ze szkoły podstawowej.
+Czytaj spokojnie, rozdział po rozdziale, i każdy przykład przepisuj sam: tak najlepiej zostaje w głowie.
 
 > 🇬🇧 English version: [for-beginners.md](../en/for-beginners.md)
 
@@ -13,7 +13,7 @@ Czytaj powoli, po jednym rozdziale, i przepisuj każdy przykład samodzielnie. T
 1. [Co to jest program?](#1-co-to-jest-program)
 2. [Przygotowanie Fincha](#2-przygotowanie-fincha)
 3. [Twój pierwszy program](#3-twój-pierwszy-program)
-4. [Wypisywanie na ekran](#4-wypisywanie-na-ekran)
+4. [Wypisywanie na ekranie](#4-wypisywanie-na-ekranie)
 5. [Pudełka z nazwami: zmienne](#5-pudełka-z-nazwami-zmienne)
 6. [Rodzaje wartości](#6-rodzaje-wartości)
 7. [Liczenie](#7-liczenie)
@@ -28,36 +28,35 @@ Czytaj powoli, po jednym rozdziale, i przepisuj każdy przykład samodzielnie. T
 16. [Kiedy coś pójdzie nie tak](#16-kiedy-coś-pójdzie-nie-tak)
 17. [Małe projekty do zrobienia](#17-małe-projekty-do-zrobienia)
 18. [Ściąga](#18-ściąga)
-19. [Słowniczek](#19-słowniczek)
+19. [Słowa, które będziesz słyszeć](#19-słowa-które-będziesz-słyszeć)
 
 ---
 
 ## 1. Co to jest program?
 
-Komputer jest bardzo szybki, ale nie myśli. Robi dokładnie to, co mu się każe,
-krok po kroku.
+Komputer jest bardzo szybki, ale nie myśli. Robi dokładnie to, co mu każesz, krok po kroku.
 
-**Program** to spisana lista takich kroków. Trochę jak przepis kuchenny:
+**Program** to spisana lista takich kroków. Trochę jak przepis:
 
 > 1. Weź dwa jajka.
 > 2. Wbij je do miski.
 > 3. Wymieszaj.
 
-**Język programowania** to sposób zapisania takiego przepisu, który komputer rozumie.
-**Finch** (po polsku: zięba) jest jednym z takich języków. Zrobiono go tak, żeby był
-mały i prosty, więc nauczysz się go szybko.
+**Język programowania** to sposób zapisania takiego przepisu tak, żeby komputer go zrozumiał.
+**Finch** to jeden z takich języków. Powstał po to, żeby był mały i prosty, więc szybko się go nauczysz.
 
-Komputer czyta program od góry do dołu, linijka po linijce.
+Komputer czyta program od góry do dołu, linia po linii.
 
 ---
 
 ## 2. Przygotowanie Fincha
 
-Finch działa na komputerach z **Linuksem**. Jeśli nauczyciel, rodzic albo znajomy już go
-dla ciebie zainstalował, przejdź od razu do następnego rozdziału.
+Finch działa na komputerach z **Linuksem**, **macOS** i **Windowsem**. Jeśli nauczyciel, rodzic albo znajomy
+już go dla ciebie przygotował, przejdź do następnego rozdziału. (Na Macu i na Windowsie poproś kogoś o skorzystanie
+z [przewodnika dla techników](dla-technikow.md#2-instalacja): są tam gotowe wersje Fincha na oba systemy.)
 
-W przeciwnym razie otwórz program **Terminal** (okienko, w którym wpisuje się polecenia)
-i wpisz te linijki po kolei, naciskając **Enter** po każdej:
+W przeciwnym razie otwórz program **Terminal** (okno, w którym wpisuje się polecenia) i wpisz po kolei te linie,
+naciskając po każdej **Enter**:
 
 ```sh
 git clone https://github.com/Nexoniarz/Finch.git
@@ -66,24 +65,24 @@ nix-shell
 bootstrap/build.sh
 ```
 
-Jeśli ostatnia linijka skończy się bez słowa `error`, Finch jest gotowy.
-(Jeśli komputer nie zna polecenia `nix-shell`, poproś kogoś o skorzystanie z
-[przewodnika dla techników](dla-technikow.md#2-instalacja), gdzie opisano inny sposób.)
+Jeśli ostatnie polecenie skończy się bez słowa `error`, Finch jest gotowy.
+(Jeśli na twoim komputerze nie ma `nix-shell`, poproś kogoś o skorzystanie z
+[przewodnika dla techników](dla-technikow.md#2-instalacja). Jest tam opisany inny sposób.)
 
-Żeby sprawdzić, czy działa, wpisz:
+Żeby sprawdzić, czy wszystko działa, wpisz:
 
 ```sh
 ./build/finch version
 ```
 
-Powinieneś zobaczyć coś w stylu `finch 2.5.0`.
+Powinien pojawić się napis w rodzaju `Finch 2.6.0`.
 
 ---
 
 ## 3. Twój pierwszy program
 
-1. Otwórz dowolny edytor tekstu (na przykład *Edytor tekstu*, *Kate*, *gedit* albo *VS Code*).
-2. Wpisz dokładnie to:
+1. Otwórz dowolny edytor tekstu (np. *Edytor tekstu*, *Kate*, *gedit* albo *VS Code*).
+2. Przepisz dokładnie to:
 
 ```c
 fn main() {
@@ -91,11 +90,11 @@ fn main() {
 }
 ```
 
-3. Zapisz plik w folderze `Finch` pod nazwą **`czesc.fch`**. Końcówka `.fch` mówi, że to program w Finchu.
+3. Zapisz plik w katalogu `Finch` pod nazwą **`hello.fch`**. Końcówka `.fch` mówi, że to program w Finchu.
 4. W Terminalu wpisz:
 
 ```sh
-./build/finch run czesc.fch
+./build/finch run hello.fch
 ```
 
 Zobaczysz:
@@ -104,7 +103,7 @@ Zobaczysz:
 Cześć!
 ```
 
-🎉 **Właśnie napisałeś i uruchomiłeś program.**
+🎉 **Właśnie udało ci się napisać i uruchomić program.**
 
 ### Co właściwie napisaliśmy?
 
@@ -114,26 +113,26 @@ fn main() {            ← „tu zaczyna się główna część mojego programu�
 }                      ← „tu główna część się kończy”
 ```
 
-- `fn main()` to miejsce, od którego **zaczyna się** każdy program w Finchu. Każdy program ma dokładnie jedno `main`.
+- `fn main()` to miejsce, w którym **zaczyna się** każdy program w Finchu. Każdy program ma dokładnie jedno `main`.
 - Nawiasy klamrowe `{` i `}` obejmują wszystko, co należy do `main`, jak dwie okładki książki.
 - `print(...)` pokazuje coś na ekranie.
-- Tekst zawsze piszemy w cudzysłowie: `"Cześć!"`.
+- Tekst zawsze stoi w cudzysłowie: `"Cześć!"`.
 
-Spacje przed `print` nie są obowiązkowe, ale dzięki nim od razu widać, co jest w środku
-klamer. Zawsze je dodawaj, to dobry nawyk.
+Spacje przed `print` nie są obowiązkowe, ale dzięki nim od razu widać, co jest w środku nawiasów.
+Zawsze je dodawaj. To dobry nawyk.
 
 ---
 
-## 4. Wypisywanie na ekran
+## 4. Wypisywanie na ekranie
 
-`print` umie pokazać tekst i liczby. Między kolejne rzeczy wstaw przecinek, a Finch sam doda spację:
+`print` potrafi pokazać tekst i liczby. Oddziel je przecinkami, a Finch sam wstawi między nimi spacje:
 
 ```c
 fn main() {
     print("Mam", 10, "lat")
     print("2 + 2 =", 2 + 2)
     print()
-    print("Linijka wyżej jest pusta")
+    print("Linia wyżej jest pusta")
 }
 ```
 
@@ -143,10 +142,10 @@ Pokaże:
 Mam 10 lat
 2 + 2 = 4
 
-Linijka wyżej jest pusta
+Linia wyżej jest pusta
 ```
 
-Każdy `print` zaczyna nową linijkę. `print()` bez niczego w środku robi pustą linijkę.
+Każde `print` zaczyna nową linię. `print()` bez niczego w środku robi pustą linię.
 
 ### Notatki dla siebie: komentarze
 
@@ -163,8 +162,8 @@ fn main() {
 
 ## 5. Pudełka z nazwami: zmienne
 
-Wyobraź sobie pudełko z naklejoną etykietą. Możesz coś do niego włożyć, a potem sprawdzić,
-co jest w środku, czytając etykietę. W programowaniu takie pudełko nazywa się **zmienną**.
+Wyobraź sobie pudełko z naklejoną etykietą. Możesz coś do niego włożyć, a później sprawdzić, co jest w środku,
+czytając etykietę. W programowaniu takie pudełko nazywa się **zmienną**.
 
 ```c
 fn main() {
@@ -173,9 +172,9 @@ fn main() {
 }
 ```
 
-`wiek := 10` znaczy: *„zrób nowe pudełko, nazwij je `wiek` i włóż do niego 10”*.
+`wiek := 10` znaczy: *„zrób nowe pudełko, nazwij je `wiek` i włóż do niego 10”.*
 
-Później możesz zmienić zawartość pudełka, używając samego `=`:
+Później możesz zmienić zawartość pudełka, pisząc samo `=`:
 
 ```c
 fn main() {
@@ -196,42 +195,39 @@ Punkty: 5
 Punkty: 6
 ```
 
-`punkty = punkty + 1` czytamy tak: *„weź to, co jest w `punkty`, dodaj 1 i włóż wynik z powrotem do `punkty`”*.
-To samo można zapisać krócej: `punkty += 1`.
+`punkty = punkty + 1` czyta się tak: *„weź to, co jest w `punkty`, dodaj 1 i włóż wynik z powrotem do `punkty`”.*
+To samo można napisać krócej: `punkty += 1`.
 
 **Zapamiętaj:**
 
-- `:=` robi **nowe** pudełko. Używasz tego tylko raz dla danej nazwy.
+- `:=` robi **nowe** pudełko. Dla każdej nazwy używasz tego tylko raz.
 - `=` wkłada nową wartość do pudełka, **które już istnieje**.
 
 ### Nazywanie pudełek
 
-Nazwy mogą zawierać angielskie litery `a`–`z` i `A`–`Z`, cyfry i znak `_`, ale nie mogą zaczynać się od cyfry:
-`wiek`, `suma_punktow`, `gracz2` są w porządku. `2gracz` już nie.
-
-⚠️ **Bez polskich liter w nazwach!** `ą`, `ę`, `ł`, `ż` i inne mogą być tylko w tekście w cudzysłowie.
-Pisz `zolw`, a nie `żółw`. Natomiast `print("Żółw")` działa bez problemu.
-
+W nazwach można używać liter od `a` do `z` i od `A` do `Z`, cyfr i znaku `_`, ale nazwa nie może zaczynać się od cyfry:
+`wiek`, `suma_punktow`, `gracz2` są w porządku, a `2gracz` nie.
+Polskich liter (`ą`, `ę`, `ż`…) nie wolno używać w nazwach, tylko w tekstach w cudzysłowie: `print("Łódź")` jest w porządku.
 Wybieraj nazwy, które mówią, co jest w środku: `cena` jest lepsza niż `c`.
 
 ---
 
 ## 6. Rodzaje wartości
 
-Finch pilnuje, *jakiego rodzaju* rzecz jest w każdym pudełku. Ten rodzaj nazywa się **typem**.
+Finch pilnuje, jaki *rodzaj* rzeczy leży w każdym pudełku. Taki rodzaj to **typ**.
 Najczęściej będziesz używać tych:
 
-| Typ     | Co przechowuje            | Przykłady                |
-|---------|---------------------------|--------------------------|
-| `int`   | liczby całkowite          | `0`, `42`, `-7`          |
-| `float` | liczby z przecinkiem      | `3.14`, `0.5`, `-2.0`    |
-| `str`   | tekst                     | `"Cześć"`, `"Ola"`       |
-| `bool`  | tak albo nie              | `true` (prawda), `false` (fałsz) |
-| `char`  | jeden znak                | `'A'`, `'z'`, `'?'`      |
+| Typ     | Co przechowuje              | Przykłady                |
+|---------|-----------------------------|--------------------------|
+| `int`   | liczby całkowite            | `0`, `42`, `-7`          |
+| `float` | liczby z przecinkiem        | `3.14`, `0.5`, `-2.0`    |
+| `str`   | tekst                       | `"Cześć"`, `"Ola"`       |
+| `bool`  | tak albo nie                | `true`, `false`          |
+| `char`  | jedną literę albo znak      | `'A'`, `'z'`, `'?'`      |
 
-⚠️ W liczbach zamiast przecinka piszemy **kropkę**: `3.14`, a nie `3,14`. Tak jest w prawie wszystkich językach programowania.
+Uwaga: w programach część ułamkową oddziela się **kropką**, nie przecinkiem: `3.14`, a nie `3,14`.
 
-Kiedy używasz `:=`, Finch sam rozpoznaje typ:
+Przy `:=` Finch sam rozpoznaje typ:
 
 ```c
 imie := "Ola"       // str
@@ -240,7 +236,7 @@ wzrost := 1.42      // float
 lubi_koty := true   // bool
 ```
 
-Typ możesz też napisać sam, przed nazwą:
+Typ można też napisać samemu, przed nazwą:
 
 ```c
 int wiek = 10
@@ -249,24 +245,23 @@ str imie = "Ola"
 
 Oba sposoby robią to samo. Wybierz ten, który ci bardziej pasuje.
 
-**Pudełko nie zmienia typu.** Jeśli w `wiek` są liczby całkowite, nie włożysz tam potem tekstu.
-Finch zatrzyma się i powie o tym, co pomaga wcześnie wyłapywać pomyłki.
+**Pudełko trzyma się swojego typu.** Jeśli w `wiek` są liczby całkowite, nie włożysz tam potem tekstu.
+Finch się zatrzyma i ci o tym powie, a to pomaga wcześnie wyłapywać pomyłki.
 
 ---
 
 ## 7. Liczenie
 
-| Znak | Co robi                     | Przykład | Wynik |
-|------|-----------------------------|----------|-------|
-| `+`  | dodawanie                   | `7 + 2`  | `9`   |
-| `-`  | odejmowanie                 | `7 - 2`  | `5`   |
-| `*`  | mnożenie                    | `7 * 2`  | `14`  |
-| `/`  | dzielenie                   | `7 / 2`  | `3`   |
-| `%`  | reszta z dzielenia          | `7 % 2`  | `1`   |
+| Znak | Znaczenie                      | Przykład | Wynik  |
+|------|--------------------------------|----------|--------|
+| `+`  | dodawanie                      | `7 + 2`  | `9`    |
+| `-`  | odejmowanie                    | `7 - 2`  | `5`    |
+| `*`  | mnożenie                       | `7 * 2`  | `14`   |
+| `/`  | dzielenie                      | `7 / 2`  | `3`    |
+| `%`  | reszta z dzielenia             | `7 % 2`  | `1`    |
 
-**Uwaga na dzielenie liczb całkowitych:** `7 / 2` daje `3`, a nie `3.5`. Obie liczby są
-całkowite, więc wynik też jest całkowity (część po kropce jest odrzucana).
-Jeśli chcesz dostać `3.5`, użyj liczby z kropką: `7.0 / 2`.
+**Uważaj przy dzieleniu liczb całkowitych:** `7 / 2` daje `3`, a nie `3.5`, bo obie liczby są całkowite, więc wynik
+też jest całkowity (część po kropce znika). Jeśli chcesz `3.5`, użyj liczby z kropką: `7.0 / 2`.
 
 Mnożenie i dzielenie wykonują się przed dodawaniem i odejmowaniem, tak jak w szkole.
 Nawiasy zmieniają kolejność:
@@ -276,28 +271,28 @@ print(2 + 3 * 4)     // 14
 print((2 + 3) * 4)   // 20
 ```
 
-`%` przydaje się do sprawdzania, czy liczba jest parzysta. Liczba parzysta dzielona przez 2
-nie daje reszty, więc `n % 2` wynosi `0`.
+`%` przydaje się do sprawdzania, czy liczba jest parzysta: liczba parzysta dzielona przez 2 nie daje reszty,
+więc `n % 2` wynosi `0`.
 
-**Nie wolno dzielić przez zero.** Jeśli program spróbuje, zatrzyma się i powie, w której linijce to się stało.
+**Nie wolno dzielić przez zero.** Jeśli program spróbuje, zatrzyma się i powie, w której linii to się stało.
 
 ---
 
 ## 8. Podejmowanie decyzji: if
 
-Program może wybierać, co zrobić. `if` (czyt. „if”, po polsku „jeżeli”) znaczy *„zrób to tylko wtedy, gdy coś jest prawdą”*.
+Program może wybierać, co zrobić. `if` znaczy *„zrób to tylko wtedy, gdy coś jest prawdą”*.
 
 ```c
 fn main() {
     temperatura := 25
 
     if temperatura > 20 {
-        print("Jest ciepło, załóż koszulkę")
+        print("Jest ciepło, włóż koszulkę")
     }
 }
 ```
 
-Dodaj `else` („w przeciwnym razie”):
+Dopisz `else`, żeby powiedzieć *„a jeśli nie, zrób to”*:
 
 ```c
 if temperatura > 20 {
@@ -307,12 +302,11 @@ if temperatura > 20 {
 }
 ```
 
-A `else if` dodaje kolejne możliwości. Finch sprawdza je od góry i wykonuje tylko
-**pierwszą** prawdziwą:
+A `else if` daje więcej możliwości. Finch sprawdza je od góry do dołu i wykonuje tylko **pierwszą**, która jest prawdą:
 
 ```c
 if temperatura > 25 {
-    print("Gorąco!")
+    print("Upał!")
 } else if temperatura > 15 {
     print("Przyjemnie")
 } else {
@@ -328,18 +322,18 @@ if temperatura > 25 {
 | `!=` | nie jest równe               |
 | `<`  | jest mniejsze niż            |
 | `>`  | jest większe niż             |
-| `<=` | jest mniejsze lub równe      |
-| `>=` | jest większe lub równe       |
+| `<=` | jest mniejsze albo równe     |
+| `>=` | jest większe albo równe      |
 
 ⚠️ **Jedno `=` wkłada wartość do pudełka. Dwa `==` pytają „czy to jest równe?”.**
 
-Tekst też można porównywać: `if imie == "Ola" { ... }`.
+Porównywać można też teksty: `if imie == "Ola" { ... }`.
 
 ### Łączenie pytań
 
 - `&&` znaczy **i**: oba warunki muszą być prawdziwe. `if wiek > 6 && wiek < 12 { ... }`
-- `||` znaczy **lub**: wystarczy, że jeden jest prawdziwy. `if dzien == "sob" || dzien == "nd" { ... }`
-- `!` znaczy **nie**: odwraca prawdę i fałsz. `if !pada { ... }`
+- `||` znaczy **lub**: przynajmniej jeden musi być prawdziwy. `if dzien == "sob" || dzien == "niedz" { ... }`
+- `!` znaczy **nie**: zamienia prawdę w fałsz i odwrotnie. `if !pada { ... }`
 
 ---
 
@@ -365,7 +359,7 @@ Liczba 4
 Liczba 5
 ```
 
-`for i in 1..6` znaczy: *„licz za pomocą `i` od 1 do 6, ale **bez** 6”*.
+`for i in 1..6` znaczy: *„licz w `i` od 1 do 6, ale **bez** 6”*.
 Czyli `0..10` daje dziesięć liczb: 0, 1, 2 … 9.
 
 ### Powtarzanie, dopóki coś jest prawdą: `while`
@@ -388,8 +382,8 @@ fn main() {
 Start!
 ```
 
-⚠️ Upewnij się, że pętla może się skończyć. Gdyby `licznik` nigdy nie malał, pętla kręciłaby się
-w nieskończoność. Jeśli tak się stanie, naciśnij w Terminalu **Ctrl + C**, żeby ją zatrzymać.
+⚠️ Upewnij się, że pętla może się skończyć. Gdyby `licznik` nigdy nie malał, pętla kręciłaby się bez końca.
+Jeśli tak się stanie, naciśnij w Terminalu **Ctrl + C**, żeby ją zatrzymać.
 
 ### Wcześniejsze wyjście i pomijanie
 
@@ -399,9 +393,9 @@ w nieskończoność. Jeśli tak się stanie, naciśnij w Terminalu **Ctrl + C**,
 ```c
 for i in 1..100 {
     if i == 5 {
-        break         // stop, gdy dojdziemy do 5
+        break         // zatrzymaj się, gdy dojdziemy do 5
     }
-    print(i)          // pokaże 1 2 3 4
+    print(i)          // wypisze 1 2 3 4
 }
 ```
 
@@ -409,7 +403,7 @@ for i in 1..100 {
 
 ## 10. Własne polecenia: funkcje
 
-Kiedy robisz to samo w wielu miejscach, nadaj temu nazwę. Taki nazwany kawałek kodu to **funkcja**.
+Kiedy robisz to samo w wielu miejscach, nadaj temu nazwę. Taki nazwany blok to **funkcja**.
 Jedną już znasz: `main`.
 
 ```c
@@ -428,12 +422,12 @@ Cześć, Ola
 Cześć, Tomek
 ```
 
-`str imie` w nawiasie znaczy: *„ta funkcja potrzebuje jednego tekstu, a w środku nazywamy go `imie`”*.
-To, co wpiszesz w nawias przy wywołaniu, zostanie przekazane do środka.
+`str imie` w nawiasach znaczy: *„ta funkcja potrzebuje jednego tekstu i w środku będziemy go nazywać `imie`”.*
+To, co wpiszesz w nawiasach przy jej użyciu, trafia do środka.
 
-### Funkcje, które oddają odpowiedź
+### Funkcje, które dają odpowiedź
 
-Napisz `->` i typ odpowiedzi, a odpowiedź oddaj słowem `return`:
+Napisz `->` i typ odpowiedzi, a odpowiedź oddaj przez `return`:
 
 ```c
 fn dodaj(int a, int b) -> int {
@@ -446,14 +440,14 @@ fn main() {
 }
 ```
 
-Nie ma znaczenia, gdzie w pliku umieścisz swoje funkcje, nad czy pod `main`.
+Nie ma znaczenia, gdzie w pliku umieścisz swoje funkcje, nad `main` czy pod nim.
 
 ---
 
 ## 11. Listy: wiele wartości w jednym pudełku
 
-Czasem jedno pudełko nie wystarczy. Na liście zakupów jest wiele rzeczy.
-**Lista** (programiści mówią też **tablica**) trzyma wiele wartości po kolei:
+Czasem jedno pudełko nie wystarcza. Na liście zakupów jest wiele rzeczy.
+**Lista** (programiści mówią też **tablica**) przechowuje wiele wartości po kolei:
 
 ```c
 fn main() {
@@ -470,34 +464,34 @@ Mam 3 owoce
 Pierwszy to jabłko
 ```
 
-- Nawiasy kwadratowe `[ ]` tworzą listę. Wartości oddzielamy przecinkami.
+- Nawiasy kwadratowe `[ ]` tworzą listę. Wartości oddziela się przecinkami.
 - `.len` mówi, ile rzeczy jest na liście.
-- `owoce[0]` to **pierwsza** rzecz. Liczymy od **0**, więc `owoce[1]` to druga, a `owoce[2]` trzecia.
+- `owoce[0]` to **pierwsza** rzecz. Liczy się od **0**, więc `owoce[1]` to druga, a `owoce[2]` trzecia.
 
 Jeśli zapytasz o miejsce, którego nie ma, np. `owoce[10]`, program się zatrzyma i powie:
-`index 10 is out of range (the length is 3)`, czyli „indeks 10 jest poza zakresem (długość to 3)”.
+`index 10 is out of range (the length is 3)` (indeks 10 jest poza listą, która ma długość 3).
 
 ### Dodawanie i zabieranie
 
 ```c
 fn main() {
     []int wyniki          // pusta lista liczb całkowitych
-    wyniki.push(10)       // dołóż 10 na koniec
+    wyniki.push(10)       // dodaj 10 na końcu
     wyniki.push(25)
     wyniki.push(7)
     print(wyniki)         // [10, 25, 7]
 
-    ostatni := wyniki.pop()  // zabierz ostatni
+    ostatni := wyniki.pop()  // zdejmij ostatni
     print(ostatni, wyniki)   // 7 [10, 25]
 
-    wyniki.sort()            // posortuj
+    wyniki.sort()
     print(wyniki)
 }
 ```
 
 ### Przechodzenie po liście
 
-`for ... in` odwiedza każdą wartość po kolei:
+`for ... in` odwiedza po kolei każdą wartość:
 
 ```c
 fn main() {
@@ -509,8 +503,8 @@ fn main() {
 }
 ```
 
-Jeśli chcesz też wiedzieć, *w którym miejscu* listy jesteś, daj `for` dwie nazwy: pierwsza liczy
-0, 1, 2…, druga to wartość:
+Jeśli chcesz też wiedzieć, *w którym miejscu* listy jesteś, podaj w `for` dwie nazwy: pierwsza liczy 0, 1, 2…,
+a druga to wartość:
 
 ```c
 fn main() {
@@ -526,21 +520,20 @@ fn main() {
 3 wiśnia
 ```
 
-Listy umieją więcej: `contains` (czy zawiera), `find` (znajdź), `insert` (wstaw), `remove` (usuń),
-`sort` (sortuj), `reverse` (odwróć), `join` (połącz). Wszystkie opisuje [przewodnik dla techników](dla-technikow.md#10-tablice-i-mapy).
+Listy potrafią więcej: `contains`, `find`, `insert`, `remove`, `sort`, `reverse`, `join`.
+Wszystkie są opisane w [przewodniku dla techników](dla-technikow.md#10-tablice-i-mapy).
 
 ### Szukanie po nazwie: mapy
 
-Lista znajduje rzeczy po miejscu: `owoce[0]`. Czasem chcesz znaleźć coś po **nazwie**, tak jak
-słowo w słowniku albo numer w książce telefonicznej. Do tego służy **mapa** (`map`): każdy
-**klucz** (nazwa) ma swoją **wartość**:
+Lista znajduje rzeczy po miejscu: `owoce[0]`. Czasem jednak chcesz szukać po **nazwie**, tak jak szuka się słowa
+w słowniku albo numeru w książce telefonicznej. Do tego służy **mapa**: każdy **klucz** (nazwa) ma swoją **wartość**:
 
 ```c
 fn main() {
     telefon := ["Ola": "555-1234", "Jan": "555-9876"]
     print(telefon["Ola"])          // 555-1234
 
-    telefon["Ewa"] = "555-0000"    // nowa osoba
+    telefon["Ewa"] = "555-0000"    // dodaj nowe imię
     print(telefon.len)             // 3
 
     if telefon.has("Tomek") {
@@ -549,26 +542,26 @@ fn main() {
         print("nie ma Tomka")
     }
 
-    for imie, numer in telefon {   // każde imię z jego numerem
+    for imie, numer in telefon {   // każde imię razem z numerem
         print(imie, numer)
     }
 }
 ```
 
-- `["klucz": wartość, ...]` tworzy mapę. Klucze to zwykle tekst, ale mogą być też liczby.
+- `["klucz": wartość, ...]` tworzy mapę. Kluczami są często teksty, ale mogą być też liczby.
 - `telefon["Ola"]` daje wartość dla klucza. Pytanie o klucz, którego nie ma, zatrzymuje program,
-  więc najpierw sprawdź `telefon.has("Tomek")` (czy ma) albo użyj `telefon.get("Tomek", "nie wiem")`.
-- `for imie, numer in telefon` odwiedza każdy klucz z wartością, w kolejności dodawania.
+  więc najpierw sprawdź `telefon.has("Tomek")` albo użyj `telefon.get("Tomek", "nieznany")`.
+- `for imie, numer in telefon` odwiedza każdy klucz z jego wartością, w kolejności, w jakiej je dodano.
 
 Mapy świetnie nadają się do **liczenia**. Nowy klucz zaczyna od 0, więc `+= 1` po prostu działa:
 
 ```c
 fn main() {
-    map[str]int glosy             // pusta mapa: klucze to tekst, wartości to liczby
+    map[str]int glosy            // pusta mapa: klucze to teksty, wartości to liczby całkowite
     for g in ["kot", "pies", "kot", "kot", "rybka"] {
         glosy[g] += 1
     }
-    print(glosy)                  // {"kot": 3, "pies": 1, "rybka": 1}
+    print(glosy)                 // {"kot": 3, "pies": 1, "rybka": 1}
 }
 ```
 
@@ -576,7 +569,7 @@ fn main() {
 
 ## 12. Zabawa tekstem
 
-Teksty sklejasz znakiem `+`:
+Teksty można sklejać przez `+`:
 
 ```c
 fn main() {
@@ -600,16 +593,16 @@ fn main() {
     slowo := "Finch"
     print(slowo.len)            // 5 liter
     print(slowo[0])             // F  (pierwsza litera)
-    print(slowo.upper())        // FINCH (wielkimi literami)
-    print(slowo.lower())        // finch (małymi literami)
-    print(slowo.contains("in")) // true (czy zawiera "in")
+    print(slowo.upper())        // FINCH
+    print(slowo.lower())        // finch
+    print(slowo.contains("in")) // true
     for litera in slowo {
-        print(litera)           // F, i, n, c, h, każda w osobnej linijce
+        print(litera)           // F, i, n, c, h, każda w osobnej linii
     }
 }
 ```
 
-⚠️ `.len` liczy bajty, a polskie litery (ą, ę, ż…) zajmują po 2 bajty. `"żółw".len` to 7, a nie 4.
+(`.len` liczy bajty, a polskie litery zajmują po dwa, więc `"żółw".len` to 7, a nie 4.)
 
 ---
 
@@ -634,15 +627,15 @@ fn main() {
 }
 ```
 
-Jeśli ktoś wpisze coś, co nie jest liczbą, program zatrzyma się z komunikatem
-w stylu `can't turn "abc" into int` („nie da się zamienić "abc" na int”).
+Jeśli ktoś wpisze coś, co nie jest liczbą, program się zatrzyma z komunikatem
+w rodzaju `can't turn "abc" into int` (nie da się zamienić "abc" na liczbę).
 
 ---
 
 ## 14. Własne rodzaje wartości: struktury
 
-Wyobraź sobie kartę w bibliotece: każda karta ma tytuł, autora i rok.
-**Struktura** (`struct`) pozwala zrobić własny rodzaj wartości z nazwanymi częściami:
+Pomyśl o karcie w bibliotece: każda ma tytuł, autora i rok wydania.
+**Struktura** pozwala stworzyć własny rodzaj wartości z nazwanymi częściami:
 
 ```c
 struct Ksiazka {
@@ -664,11 +657,11 @@ Hobbit napisał Tolkien
 Ksiazka(tytul: "Hobbit", autor: "Tolkien", rok: 1938)
 ```
 
-- `struct Ksiazka { ... }` opisuje, co ma każda książka. Pisz to **poza** `main`.
+- `struct Ksiazka { ... }` opisuje, co ma każda książka. Umieść to **poza** `main`.
 - `Ksiazka(tytul: ..., autor: ..., rok: ...)` tworzy jedną książkę.
-- `k.tytul` odczytuje jedną część, a `k.rok = 1938` ją zmienia.
+- `k.tytul` odczytuje jedną część. `k.rok = 1938` ją zmienia.
 
-Częściom możesz nadać wartość początkową. Wtedy nie trzeba ich podawać:
+Częściom można nadać wartość początkową. Wtedy nie trzeba ich wypełniać:
 
 ```c
 struct Gracz {
@@ -682,12 +675,12 @@ fn main() {
 }
 ```
 
-Możesz też trzymać wiele struktur na liście: `[]Ksiazka polka`, a potem `polka.push(k)`.
+Wiele takich wartości można trzymać na liście: `[]Ksiazka polka`, a potem `polka.push(k)`.
 
-### Polecenia twojej struktury: metody
+### Polecenia dla struktury: metody
 
-Struktura może mieć własne polecenia (**metody**). Napisz nazwę struktury, kropkę i nazwę polecenia.
-W środku `self` (ang. „sam”) to struktura, na której użyto polecenia:
+Struktura może mieć własne polecenia. Napisz nazwę struktury, kropkę i nazwę polecenia.
+W środku `self` to struktura, na której polecenie użyto:
 
 ```c
 struct Gracz {
@@ -697,7 +690,7 @@ struct Gracz {
 
 fn Gracz.trafiony() {
     self.zycia -= 1
-    print(self.imie, "ma jeszcze", self.zycia, "życia")
+    print(self.imie, "- pozostałe życia:", self.zycia)
 }
 
 fn Gracz.zyje() -> bool {
@@ -706,8 +699,8 @@ fn Gracz.zyje() -> bool {
 
 fn main() {
     g := Gracz(imie: "Ola")
-    g.trafiony()             // Ola ma jeszcze 2 życia
-    g.trafiony()             // Ola ma jeszcze 1 życia
+    g.trafiony()             // Ola - pozostałe życia: 2
+    g.trafiony()             // Ola - pozostałe życia: 1
     print(g.zyje())          // true
 }
 ```
@@ -731,14 +724,14 @@ fn main() {
 - `read_file(nazwa)` oddaje tekst z pliku.
 - `file_exists(nazwa)` mówi, czy plik istnieje (`true` albo `false`).
 
-Plik pojawi się w folderze, w którym uruchomiłeś program.
+Plik pojawi się w katalogu, w którym uruchomiono program.
 
 ---
 
 ## 16. Kiedy coś pójdzie nie tak
 
-Każdy się myli przy programowaniu, nawet eksperci, codziennie.
-Finch stara się tłumaczyć, co poszło nie tak, prostymi słowami (na razie po angielsku). Przykład:
+Każdy, kto programuje, robi błędy, nawet eksperci, codziennie.
+Finch bardzo się stara wyjaśnić prostymi słowami, co poszło nie tak. Przykład:
 
 ```c
 fn main() {
@@ -748,68 +741,67 @@ fn main() {
 ```
 
 ```
-czesc.fch:3:11: error: there is no variable named 'wiekk'
+hello.fch:3:11: error: there is no variable named 'wiekk'
     3 |     print(wiekk)
       |           ^
 ```
 
 Jak to czytać:
 
-- `czesc.fch` to plik,
-- `3` to numer **linijki**,
-- `11` to który znak w linijce (**kolumna**),
-- potem wyjaśnienie, a pod nim ta linijka ze strzałką `^` wskazującą problem.
+- `hello.fch` to plik,
+- `3` to numer **linii**,
+- `11` mówi, jak daleko w linii (to **kolumna**),
+- dalej jest wyjaśnienie, a pod nim ta linia ze znakiem `^`, który wskazuje problem.
 
-Tutaj po prostu źle napisaliśmy `wiek`. Komunikat znaczy: „nie ma zmiennej o nazwie 'wiekk'”.
+Komunikaty są po angielsku; tutaj znaczy to „nie ma zmiennej o nazwie 'wiekk'”. Po prostu literówka w `wiek`.
 
-### Częste błędy
+### Częste pomyłki
 
 | Finch mówi | Co to znaczy | Jak naprawić |
 |---|---|---|
-| `there is no variable named 'x'` | Nie ma zmiennej `x`: literówka albo zapomniałeś ją zrobić | Sprawdź pisownię. Utwórz ją przez `x := ...` |
-| `a variable named 'x' already exists here` | Użyłeś `:=` dwa razy dla tej samej nazwy | Za drugim razem użyj `=` |
+| `there is no variable named 'x'` | Literówka w nazwie albo takie pudełko nigdy nie powstało | Sprawdź pisownię. Utwórz je przez `x := ...` |
+| `a variable named 'x' already exists here` | Użyto `:=` dwa razy dla tej samej nazwy | Za drugim razem napisz `=` |
 | `'x' must be int, but this is str` | Zły rodzaj wartości dla tego pudełka | Włóż wartość właściwego rodzaju |
-| `put each statement on its own line` | Dwa polecenia w jednej linijce | Wciśnij Enter między nimi |
+| `put each statement on its own line` | Dwa polecenia w jednej linii | Rozdziel je Enterem |
 | `this '{' is never closed` | Brakuje `}` | Dopisz `}` |
-| `a condition must be bool` | `if` potrzebuje pytania tak/nie | Porównaj coś: `if x > 0` |
-| `unexpected character 'ż'` | Polska litera w nazwie | Zmień na zwykłą literę: `zolw` |
-| `runtime error: division by zero` | Program podzielił przez 0 w trakcie działania | Sprawdź liczbę przed dzieleniem |
-| `index 5 is out of range (the length is 3)` | Zapytałeś listę o miejsce, którego nie ma | Pamiętaj, że liczymy od 0; sprawdź `.len` |
-| `can't turn "abc" into int` | `int(...)` dostał tekst, który nie jest liczbą | Sprawdź, co wpisał użytkownik |
-| `can't use '+' on str and int` | Tekst plus liczba | Zamień liczbę na tekst przez `str(...)` |
-| `'f' can fail, so say what happens then` | Użyłeś polecenia, które może się nie udać, i nie napisałeś, co wtedy | Dopisz `or ...` (niżej) |
+| `a condition must be bool` | `if` potrzebuje pytania typu tak/nie | Porównaj coś: `if x > 0` |
+| `runtime error: division by zero` | W trakcie działania programu nastąpiło dzielenie przez 0 | Sprawdź liczbę przed dzieleniem |
+| `index 5 is out of range (the length is 3)` | Pytanie listy o miejsce, którego nie ma | Pamiętaj, że liczy się od 0; sprawdź `.len` |
+| `can't turn "abc" into int` | `int(...)` dostało tekst, który nie jest liczbą | Sprawdź, co wpisał użytkownik |
+| `can't use '+' on str and int` | Tekst plus liczba | Użyj `str(...)` na liczbie |
+| `'f' can fail, so say what happens then` | Użyto polecenia, które może się nie udać, bez powiedzenia, co wtedy zrobić | Dopisz `or ...` (zob. niżej) |
 
 ### Rzeczy, które mogą się nie udać: `or` i `try`
 
-Niektóre rzeczy mogą pójść źle *w trakcie działania programu*: ktoś wpisze `abc` zamiast liczby
-albo pliku nie ma. Zamiast zatrzymywać program, możesz powiedzieć, co wtedy zrobić, słowem **`or`** („albo”):
+Niektóre rzeczy mogą się nie udać *w trakcie działania programu*: ktoś wpisze `abc` tam, gdzie miała być liczba,
+albo nie ma pliku. Zamiast zatrzymywać program, możesz przez **`or`** powiedzieć, co wtedy zrobić:
 
 ```c
 fn main() {
-    wiek := int(input("Ile masz lat? ")) or 0      // to nie liczba? weź 0
+    wiek := int(input("Ile masz lat? ")) or 0     // to nie liczba? weź 0
     print("Za rok będziesz mieć", wiek + 1)
 
-    notatka := read_file("notatka.txt") or "(jeszcze brak notatki)"
+    notatka := read_file("notatka.txt") or "(jeszcze nie ma notatki)"
     print(notatka)
 }
 ```
 
-Po `or` może też być blok. W środku `err` to komunikat, co poszło nie tak:
+Po `or` może też stać blok. W jego środku `err` to komunikat, który mówi, co poszło nie tak:
 
 ```c
 fn main() {
     while true {
-        n := int(input("Podaj liczbę: ")) or {
+        n := int(input("Wybierz liczbę: ")) or {
             print("To nie jest liczba, spróbuj jeszcze raz")
             continue
         }
-        print("Wybrałeś", n)
+        print("Wybrana liczba:", n)
         break
     }
 }
 ```
 
-Twoje własne funkcje też mogą się nie udać. Dopisz `!` po typie wyniku i użyj `return error("...")`:
+Twoje własne funkcje też mogą się nie udać. Postaw `!` po typie wyniku i użyj `return error("...")`:
 
 ```c
 fn bezpieczne_dzielenie(int a, int b) -> int! {
@@ -825,15 +817,15 @@ fn main() {
 }
 ```
 
-Finch nie pozwoli ci zapomnieć: wywołanie `bezpieczne_dzielenie(10, 0)` bez `or` to błąd, który
-przypomina, żeby to obsłużyć. (Można też przekazać problem dalej przez `try`; wyjaśnia to
+Finch nie pozwoli o tym zapomnieć: wywołanie `bezpieczne_dzielenie(10, 0)` bez `or` to błąd, który każe ci to obsłużyć.
+(Problem można też przekazać dalej przez `try`; wyjaśnia to
 [przewodnik dla techników](dla-technikow.md#błędy-jako-wartości).)
 
 ---
 
 ## 17. Małe projekty do zrobienia
 
-Spróbuj najpierw napisać każdy sam. Do rozwiązania zajrzyj dopiero, gdy utkniesz.
+Spróbuj najpierw napisać każdy sam. Do rozwiązania zajrzyj dopiero wtedy, gdy utkniesz.
 
 ### Projekt 1: Tabliczka mnożenia
 
@@ -852,7 +844,7 @@ fn main() {
 
 ### Projekt 2: Parzysta czy nieparzysta
 
-Dla każdej liczby od 1 do 10 napisz, czy jest parzysta, czy nieparzysta.
+Dla każdej liczby od 1 do 10 pokaż, czy jest parzysta, czy nieparzysta.
 
 <details><summary>Rozwiązanie</summary>
 
@@ -871,7 +863,7 @@ fn main() {
 
 ### Projekt 3: Stopnie Celsjusza na Fahrenheita
 
-Pokaż tabelkę od 0 °C do 100 °C co 10 stopni. Wzór: `F = C * 9 / 5 + 32`.
+Pokaż tabelę od 0 °C do 100 °C co 10 stopni. Wzór: `F = C * 9 / 5 + 32`.
 
 <details><summary>Rozwiązanie</summary>
 
@@ -893,8 +885,8 @@ fn main() {
 
 ### Projekt 4: Fizz Buzz
 
-Policz od 1 do 20. Dla liczb podzielnych przez 3 napisz `Fizz`, przez 5 napisz `Buzz`,
-przez obie naraz napisz `FizzBuzz`, a w pozostałych przypadkach samą liczbę.
+Policz od 1 do 20. Dla liczb podzielnych przez 3 powiedz `Fizz`, przez 5 `Buzz`,
+przez obie `FizzBuzz`, a w pozostałych przypadkach samą liczbę.
 
 <details><summary>Rozwiązanie</summary>
 
@@ -917,7 +909,7 @@ fn main() {
 
 ### Projekt 5: Największa z trzech
 
-Napisz funkcję `najwieksza(int a, int b, int c) -> int`, która oddaje największą z trzech liczb.
+Napisz funkcję `najwieksza(int a, int b, int c) -> int`, która zwraca największą liczbę.
 
 <details><summary>Rozwiązanie</summary>
 
@@ -940,7 +932,8 @@ fn main() {
 
 ### Projekt 6: Zgadnij liczbę
 
-Komputer ma tajną liczbę. Gracz zgaduje, aż trafi, a komputer za każdym razem mówi „więcej” albo „mniej”.
+Komputer wybiera tajną liczbę. Gracz zgaduje, aż trafi, a komputer za każdym razem
+mówi „więcej” albo „mniej”.
 
 <details><summary>Rozwiązanie</summary>
 
@@ -956,7 +949,7 @@ fn main() {
         } else if strzal > tajna {
             print("Mniej!")
         } else {
-            print("Tak! Potrzebowałeś", proby, "prób")
+            print("Tak! Liczba prób:", proby)
             return
         }
     }
@@ -968,7 +961,7 @@ fn main() {
 
 ### Projekt 7: Średnia ocen
 
-Zapytaj o 3 oceny, zapisz je na liście, a potem pokaż listę i średnią.
+Zapytaj o 3 oceny, zapisz je na liście i pokaż listę oraz średnią.
 
 <details><summary>Rozwiązanie</summary>
 
@@ -998,9 +991,9 @@ fn main() {
 fn main() {                       // tu zaczyna się program
     print("tekst", 42)            // pokaż coś
 
-    x := 5                        // nowe pudełko (typ zgadnięty)
+    x := 5                        // nowe pudełko (typ rozpoznany sam)
     int y = 10                    // nowe pudełko (typ podany)
-    x = 7                         // zmień zawartość
+    x = 7                         // zmiana zawartości pudełka
     x += 1                        // dodaj 1 do x
 
     if x > 5 {                    // decyzja
@@ -1020,72 +1013,49 @@ fn main() {                       // tu zaczyna się program
     }
 }
 
-fn dodaj(int a, int b) -> int {   // własne polecenie
+fn dodaj(int a, int b) -> int {   // twoje własne polecenie
     return a + b
 }
 
-struct Zwierzak {                 // własny rodzaj wartości
+struct Zwierzak {                 // twój własny rodzaj wartości
     str imie
     int wiek = 1
 }
 
-// listy:  liczby := [1, 2, 3]   liczby.push(4)   liczby[0]   liczby.len   for n in liczby { }   for i, n in liczby { }
-// mapy:   wiek := ["Ola": 9]   wiek["Jan"] = 10   wiek["Ola"]   wiek.has("Tomek")   for imie, lata in wiek { }
-// tekst:  "a" + "b"   str(42)   int("42")   s.len   s.upper()   s.contains("x")
+// listy:   liczby := [1, 2, 3]   liczby.push(4)   liczby[0]   liczby.len   for n in liczby { }   for i, n in liczby { }
+// mapy:    wiek := ["Ola": 9]   wiek["Jan"] = 10   wiek["Ola"]   wiek.has("Tomek")   for imie, w in wiek { }
+// tekst:   "a" + "b"   str(42)   int("42")   s.len   s.upper()   s.contains("x")
 // pytanie: imie := input("Imię? ")
-// pliki:  write_file("p.txt", tekst)   read_file("p.txt")
-// metody: fn Zwierzak.urosnij() { self.wiek += 1 }    z.urosnij()
+// pliki:   write_file("p.txt", tekst)   read_file("p.txt")
+// metody:  fn Zwierzak.urosnij() { self.wiek += 1 }    z.urosnij()
 // porażki: n := int(tekst) or 0      x := read_file("p.txt") or { print(err) ... }
 ```
 
 ---
 
-## 19. Słowniczek
+## 19. Słowa, które będziesz słyszeć
 
 | Słowo | Znaczenie |
 |---|---|
 | **program** | Lista kroków dla komputera |
 | **kod** | Tekst programu |
 | **uruchomić** | Kazać komputerowi wykonać kroki |
-| **kompilować** | Przetłumaczyć kod na coś, co komputer umie uruchomić. `finch run` robi to za ciebie |
-| **zmienna** | Pudełko z nazwą, w którym jest wartość |
+| **skompilować** | Przetłumaczyć kod na coś, co komputer potrafi uruchomić. `finch run` robi to za ciebie |
+| **zmienna** | Pudełko z nazwą, w którym leży wartość |
 | **typ** | Rodzaj wartości: liczba, tekst, tak/nie… |
 | **funkcja** | Nazwana grupa kroków, której można używać wiele razy |
 | **pętla** | Kroki, które się powtarzają |
-| **warunek** | Pytanie tak/nie, np. `x > 5` |
+| **warunek** | Pytanie typu tak/nie, np. `x > 5` |
 | **lista / tablica** | Wiele wartości po kolei, np. `[1, 2, 3]` |
-| **indeks** | Pozycja wartości na liście, liczona od 0 |
-| **struktura** (struct) | Własny rodzaj wartości złożony z nazwanych części |
+| **indeks** | Miejsce wartości na liście, liczone od 0 |
+| **struktura** | Twój własny rodzaj wartości z nazwanych części |
 | **metoda** | Polecenie należące do struktury, np. `g.trafiony()` |
-| **mapa** (map) | Wartości znajdowane po kluczu (nazwie), jak w słowniku |
-| **wejście** (input) | To, co użytkownik wpisuje do programu |
-| **błąd** (error) | Komunikat, że coś jest nie tak, i gdzie |
+| **mapa** | Wartości wyszukiwane po kluczu (nazwie), jak w słowniku |
+| **wejście** (ang. *input*) | To, co ktoś wpisuje do programu |
+| **błąd** (ang. *error*) | Komunikat, że coś jest nie tak, i gdzie |
 | **bug** | Pomyłka w programie |
-
-### Słówka po angielsku, które spotkasz w Finchu
-
-| Słowo | Po polsku |
-|---|---|
-| `print` | wypisz |
-| `if` / `else` | jeżeli / w przeciwnym razie |
-| `for` … `in` | dla … w |
-| `while` | dopóki |
-| `break` / `continue` | przerwij / kontynuuj |
-| `return` | zwróć (oddaj) |
-| `true` / `false` | prawda / fałsz |
-| `fn` (od *function*) | funkcja |
-| `struct` | struktura |
-| `push` / `pop` | dołóż / zabierz |
-| `input` | wejście (pytanie) |
-| `len` (od *length*) | długość |
-| `error` | błąd |
-| `or` | albo (co zrobić, gdy się nie uda) |
-| `try` | spróbuj (a jak się nie uda, przekaż błąd dalej) |
-| `self` | sam (struktura, na której użyto metody) |
-| `map` | mapa (słownik) |
-| `has` / `get` | ma / weź |
 
 ---
 
-**Co dalej?** Kiedy to wszystko wyda ci się łatwe, przejdź do
+**Co dalej?** Kiedy to wszystko będzie już łatwe, przejdź do
 [przewodnika dla techników](dla-technikow.md). Opisuje każdą część Fincha.

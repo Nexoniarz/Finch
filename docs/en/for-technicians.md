@@ -1011,7 +1011,7 @@ Finch/
 ├── std/            the standard library, in Finch: json, path, time, proc, fs, thread
 ├── runtime/        finch_rt.c: the small runtime (text, arrays, maps, input, files)
 ├── bootstrap/      build.sh, install.sh and the seeds (the compiler's own IR, one per system)
-├── examples/       hello, tour, types, structs, todo, guess, c_import, window, opengl, vulkan, raylib, llvm
+├── examples/       hello, tour, types, structs, todo, guess, wordcount, c_import, simd, window, opengl, vulkan, raylib, llvm
 ├── tests/
 │   ├── run/ new/   programs + the exact output they must print (.out), input (.in)
 │   ├── fail/ new/fail/   programs that must fail, with the expected error in line 1
@@ -1025,34 +1025,11 @@ Finch/
 ```
 
 ```sh
-tests/run.sh                 # programs, refusals, -g builds, a shared library, the language server
+tests/run.sh                 # programs, expected errors, -g builds, a shared library, the language server
 MEMCHECK=1 tests/run.sh      # the same under valgrind: no leaks, no bad memory access
 tests/cross.sh windows       # every test built for Windows and run with Wine
 tests/cross.sh arm64         # every test built for ARM64 Linux and run with QEMU
 ```
-
-### Variants that hold values
-
-A variant can carry values. Make one with `Shape.Circle(2.0)`, take them out with `match`, which names them:
-
-```c
-enum Shape {
-    Circle(float)
-    Rect(float, float)
-    Point
-}
-
-fn Shape.area() -> float {
-    return match self {
-        Circle(r) -> 3.14 * r * r
-        Rect(w, h) -> w * h
-        Point -> 0.0
-    }
-}
-```
-
-`_` ignores a value. `match` must handle every variant (or end with `else`). Printing shows `Rect(2, 3.5)`. Such an enum is
-copied and freed like a struct; it can't be compared with `==` (match on it). Variants of these enums can't have numbers.
 
 ---
 
@@ -1099,6 +1076,29 @@ match word {
 `match` works on enums, whole numbers, chars, text and bools. The arms are tried in order. A match on an enum has to
 handle **every variant** or end with `else` (the compiler says which are missing); any other match needs `else`.
 In an expression, every arm gives the same type.
+
+### Variants that hold values
+
+A variant can carry values. Make one with `Shape.Circle(2.0)`, take them out with `match`, which names them:
+
+```c
+enum Shape {
+    Circle(float)
+    Rect(float, float)
+    Point
+}
+
+fn Shape.area() -> float {
+    return match self {
+        Circle(r) -> 3.14 * r * r
+        Rect(w, h) -> w * h
+        Point -> 0.0
+    }
+}
+```
+
+`_` ignores a value. `match` must handle every variant (or end with `else`). Printing shows `Rect(2, 3.5)`. Such an enum is
+copied and freed like a struct; it can't be compared with `==` (match on it). Variants of these enums can't have numbers.
 
 ## 24. Generics
 
