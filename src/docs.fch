@@ -40,7 +40,8 @@ fn builtins() -> []Doc {
         doc("float", "float(x) -> float", "Converts to a decimal number; parses text (int(s) or 0.0 handles bad text)."),
         doc("char", "char(int n) -> char", "The character with this code."),
         doc("bool", "bool(int n) -> bool", "true for any number but 0."),
-        doc("ptr", "ptr(x) -> ptr", "An untyped pointer: from a typed pointer, or from a number (an address or offset for C).")
+        doc("ptr", "ptr(x) -> ptr", "An untyped pointer: from a typed pointer, or from a number (an address or offset for C)."),
+        doc("f32x8", "f32x8(x) / f32x8(a, b, ...) / f32x8(list, i) / f32x8(v)", "A vector: 8 f32 side by side, worked on all at once (SIMD). Every lane x; one value per lane; 8 numbers from list[i]; or another 8-lane vector converted. The same goes for i8x16, i32x8, f64x4 and the rest.")
     ]
 }
 
@@ -94,13 +95,32 @@ fn mapMethods() -> []Doc {
     ]
 }
 
+fn vecMethods() -> []Doc {
+    return [
+        doc("len", ".len -> int", "The number of lanes."),
+        doc("sum", "sum() -> T", "All the lanes added up (floats: in whatever order is fastest)."),
+        doc("min", "min() -> T", "The smallest lane."),
+        doc("max", "max() -> T", "The biggest lane."),
+        doc("dot", "dot(V w) -> T", "Lane times lane, added up: (v * w).sum()."),
+        doc("sqrt", "sqrt() -> V", "The square root of every lane (f32/f64 lanes)."),
+        doc("floor", "floor() -> V", "Every lane rounded down (f32/f64 lanes)."),
+        doc("ceil", "ceil() -> V", "Every lane rounded up (f32/f64 lanes)."),
+        doc("round", "round() -> V", "Every lane rounded to the nearest whole number, halves away from 0 (f32/f64 lanes)."),
+        doc("abs", "abs() -> V", "Every lane without its minus sign."),
+        doc("fma", "fma(V b, V c) -> V", "v * b + c in one step, with one rounding (f32/f64 lanes)."),
+        doc("store", "store([]T list, int i)", "Writes the lanes into list[i], list[i+1], ... (or through a ptr[T]).")
+    ]
+}
+
 fn keywords() -> []str {
     return ["fn", "return", "if", "else", "while", "for", "in", "break", "continue", "true", "false", "null", "import",
             "link", "struct", "enum", "match", "export", "defer", "or", "try", "self", "const"]
 }
 
 fn typeNames() -> []str {
-    return ["int", "float", "bool", "char", "str", "ptr", "map", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"]
+    return ["int", "float", "bool", "char", "str", "ptr", "map", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64",
+            "f32x4", "f32x8", "f32x16", "f64x2", "f64x4", "f64x8", "i8x16", "i8x32", "i8x64", "u8x16", "u8x32", "u8x64",
+            "i16x8", "i16x16", "i16x32", "i32x4", "i32x8", "i32x16", "u32x4", "u32x8", "u32x16", "i64x2", "i64x4", "i64x8"]
 }
 
 // the entry called `name`, or an empty Doc

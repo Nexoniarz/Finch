@@ -1,0 +1,5 @@
+// expect: no instruction that divides whole numbers lane by lane
+fn main() {
+    a := i32x4(8)
+    print(a / 2)
+}

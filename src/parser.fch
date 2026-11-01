@@ -86,7 +86,7 @@ fn node(ptr[Parser] p, str kind) -> ast.Node {
 
 fn isTypeName(str n) -> bool {
     names := ["int", "float", "bool", "char", "str", "ptr", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"]
-    return names.contains(n)
+    return names.contains(n) || ast.vecType(n).kind.len > 0
 }
 
 // int, str, ptr[T], []T, Name, module.Name
@@ -116,6 +116,10 @@ fn parseType(ptr[Parser] p) -> ast.Type {
         }
         if name == "f64" {
             return ast.simple("float")
+        }
+        vt := ast.vecType(name)
+        if vt.kind.len > 0 {
+            return vt
         }
         return ast.simple(name)
     }

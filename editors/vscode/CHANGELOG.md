@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.6.0
+
+- Vector types (`f32x8`, `i8x32`, `f64x4`, …) highlighted as types; completion of their methods (`sum`, `dot`, `fma`, `store`, …).
+
 ## 2.5.0
 
 - Highlighting for code inside text (`"hp \(hp)"`), `test "…" { }` blocks, `const`, `"""` text, `1e9`.

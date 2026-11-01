@@ -1,0 +1,6 @@
+// expect: index 4
+fn main() {
+    v := i32x4(1)
+    i := 4
+    print(v[i])
+}
