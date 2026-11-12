@@ -775,7 +775,7 @@ A pointer holds the **address** of a value. Finch uses words instead of C's `*` 
 |---|---|---|
 | `int *p` | `ptr[int] p` | p points to an int |
 | `&x` | `addr(x)` | the address of x (also `addr(a[i])`, `addr(s.field)`) |
-| `*p` | `p.value` | the value p points to |
+| `*p` | `deref(p)` | the value p points to (`p.value` too, for a pointer to a number) |
 | `p->field` | `p.field` | a field of the struct p points to |
 | `p[i]` | `p[i]` | C-style indexing (no bounds check) |
 | `NULL` | `null` | points nowhere |
@@ -790,9 +790,11 @@ x := 21
 double(addr(x))           // x is 42
 ```
 
-If a struct has its own field called `value`, then `p.value` on a pointer to it means that field.
+On a pointer to a struct, `p.name` is always a field (`p.x`, and `p.value` if the struct has a field called `value`).
+The whole struct it points to is `deref(p)`, which can be assigned too: `deref(p) = Point(1, 2)`. On a pointer to a
+number there are no fields, so `p.value` and `deref(p)` mean the same.
 
-Using `.value`, `.field` or `[i]` on a `null` pointer **stops the program** with a clear message.
+Using `deref(p)`, `.value`, `.field` or `[i]` on a `null` pointer **stops the program** with a clear message.
 
 ⚠️ A pointer to a variable must not be used after the variable's block has ended. Finch does not check this.
 

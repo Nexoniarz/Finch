@@ -26,6 +26,7 @@ fn builtins() -> []Doc {
         doc("max", "max(a, b, ...) -> number", "The biggest of the numbers, in the type they all fit."),
         doc("abs", "abs(x) -> number", "x without its minus sign (any number type)."),
         doc("clamp", "clamp(x, lo, hi) -> number", "x, but at least lo and at most hi."),
+        doc("deref", "deref(ptr[T] p) -> T", "The whole value p points to, the other way from addr(x). It can be changed too: deref(p) = Point(1, 2). On a pointer to a struct, p.x is a field; p.value is the number on a ptr[int]."),
         doc("asm", "asm(str code, values...)", "Processor instructions written in the code (Intel syntax on x86). {x} in the text is the variable x in a register; mut x means the instructions change it; reg: x puts x in that exact register: asm(\"cpuid\", eax: mut a)."),
         doc("cpu_has", "cpu_has(str feature) -> bool", "Does the processor running the program have this feature (\"avx2\", \"avx512f\", \"avxvnni\", \"dotprod\", \"i8mm\" ...)? Check before calling a @cpu(...) function."),
         doc("concat", "concat(V a, V b) -> V2", "One vector with a's lanes, then b's (twice as many)."),

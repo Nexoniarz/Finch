@@ -1,0 +1,11 @@
+// expect: Box has no field 'value'
+// expect: help: the whole Box it points to is deref(q)
+struct Box {
+    int size
+}
+
+fn main() {
+    b := Box(3)
+    q := addr(b)
+    print(q.value)
+}

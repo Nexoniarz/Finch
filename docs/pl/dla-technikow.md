@@ -779,7 +779,7 @@ Wskaźnik przechowuje **adres** wartości. Finch zamiast `*` i `&` z C używa s�
 |---|---|---|
 | `int *p` | `ptr[int] p` | p wskazuje na int |
 | `&x` | `addr(x)` | adres x (także `addr(a[i])`, `addr(s.pole)`) |
-| `*p` | `p.value` | wartość, na którą wskazuje p |
+| `*p` | `deref(p)` | wartość, na którą wskazuje p (także `p.value` dla wskaźnika do liczby) |
 | `p->pole` | `p.pole` | pole struktury, na którą wskazuje p |
 | `p[i]` | `p[i]` | indeksowanie jak w C (bez sprawdzania zakresu) |
 | `NULL` | `null` | nigdzie nie wskazuje |
@@ -794,9 +794,11 @@ x := 21
 podwoj(addr(x))           // x wynosi 42
 ```
 
-Jeśli struktura ma własne pole o nazwie `value`, to `p.value` na wskaźniku do niej oznacza to pole.
+Na wskaźniku do struktury `p.nazwa` to zawsze pole (`p.x`, a `p.value`, gdy struktura ma pole o nazwie `value`).
+Cała struktura, na którą wskazuje, to `deref(p)`, któremu można też przypisać: `deref(p) = Punkt(1, 2)`. Wskaźnik do
+liczby nie ma pól, więc `p.value` i `deref(p)` znaczą to samo.
 
-Użycie `.value`, `.pole` albo `[i]` na wskaźniku `null` **zatrzymuje program** jasnym komunikatem.
+Użycie `deref(p)`, `.value`, `.pole` albo `[i]` na wskaźniku `null` **zatrzymuje program** jasnym komunikatem.
 
 ⚠️ Wskaźnika na zmienną nie wolno używać po zakończeniu bloku tej zmiennej. Finch tego nie sprawdza.
 
