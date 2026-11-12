@@ -28,6 +28,7 @@ run_exe() {  # program, stdin -> output without Windows' \r
 for f in run/*.fch new/*.fch; do
     grep -q "^fn main" "$f" || continue
     case "$target-$f" in arm64-*.x86_64.fch|windows-*.arm64.fch) continue ;; esac     # inline asm for another processor
+    case "$f" in *.rust.fch|*.cbindgen.fch) continue ;; esac                         # Rust for another system needs its target installed
     input="${f%.fch}.in"
     [ -f "$input" ] || input=/dev/null
     exe="$tmp/$(basename "${f%.fch}")$ext"

@@ -18,8 +18,14 @@ trap 'rm -rf "$tmp"' EXIT
 
 # a test named x.x86_64.fch or x.arm64.fch is for that processor only (inline asm)
 case "$(uname -m)" in aarch64|arm64) arch=arm64 ;; *) arch=x86_64 ;; esac
-other_arch() {  # file -> true if it is for another processor
-    case "$1" in *.x86_64.fch) [ $arch != x86_64 ] ;; *.arm64.fch) [ $arch != arm64 ] ;; *) false ;; esac
+other_arch() {  # file -> true if it is for another processor, or needs Rust tools this machine doesn't have
+    case "$1" in
+        *.x86_64.fch) [ $arch != x86_64 ] ;;
+        *.arm64.fch) [ $arch != arm64 ] ;;
+        *.rust.fch) ! command -v cargo > /dev/null 2>&1 || [ "${OS:-}" = Windows_NT ] ;;
+        *.cbindgen.fch) ! command -v cargo > /dev/null 2>&1 || ! command -v cbindgen > /dev/null 2>&1 || [ "${OS:-}" = Windows_NT ] ;;
+        *) false ;;
+    esac
 }
 
 for f in run/*.fch new/*.fch; do

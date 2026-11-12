@@ -5,6 +5,7 @@ pkgs.mkShell {
     # building Finch (the clang wrapper first, so `clang` finds the system headers)
     llvmPackages.clang
     llvmPackages.libclang   # reads C headers for `import "stdio.h"`
+    llvmPackages.llvm       # libLLVM and the llvm-c headers, for examples/llvm.fch
     pkg-config              # finds the right flags for `link "..."`
     python3                 # tests/lsp_test.py
 

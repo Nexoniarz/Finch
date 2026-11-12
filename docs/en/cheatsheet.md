@@ -36,7 +36,7 @@ name = "game"                       # what finch build makes
 entry = "src/main.fch"
 paths = ["src"]                     # folders with modules
 include = ["vendor/SDL3/include"]   # C headers
-links = ["SDL3", "native/glue.cpp"] # libraries and your own .c / .cpp / .o / .a
+links = ["SDL3", "native/glue.cpp"] # libraries and your own .c / .cpp / .o / .a / Cargo.toml
 libdirs = ["vendor/SDL3/lib"]
 cflags = ["-DFAST"]                 # for your .c / .cpp files
 ldflags = ["-Wl,-rpath,."]
@@ -396,6 +396,13 @@ import ui/button as btn  // another name: btn.draw()
 ```
 
 ---
+
+## Rust
+
+```
+import "pathfind/Cargo.toml"     // cbindgen writes the header, cargo builds the crate ([lib] crate-type = ["staticlib"])
+link "pathfind/Cargo.toml"       // or: your own header, and just the build and link
+```
 
 ## C++
 

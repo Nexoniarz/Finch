@@ -1353,7 +1353,7 @@ name = "gra"                         # program, który zbuduje finch build (z pl
 entry = "src/main.fch"               # używany, gdy finch run / build / test nie dostaną pliku
 paths = ["src", "lib"]               # katalogi z modułami Fincha
 include = ["vendor/SDL3/include"]    # katalogi z nagłówkami C (także dla twoich plików .c / .cpp)
-links = ["SDL3", "native/glue.cpp"]  # biblioteki i twoje pliki .c / .cpp / .o / .a
+links = ["SDL3", "native/glue.cpp"]  # biblioteki i twoje pliki .c / .cpp / .o / .a albo biblioteki Rusta (Cargo.toml)
 libdirs = ["vendor/SDL3/lib"]        # katalogi z bibliotekami
 cflags = ["-DFAST"]                  # dla twoich plików .c / .cpp
 ldflags = ["-Wl,-rpath,$ORIGIN"]     # dla linkera
@@ -1461,16 +1461,26 @@ wartość nie są dostępne (wywołanie mówi dlaczego); dla nich nadal działa 
 Bibliotekę C++ z API w C (Box2D 3, JoltC dla Jolta, nakładka C na PhysX) importuje się jak każdą bibliotekę C, a własne
 pliki `.cpp` można dołączyć przez `link "glue.cpp"` (budowane `clang++` albo `g++`, albo `FINCH_CXX`).
 
-**Rust**: zbuduj `staticlib` i wystaw funkcje C:
+**Rust**: wskaż Finchowi `Cargo.toml` biblioteki. Jej biblioteka to `staticlib` z funkcjami C oznaczonymi `extern "C"`:
 
 ```rust
-// Cargo.toml: [lib] crate-type = ["staticlib"]
+// trasa/Cargo.toml:  [lib] crate-type = ["staticlib"]
 #[no_mangle]
 pub extern "C" fn dlugosc(x: f32, y: f32) -> f32 { (x * x + y * y).sqrt() }
 ```
 
-Napisz nagłówek (`float dlugosc(float x, float y);` albo wygeneruj go przez `cbindgen`), a potem `import "trasa.h"`
-i `link "target/release/libtrasa.a"`. Na Linuksie biblioteka statyczna z Rusta potrzebuje też `links = ["dl", "pthread"]`.
+```c
+import "trasa/Cargo.toml"        // cbindgen pisze nagłówek C, cargo buduje bibliotekę, Finch ją linkuje
+print(dlugosc(3.0, 4.0))
+```
+
+`import "…/Cargo.toml"` potrzebuje `cbindgen` (`cargo install cbindgen`). Bez niego napisz nagłówek sam
+(`float dlugosc(float x, float y);`) i użyj `import "trasa.h"` z `link "trasa/Cargo.toml"`: Finch przy każdym budowaniu
+uruchamia `cargo build --release` (szybko, gdy nic się nie zmieniło), linkuje `target/release/lib<nazwa>.a` i dodaje to,
+czego biblioteka standardowa Rusta potrzebuje od systemu. Struktury `#[repr(C)]` działają przez wartość jak struktury C.
+Dla programów na Windowsa biblioteka jest budowana dla `x86_64-pc-windows-gnu`, a dla `--target` dla pasującego celu
+Rusta, który instaluje `rustup target add`. Biblioteka bez `crate-type = ["staticlib"]` dostaje błąd z dwiema liniami
+do dodania.
 
 **Android**: `finch build gra.fch --target android --shared` tworzy `libgra.so` dla 64-bitowego Androida na ARM
 (API 24 i nowsze) clangiem z NDK, którego Finch szuka przez `ANDROID_NDK_HOME` (albo `FINCH_CC`). Wczytaj ją z aplikacji,

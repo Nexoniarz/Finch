@@ -123,7 +123,7 @@ Pick the guide that fits you:
 | Modules | `import shapes` → `shapes.area(b)`, `import ui/button as btn`; the standard library: `json`, `path`, `time`, `proc`, `fs`, `thread` |
 | Threads | `thread.spawn(addr(work), addr(data))`, `t.join()`, `thread.mutex()`, `atomic_add(addr(n), 1)` |
 | Tests | `test "name" { assert(x == 3) }` next to the code, run with `finch test` |
-| C interop | `import "stdio.h"`, `link "glfw"`, `link "mine.c"` / `"glue.cpp"`, unions, `#define`s (also `(Color){…}`), `addr(fn)` for callbacks |
+| C interop | `import "stdio.h"`, `link "glfw"`, `link "mine.c"` / `"glue.cpp"` / `"crate/Cargo.toml"`, unions, `#define`s (also `(Color){…}`), `addr(fn)` for callbacks |
 | I/O | `print(...)`, `input("? ")`, `read_file`, `write_file`, `shell` |
 | Tools | `finch run/build/test/fmt/ir/lsp`, `finch.toml` for a project, a build cache, `--target windows/arm64/macos/android`, `--cpu native`, `-g` for gdb/lldb, `-O0`, the chain of calls on runtime errors |
 
@@ -177,7 +177,7 @@ Pick the guide that fits you:
 - [x] Functions as values: `fn(int) -> bool` types, functions written in place that keep copies of what they use, `sort_by`, `filter`, `map`, `any`, `all`
 - [x] Optional values `T?` (`or`, `if v := x`) and interfaces (any type with the methods is one)
 - [x] C++ headers imported directly: namespaces, classes, overloads, default arguments, exceptions as runtime errors
-- [ ] Rust crates through `Cargo.toml`
+- [x] Rust crates through `Cargo.toml` (`import "crate/Cargo.toml"` with cbindgen, or `link` it with your own header)
 
 ## Layout
 

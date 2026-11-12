@@ -125,7 +125,7 @@ Wybierz przewodnik dla siebie:
 | Moduły | `import ksztalty` → `ksztalty.pole(p)`, `import ui/button as btn`; biblioteka standardowa: `json`, `path`, `time`, `proc`, `fs`, `thread` |
 | Wątki | `thread.spawn(addr(praca), addr(dane))`, `t.join()`, `thread.mutex()`, `atomic_add(addr(n), 1)` |
 | Testy | `test "nazwa" { assert(x == 3) }` tuż obok kodu, uruchamiane przez `finch test` |
-| Współpraca z C | `import "stdio.h"`, `link "glfw"`, `link "moje.c"` / `"glue.cpp"`, unie, `#define` (także `(Color){…}`), `addr(fn)` jako funkcja zwrotna |
+| Współpraca z C | `import "stdio.h"`, `link "glfw"`, `link "moje.c"` / `"glue.cpp"` / `"biblioteka/Cargo.toml"`, unie, `#define` (także `(Color){…}`), `addr(fn)` jako funkcja zwrotna |
 | Wejście i wyjście | `print(...)`, `input("? ")`, `read_file`, `write_file`, `shell` |
 | Narzędzia | `finch run/build/test/fmt/ir/lsp`, `finch.toml` dla projektu, pamięć podręczna kompilacji, `--target windows/arm64/macos/android`, `--cpu native`, `-g` dla gdb i lldb, `-O0`, ścieżka wywołań przy błędzie w trakcie działania |
 
@@ -179,7 +179,7 @@ Wybierz przewodnik dla siebie:
 - [x] Funkcje jako wartości: typy `fn(int) -> bool`, funkcje pisane na miejscu, które trzymają kopie tego, czego używają, `sort_by`, `filter`, `map`, `any`, `all`
 - [x] Wartości opcjonalne `T?` (`or`, `if v := x`) i interfejsy (każdy typ z tymi metodami nim jest)
 - [x] Nagłówki C++ importowane wprost: przestrzenie nazw, klasy, przeciążenia, argumenty domyślne, wyjątki jako błędy
-- [ ] Biblioteki Rusta przez `Cargo.toml`
+- [x] Biblioteki Rusta przez `Cargo.toml` (`import "biblioteka/Cargo.toml"` z cbindgen albo `link` z własnym nagłówkiem)
 
 ## Co gdzie leży
 

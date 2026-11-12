@@ -459,7 +459,7 @@ fn main([]str args) -> int {
             extraDirs.push(man.resolve(d))
         }
         for l in man.list("links", targets) {
-            if l.ends_with(".c") || l.ends_with(".o") || l.ends_with(".a") || l.ends_with(".cpp") || l.ends_with(".cc") {
+            if l.ends_with(".c") || l.ends_with(".o") || l.ends_with(".a") || l.ends_with(".cpp") || l.ends_with(".cc") || l.ends_with("Cargo.toml") {
                 extraLibs.push(man.resolve(l))
             } else {
                 extraLibs.push(l)
@@ -498,6 +498,19 @@ fn main([]str args) -> int {
         for i in 0..prog.cimports.len {
             if !seen.contains(prog.cimports[i]) {
                 seen.push(prog.cimports[i])
+                if prog.cimports[i].ends_with("Cargo.toml") {
+                    // a Rust crate: its header from cbindgen, and the crate itself linked
+                    manifest := d + "/" + prog.cimports[i]
+                    header := linker.rustHeader(manifest) or {
+                        diag.passOn(prog.cwhere[i] + ": error: " + err)
+                        return 1
+                    }
+                    headers.push(cimport.Header(path: header, where: prog.cwhere[i]))
+                    if !links.contains(manifest) {
+                        links.push(manifest)
+                    }
+                    continue
+                }
                 headers.push(cimport.Header(path: prog.cimports[i], where: prog.cwhere[i]))
             }
         }

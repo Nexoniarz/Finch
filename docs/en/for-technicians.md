@@ -1345,7 +1345,7 @@ name = "game"                        # the program finch build makes (from the e
 entry = "src/main.fch"               # used when finch run / build / test get no file
 paths = ["src", "lib"]               # folders with Finch modules
 include = ["vendor/SDL3/include"]    # folders with C headers (also for your .c / .cpp files)
-links = ["SDL3", "native/glue.cpp"]  # libraries, and your own .c / .cpp / .o / .a files
+links = ["SDL3", "native/glue.cpp"]  # libraries, and your own .c / .cpp / .o / .a files or Rust crates (Cargo.toml)
 libdirs = ["vendor/SDL3/lib"]        # folders with libraries
 cflags = ["-DFAST"]                  # for your .c / .cpp files
 ldflags = ["-Wl,-rpath,$ORIGIN"]     # for the linker
@@ -1453,16 +1453,25 @@ are not available (calling one says why); a C wrapper of your own still works fo
 A C++ library with a C API (Box2D 3, Jolt's JoltC, PhysX's C wrapper) is imported like any C library, and your own
 `.cpp` files can be linked with `link "glue.cpp"` (built with `clang++` or `g++`, or `FINCH_CXX`).
 
-**Rust**: make a `staticlib` and export C functions:
+**Rust**: point Finch at the crate's `Cargo.toml`. Its library is a `staticlib` whose C functions are `extern "C"`:
 
 ```rust
-// Cargo.toml: [lib] crate-type = ["staticlib"]
+// pathfind/Cargo.toml:  [lib] crate-type = ["staticlib"]
 #[no_mangle]
 pub extern "C" fn path_len(x: f32, y: f32) -> f32 { (x * x + y * y).sqrt() }
 ```
 
-Write the header (`float path_len(float x, float y);`, or let `cbindgen` write it), then `import "pathfind.h"` and
-`link "target/release/libpathfind.a"`. On Linux a Rust static library also needs `links = ["dl", "pthread"]`.
+```c
+import "pathfind/Cargo.toml"     // cbindgen writes the C header, cargo builds the crate, Finch links it
+print(path_len(3.0, 4.0))
+```
+
+`import "…/Cargo.toml"` needs `cbindgen` (`cargo install cbindgen`). Without it, write the header yourself
+(`float path_len(float x, float y);`) and use `import "pathfind.h"` with `link "pathfind/Cargo.toml"`: Finch runs
+`cargo build --release` each build (quick when nothing changed), links `target/release/lib<name>.a` and adds what Rust's
+standard library needs from the system. `#[repr(C)]` structs work by value like C structs. For Windows programs the crate
+is built for `x86_64-pc-windows-gnu`, and for `--target` the matching Rust target, which `rustup target add` installs.
+A crate without `crate-type = ["staticlib"]` gets an error that shows the two lines to add.
 
 **Android**: `finch build game.fch --target android --shared` makes `libgame.so` for 64-bit ARM Android (API 24 and
 up) with the NDK's clang, found through `ANDROID_NDK_HOME` (or `FINCH_CC`). Load it from an app, for example through

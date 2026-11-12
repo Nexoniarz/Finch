@@ -36,7 +36,7 @@ name = "gra"                        # co zbuduje finch build
 entry = "src/main.fch"
 paths = ["src"]                     # katalogi z modułami
 include = ["vendor/SDL3/include"]   # nagłówki C
-links = ["SDL3", "native/glue.cpp"] # biblioteki i twoje pliki .c / .cpp / .o / .a
+links = ["SDL3", "native/glue.cpp"] # biblioteki i twoje pliki .c / .cpp / .o / .a / Cargo.toml
 libdirs = ["vendor/SDL3/lib"]
 cflags = ["-DFAST"]                 # dla twoich plików .c / .cpp
 ldflags = ["-Wl,-rpath,."]
@@ -396,6 +396,13 @@ import ui/button as btn   // pod inną nazwą: btn.draw()
 ```
 
 ---
+
+## Rust
+
+```
+import "trasa/Cargo.toml"        // cbindgen pisze nagłówek, cargo buduje bibliotekę ([lib] crate-type = ["staticlib"])
+link "trasa/Cargo.toml"          // albo: własny nagłówek, a tylko budowanie i linkowanie
+```
 
 ## C++
 
