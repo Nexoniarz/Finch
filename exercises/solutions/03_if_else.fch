@@ -1,0 +1,30 @@
+// 03: making decisions
+//
+//   if x > 10 {
+//       ...
+//   } else if x > 5 {
+//       ...
+//   } else {
+//       ...
+//   }
+//
+// TODO: grade(score) gives "A" for 90 and up, "B" for 75 and up, "C" for 50 and up, and "F" below that.
+
+fn grade(int score) -> str {
+    if score >= 90 {
+        return "A"
+    } else if score >= 75 {
+        return "B"
+    } else if score >= 50 {
+        return "C"
+    }
+    return "F"
+}
+
+test "grades" {
+    assert(grade(95) == "A")
+    assert(grade(90) == "A")
+    assert(grade(80) == "B")
+    assert(grade(50) == "C")
+    assert(grade(12) == "F")
+}

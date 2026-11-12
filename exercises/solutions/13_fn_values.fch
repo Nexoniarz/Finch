@@ -1,0 +1,38 @@
+// 13: functions as values
+//
+//   fn(int) -> int f = double                      a variable that holds a function
+//   f := fn(int x) -> int { return x + 1 }         a function written right where it is needed
+//   list.sort_by(fn(a, b) { return a < b })        lists take functions: sort_by, filter, map, any, all
+//
+// TODO: finish apply_twice, by_age and adults.
+
+struct Person {
+    str name
+    int age
+}
+
+fn apply_twice(fn(int) -> int f, int x) -> int {
+    return f(f(x))
+}
+
+// youngest first
+fn by_age([]Person people) -> []Person {
+    people.sort_by(fn(a, b) { return a.age < b.age })
+    return people
+}
+
+// the names of everyone 18 or older
+fn adults([]Person people) -> []str {
+    return people.filter(fn(p) { return p.age >= 18 }).map(fn(Person p) -> str { return p.name })
+}
+
+test "apply_twice" {
+    assert(apply_twice(fn(int x) -> int { return x * 3 }, 2) == 18)
+}
+
+test "by_age and adults" {
+    people := [Person("Ann", 31), Person("Bo", 12), Person("Cy", 18)]
+    sorted := by_age(people)
+    assert(sorted[0].name == "Bo" && sorted[2].name == "Ann")
+    assert(adults(people).join(", ") == "Ann, Cy")
+}

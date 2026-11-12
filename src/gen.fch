@@ -1690,6 +1690,71 @@ fn lookup(ptr[Gen] g, str name) -> int {
     return -1
 }
 
+// how many letters must change to turn a into b (insert, remove, replace one)
+fn editDistance(str a, str b) -> int {
+    []int prev
+    for j in 0..b.len + 1 {
+        prev.push(j)
+    }
+    for i in 1..a.len + 1 {
+        []int row = [i]
+        for j in 1..b.len + 1 {
+            cost := 1
+            if a[i - 1] == b[j - 1] {
+                cost = 0
+            }
+            best := prev[j] + 1                 // (no min(): the bootstrap seeds don't have it)
+            if row[j - 1] + 1 < best {
+                best = row[j - 1] + 1
+            }
+            if prev[j - 1] + cost < best {
+                best = prev[j - 1] + cost
+            }
+            row.push(best)
+        }
+        prev = row
+    }
+    return prev[b.len]
+}
+
+// " (did you mean 'age'?)": the closest name in sight, if one is close enough to be a typo
+fn didYouMean(ptr[Gen] g, str name, bool functions) -> str {
+    best := ""
+    bestD := 3
+    if name.len <= 3 {
+        bestD = 2                   // short names: only one letter off
+    }
+    []str cands
+    for sc in g.scopes {
+        for v in sc.vars {
+            if !v.name.starts_with("$") {
+                cands.push(v.name)
+            }
+        }
+    }
+    if functions {
+        for sg in g.sigs {
+            if sg.module == g.module && sg.recv.len == 0 && !sg.lambda && sg.targs.len == 0 {
+                cands.push(sg.name)
+            }
+        }
+        for b in ["print", "input", "read_file", "write_file", "file_exists", "delete_file", "shell", "exit", "min", "max", "abs", "clamp", "assert", "str", "int", "float"] {
+            cands.push(b)
+        }
+    }
+    for c in cands {
+        d := editDistance(name, c)
+        if d > 0 && d < bestD {
+            best = c
+            bestD = d
+        }
+    }
+    if best.len == 0 {
+        return ""
+    }
+    return " (did you mean '" + best + "'?)"
+}
+
 fn varAt(ptr[Gen] g, int id) -> Var {
     return g.scopes[id / 100000].vars[id % 100000]
 }
@@ -2890,6 +2955,10 @@ fn assignStmt(ptr[Gen] g, ast.Node s) {
         if id < 0 && target.kind == "var" {
             if findConst(g, g.module, root) >= 0 {
                 fail(g, s, "'" + root + "' is a constant; it can't be changed")
+            }
+            near := didYouMean(g, root, false)
+            if near.len > 0 {
+                fail(g, s, "there is no variable named '" + root + "'" + near.sub(0, near.len - 1) + " Or create it with " + root + " := ...)")
             }
             fail(g, s, "there is no variable named '" + root + "' (create it with " + root + " := ...)")
         }
@@ -4455,7 +4524,7 @@ fn arrayLit(ptr[Gen] g, ast.Node a, ast.Type want) -> Val {
 
 fn place(ptr[Gen] g, ast.Node e, bool write) -> Place {
     if e.kind == "var" && lookup(g, e.name) < 0 {
-        fail(g, e, "there is no variable named '" + e.name + "'")
+        fail(g, e, "there is no variable named '" + e.name + "'" + didYouMean(g, e.name, false))
     }
     r := ref(g, e, write)
     if !r.isPlace {
@@ -4530,7 +4599,7 @@ fn ref(ptr[Gen] g, ast.Node e, bool write) -> Ref {
             if imports(g, e.name) {
                 fail(g, e, "'" + e.name + "' is a module; use something from it, like " + e.name + ".name(...)")
             }
-            fail(g, e, "there is no variable named '" + e.name + "'")
+            fail(g, e, "there is no variable named '" + e.name + "'" + didYouMean(g, e.name, false))
         }
         v := varAt(g, id)
         noteRef(g, e, e.col, e.name.len, "```finch\n" + ast.show(v.ty) + " " + e.name + "\n```", v.dpath, v.dline, v.dcol)
@@ -6092,8 +6161,55 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     if lookup(g, n) >= 0 {
         fail(g, c, "'" + n + "' is a variable, not a function")
     }
-    fail(g, c, "there is no function named '" + n + "'" + headerHint(n))
+    hint := headerHint(n)
+    if hint.len == 0 {
+        hint = didYouMean(g, n, true)
+    }
+    fail(g, c, "there is no function named '" + n + "'" + hint)
     return Val()
+}
+
+// assert(a == b): both sides are worked out once and kept, so a failure can say what they were:
+// "assert failed: got "Hello, nobody!", expected "Hello, finch!""
+fn assertCompare(ptr[Gen] g, ast.Node c, ast.Node e) -> Val {
+    pushScope(g)
+    lv := expr(g, e.kids[0])
+    lslot := addVar(g, e, "$al" + str(g.nvars), lv.ty, own(g, lv), true, true)
+    rv := exprWant(g, e.kids[1], lv.ty)
+    rslot := addVar(g, e, "$ar" + str(g.nvars), rv.ty, own(g, rv), true, true)
+    l := Val(v: load(g, llty(g, lv.ty), lslot), ty: lv.ty)
+    r := Val(v: load(g, llty(g, rv.ty), rslot), ty: rv.ty)
+    lp := l
+    rp := r
+    if isNumber(l.ty) && isNumber(r.ty) && !unify(g, addr(lp), addr(rp)) {
+        badOperands(g, e.name, l, r, e)         // 3 == 3.0: one type for both, as in the comparison itself
+    }
+    cond := compare(g, e.name, lp, rp, e)
+    bad := newLabel(g, "assert.failed")
+    ok := newLabel(g, "assert.ok")
+    condBr(g, cond.v, ok, bad)
+    label(g, bad)
+    buf := alloca(g, "{ ptr, i64, i64 }")
+    store(g, "{ ptr, i64, i64 }", "zeroinitializer", buf)
+    if e.name == "==" {
+        bufText(g, buf, "got ")
+        emitFormat(g, buf, l.v, l.ty, true)
+        bufText(g, buf, ", expected ")
+        emitFormat(g, buf, r.v, r.ty, true)
+    } else if e.name == "!=" {
+        bufText(g, buf, "both are ")
+        emitFormat(g, buf, l.v, l.ty, true)
+    } else {
+        emitFormat(g, buf, l.v, l.ty, true)
+        bufText(g, buf, " " + e.name + " ")
+        emitFormat(g, buf, r.v, r.ty, true)
+        bufText(g, buf, " is false")
+    }
+    emit(g, "call void @finch_assert_failed(ptr " + strGlobal(g, g.files[c.file]) + ", i64 " + str(c.line) + ", ptr " + buf + ")")
+    emit(g, "unreachable")
+    label(g, ok)
+    popScope(g)
+    return Val(ty: T("void"))
 }
 
 // min(a, b, ...), max(a, b, ...), abs(x), clamp(x, lo, hi) for any numbers
@@ -6101,6 +6217,10 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
 fn assertCall(ptr[Gen] g, ast.Node c) -> Val {
     if c.kids.len != 1 && c.kids.len != 2 {
         fail(g, c, "assert takes a condition, and maybe a message: assert(x > 0, \"x must be positive\")")
+    }
+    e := c.kids[0]
+    if c.kids.len == 1 && e.kind == "binary" && ["==", "!=", "<", ">", "<=", ">="].contains(e.name) {
+        return assertCompare(g, c, e)
     }
     cond := coerce(g, expr(g, c.kids[0]), T("bool"), c.kids[0], "the condition of assert")
     bad := newLabel(g, "assert.failed")

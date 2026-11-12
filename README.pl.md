@@ -57,7 +57,7 @@ fn main() {
 - **Biblioteki C bez pośredników.** Wystarczy `import "raylib.h"` i `link "raylib"`, żeby z niej korzystać, łącznie
   ze strukturami przekazywanymi przez wartość i funkcjami zwrotnymi. Nagłówki czyta libclang, więc niczego nie trzeba
   deklarować ręcznie.
-- **Napisany w samym sobie.** Kompilator to wyłącznie kod w Finchu: `src/*.fch`, ok. 12 tys. linii. Buduje się go
+- **Napisany w samym sobie.** Kompilator to wyłącznie kod w Finchu: `src/*.fch`, ok. 16 tys. linii. Buduje się go
   z pliku startowego (jego własnego kodu LLVM IR, w `bootstrap/`), a potem jeszcze raz nim samym. Oba wyniki są identyczne.
 
 ## Na start
@@ -97,6 +97,7 @@ Wybierz przewodnik dla siebie:
 | **Dla techników** | Znasz komputery, ale programowanie jest dla ciebie nowe: instalacja, cały język, biblioteki C, rozwiązywanie problemów | [dla-technikow.md](docs/pl/dla-technikow.md) | [for-technicians.md](docs/en/for-technicians.md) |
 | **Dla inżynierów** | Wszystko: lekser, gramatyka, AST, reguły typów, generowanie IR, import przez libclang, ABI, budowa kompilatora | [dla-inzynierow.md](docs/pl/dla-inzynierow.md) | [for-engineers.md](docs/en/for-engineers.md) |
 | **Ściąga** | Wszystkie funkcje, metody, operatory i polecenia na jednej stronie | [sciaga.md](docs/pl/sciaga.md) | [cheatsheet.md](docs/en/cheatsheet.md) |
+| **Ćwiczenia** | Nauka w praktyce: 18 małych zadań z testami, które je sprawdzają, od `print` po asembler | [exercises/](exercises/README.pl.md) | [exercises/](exercises/README.md) |
 
 ## Język w pigułce
 
@@ -189,6 +190,7 @@ std/        biblioteka standardowa w Finchu: json, path, time, proc, fs, thread
 runtime/    mały runtime w C, dołączany do każdego programu
 bootstrap/  build.sh i pliki startowe: własny LLVM IR kompilatora, osobno dla każdego systemu
 examples/   przykładowe programy
+exercises/  ćwiczenia: małe zadania z testami (exercises/next.sh pokazuje następne) i ich rozwiązania
 editors/    rozszerzenie do VS Code, podświetlanie składni i konfiguracja LSP dla Kate
 tests/      run/ new/ (wzorcowe wyniki), fail/ new/fail/ (oczekiwane błędy), run.sh, cross.sh, shared.sh, lsp_test.py
 docs/       przewodniki po angielsku (en/) i po polsku (pl/) dla trzech grup czytelników

@@ -761,8 +761,10 @@ fn main() {
 
 ```
 hello.fch:3:11: error: there is no variable named 'wiekk'
-    3 |     print(wiekk)
-      |           ^
+   |
+ 3 |     print(wiekk)
+   |           ^^^^^
+   = help: did you mean 'wiek'?
 ```
 
 Jak to czytać:
@@ -770,7 +772,9 @@ Jak to czytać:
 - `hello.fch` to plik,
 - `3` to numer **linii**,
 - `11` mówi, jak daleko w linii (to **kolumna**),
-- dalej jest wyjaśnienie, a pod nim ta linia ze znakiem `^`, który wskazuje problem.
+- dalej jest wyjaśnienie, pod nim ta linia z `^^^^^` pod problemem i linia `help:` z podpowiedzią, co zrobić.
+
+W terminalu komunikat jest kolorowy, więc ważne części się wyróżniają.
 
 Komunikaty są po angielsku; tutaj znaczy to „nie ma zmiennej o nazwie 'wiekk'”. Po prostu literówka w `wiek`.
 

@@ -1,0 +1,31 @@
+// 04: loops
+//
+//   for i in 0..5 { }          i is 0, 1, 2, 3, 4 (the end is left out)
+//   for c in "text" { }        each character
+//   while condition { }        as long as it is true
+//
+// TODO: fill in both functions.
+
+// 1 + 2 + ... + n
+fn sum_to(int n) -> int {
+    total := 0
+    // TODO: a for loop that adds every number from 1 to n to total
+    return total
+}
+
+// how many of a, e, i, o, u are in the text (lower case is enough)
+fn count_vowels(str text) -> int {
+    count := 0
+    // TODO: look at each character c; "aeiou".contains(str(c)) says if it is a vowel
+    return count
+}
+
+test "sum_to" {
+    assert(sum_to(3) == 6)
+    assert(sum_to(100) == 5050)
+}
+
+test "count_vowels" {
+    assert(count_vowels("finch") == 1)
+    assert(count_vowels("programming is fun") == 5)
+}

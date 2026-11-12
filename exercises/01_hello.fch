@@ -1,0 +1,24 @@
+// 01: your first lines of Finch
+//
+// A variable is a name for a value:   name := "Ann"      age := 31      pi := 3.14
+// Text goes in "quotes". print(...) shows values, with spaces between them.
+//
+// TODO: make the tests below pass by changing the values (not the tests).
+//       Run: finch test exercises/01_hello.fch      (or: exercises/next.sh)
+
+fn greeting() -> str {
+    name := "nobody"            // TODO: put your favourite bird here: "finch"
+    return "Hello, " + name + "!"
+}
+
+fn days_in_week() -> int {
+    return 0                    // TODO
+}
+
+test "greeting" {
+    assert(greeting() == "Hello, finch!")
+}
+
+test "days in a week" {
+    assert(days_in_week() == 7)
+}

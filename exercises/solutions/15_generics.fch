@@ -1,0 +1,22 @@
+// 15: generics: one function for many types
+//
+//   fn first[T]([]T items) -> T { return items[0] }      T is whatever type the list holds
+//   first([1, 2])   first(["a", "b"])
+//
+// TODO: largest works for any list of things that can be compared with >.
+
+fn largest[T]([]T items) -> T {
+    best := items[0]
+    for x in items {
+        if x > best {
+            best = x
+        }
+    }
+    return best
+}
+
+test "largest" {
+    assert(largest([3, 8, 1]) == 8)
+    assert(largest([1.5, 0.5]) == 1.5)
+    assert(largest(["pear", "apple", "zucchini"]) == "zucchini")
+}

@@ -1,0 +1,31 @@
+// 06: text
+//
+//   s.len   s.upper()   s.split(" ")   s[0] (a char)   str(c) (a char as text)   "a" + "b"
+//   "\(x)" puts any value into text: "I am \(age)"
+//
+// TODO: fill in both functions.
+
+// "ada lovelace" -> "AL"
+fn initials(str name) -> str {
+    out := ""
+    for word in name.split(" ") {
+        if word.len > 0 {
+            out += str(word[0]).upper()
+        }
+    }
+    return out
+}
+
+// introduce("Ann", 31) -> "Ann is 31 years old"
+fn introduce(str name, int age) -> str {
+    return "\(name) is \(age) years old"
+}
+
+test "initials" {
+    assert(initials("ada lovelace") == "AL")
+    assert(initials("grace brewster hopper") == "GBH")
+}
+
+test "introduce" {
+    assert(introduce("Ann", 31) == "Ann is 31 years old")
+}

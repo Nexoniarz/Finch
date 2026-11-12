@@ -1,0 +1,35 @@
+// 16: assembly, step 1: moving and adding
+//
+// The processor works on a few very fast boxes called registers. Most instructions take one register and change it:
+//   mov a, b      a = b                     add a, b      a = a + b          sub a, b      a = a - b
+//   imul a, b     a = a * b                 shl a, n      a = a * 2^n        shr a, n      a = a / 2^n
+//   inc a / dec a a + 1 / a - 1             cmp a, b      compare (sets flags)   jnz / jl / jmp: jump
+// In Finch:  asm("add {x}, {y}", mut x, y)   {x} is your variable in a register; mut means the code changes it.
+// These are x86-64 (Intel syntax). They run on a usual PC; on ARM, see the ARM manual for the same ideas.
+//
+// TODO: write each function with ONE instruction (or two), using asm.
+
+fn add_asm(int a, int b) -> int {
+    total := a
+    // TODO: asm("add ...", mut total, b)
+    return total
+}
+
+fn times8(int x) -> int {
+    // TODO: shifting left by 3 is the same as times 8 (shl {x}, 3)
+    return x
+}
+
+fn negate(int x) -> int {
+    // TODO: the instruction is neg
+    return x
+}
+
+test "add_asm" {
+    assert(add_asm(40, 2) == 42)
+}
+
+test "times8 and negate" {
+    assert(times8(5) == 40)
+    assert(negate(7) == -7)
+}

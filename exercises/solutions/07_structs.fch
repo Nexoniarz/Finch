@@ -1,0 +1,40 @@
+// 07: structs and methods
+//
+//   struct Point {            make one:  p := Point(1, 2)  or  Point(x: 1, y: 2)
+//       int x                 use it:    p.x
+//       int y
+//   }
+//   fn Point.moved(int dx) -> Point { return Point(self.x + dx, self.y) }      a method: p.moved(3)
+//
+// TODO: write the three methods of Rect.
+
+struct Rect {
+    float w
+    float h
+}
+
+fn Rect.area() -> float {
+    return self.w * self.h
+}
+
+fn Rect.perimeter() -> float {
+    return 2.0 * (self.w + self.h)
+}
+
+// a method can change self: grow both sides by the factor
+fn Rect.scale(float by) {
+    self.w *= by
+    self.h *= by
+}
+
+test "area and perimeter" {
+    r := Rect(3.0, 4.0)
+    assert(r.area() == 12.0)
+    assert(r.perimeter() == 14.0)
+}
+
+test "scale" {
+    r := Rect(w: 1.0, h: 2.0)
+    r.scale(3.0)
+    assert(r.w == 3.0 && r.h == 6.0)
+}

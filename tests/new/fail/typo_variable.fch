@@ -1,0 +1,6 @@
+// expect: there is no variable named 'agee'
+// expect: help: did you mean 'age'?
+fn main() {
+    age := 10
+    print(agee)
+}

@@ -1,0 +1,29 @@
+// 05: lists
+//
+//   nums := [3, 1, 4]       nums.len is 3       nums[0] is 3 (counting starts at 0)
+//   nums.push(5)            adds at the end
+//   for i, n in nums { }    i is the position, n the value
+//
+// TODO: fill in both functions.
+
+fn biggest([]int nums) -> int {
+    best := nums[0]
+    // TODO: go through nums and keep the biggest in best
+    return best
+}
+
+// only the positive numbers, in the same order
+fn positives([]int nums) -> []int {
+    []int out
+    // TODO: push each number above 0 into out
+    return out
+}
+
+test "biggest" {
+    assert(biggest([3, 9, 2]) == 9)
+    assert(biggest([-5, -2, -8]) == -2)
+}
+
+test "positives" {
+    assert(str(positives([3, -1, 0, 7])) == "[3, 7]")
+}

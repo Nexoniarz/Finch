@@ -1,0 +1,29 @@
+// 08: changing the caller's variable with mut
+//
+// Parameters are copies: a function can't change your variable... unless the parameter is mut,
+// and you say mut at the call too, so everyone can see it changes:
+//
+//   fn add_one(mut int n) { n += 1 }          add_one(mut count)
+//
+// TODO: make swap and add_all work. Change only the function headers and bodies.
+
+fn swap(int a, int b) {       // TODO: a and b need mut
+    // TODO: swap them (hint: keep one in a third variable)
+}
+
+fn add_all([]str list, []str more) {       // TODO: one of these needs mut
+    // TODO: push every element of more into list
+}
+
+test "swap" {
+    x := 1
+    y := 2
+    swap(x, y)                  // TODO: say mut here when swap takes mut
+    assert(x == 2 && y == 1)
+}
+
+test "add_all" {
+    birds := ["finch"]
+    add_all(birds, ["robin", "wren"])          // TODO
+    assert(birds.join(", ") == "finch, robin, wren")
+}

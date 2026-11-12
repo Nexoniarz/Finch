@@ -1,0 +1,5 @@
+// expect: there is no function named 'prnt'
+// expect: help: did you mean 'print'?
+fn main() {
+    prnt("hi")
+}

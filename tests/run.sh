@@ -73,6 +73,24 @@ for f in fail/*.fch new/fail/*.fch; do
     fi
 done
 
+# the exercises' solutions must keep passing (and the exercises themselves must keep compiling)
+for f in ../exercises/solutions/[0-9]*.fch ../exercises/[0-9]*.fch; do
+    other_arch "$f" && continue
+    got=$("$FINCH" test "$f" 2>&1 | tr -d '\r')
+    if [[ "$f" == */solutions/* ]]; then
+        ok=0; [[ "$got" == *" 0 failed"* ]] && ok=1
+    else
+        ok=1; echo "$got" | grep -qE '^[^ ]+:[0-9]+:[0-9]+: error:' && ok=0
+    fi
+    if [ $ok = 1 ]; then
+        pass=$((pass + 1))
+    else
+        failed=$((failed + 1))
+        echo "FAIL exercise $f"
+        echo "$got" | head -5
+    fi
+done
+
 # the commands around the compiler: finch test, the chain of calls, finch fmt, a finch.toml project
 check_tool() {   # name, what it printed, the file with what it should print
     if [ "$2" == "$(tr -d '\r' < "$3")" ]; then

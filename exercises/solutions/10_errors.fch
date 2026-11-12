@@ -1,0 +1,38 @@
+// 10: errors as values
+//
+// A function that can fail says so with ! after its result type, and fails with return error("why"):
+//
+//   fn parse_age(str s) -> int! { ... return error("not a number") ... }
+//
+// The caller must say what happens then:
+//   parse_age(s) or 0              a value to use instead
+//   parse_age(s) or { ... }        a block (err holds the reason)
+//   try parse_age(s)               fail too, with the same error (only in a function that can fail)
+//
+// TODO: finish parse_age and safe_age.
+
+fn parse_age(str s) -> int! {
+    n := int(s) or {
+        return error("'" + s + "' is not a number")
+    }
+    if n < 0 || n > 150 {
+        return error("\(n) is not an age")
+    }
+    return n
+}
+
+// the age, or -1 when the text isn't one
+fn safe_age(str s) -> int {
+    return parse_age(s) or -1
+}
+
+test "good ages" {
+    assert(safe_age("31") == 31)
+    assert(safe_age("0") == 0)
+}
+
+test "bad ages" {
+    assert(safe_age("old") == -1)
+    assert(safe_age("200") == -1)
+    assert(safe_age("-4") == -1)
+}

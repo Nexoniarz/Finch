@@ -14,7 +14,7 @@ fn compileShader(u32 kind, str source) -> u32 {
     glGetShaderiv(shader, GL_COMPILE_STATUS, addr(ok))
     if ok == 0 {
         log := " ".repeat(1024)
-        glGetShaderInfoLog(shader, 1024, null, log)
+        glGetShaderInfoLog(shader, 1024, null, log.ptr)
         print("shader error:", str(log.ptr))
         exit(1)
     }

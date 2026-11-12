@@ -70,20 +70,20 @@ Decyzje, od których zależy cała reszta:
 |---|---|---|
 | `src/cimport.fch` (część C++) | | Nagłówek, który nie jest C, jest czytany jako C++ (`looksLikeC`, `translateCpp`): nakładki `extern "C"` na jego funkcje, metody, konstruktory i destruktory (po jednej na liczbę argumentów, gdy są domyślne) i opisujący je nagłówek C trafiają do katalogu podręcznego; nagłówek C jest importowany jak zwykle, nakładki są linkowane (`-ffunction-sections` + `--gc-sections` / `-dead_strip` usuwają nieużywane). `CImports.cppNames` mapuje `ns.f`, `Klasa#metoda`, `Klasa.new` na nakładki; `cppCall()` w gen.fch wybiera jedną po liczbie argumentów i typach literałów i woła ją przez `callC` |
 | `src/diag.fch` | 260 | Jak wyglądają błędy i ostrzeżenia: linia kodu, zakres `^` (z UTF-8 i tabulatorami), `help:`/`note:`, kolory tylko w terminalu, linia stanu po budowaniu. `finch index` zostawia jedną zwykłą linię na błąd dla serwera języka |
-| `src/lexer.fch` | 470 | Tokeny, pozycje, tekst `"""`, zamiana `"\(x)"` na tokeny `("…" + str(x) + "…")` |
-| `src/ast.fch` | 170 | Jedna struktura `Node` z rodzajem (`kind`) jako tekstem, dziećmi, nazwami typów i pozycją (`line`, `endLine`); rozpoznawanie typów wektorowych |
-| `src/parser.fch` | 910 | Zejście rekurencyjne: deklaracje, instrukcje, wyrażenia, typy generyczne (`[T]`), `enum`, `match`, `export`, `link`, `const`, `test "…" { }` |
-| `src/gen.fch` | 7030 | Sprawdzanie typów i IR: struktury, funkcje, metody, zasięgi i zwalnianie, instrukcje, wyrażenia, funkcje wbudowane, mapy, błędy jako wartości, typy generyczne (monomorfizacja), enumy i `match`, wektory (SIMD), metadane debuggera (`-g`), tryb `index` |
-| `src/cimport.fch` | 790 | libclang: funkcje, struktury i unie (pola, przesunięcia, wyrównanie), enumy, stałe, zmienne globalne, makra (także o wartości struktury) |
+| `src/lexer.fch` | 480 | Tokeny, pozycje, tekst `"""`, zamiana `"\(x)"` na tokeny `("…" + str(x) + "…")` |
+| `src/ast.fch` | 210 | Jedna struktura `Node` z rodzajem (`kind`) jako tekstem, dziećmi, nazwami typów i pozycją (`line`, `endLine`); rozpoznawanie typów wektorowych |
+| `src/parser.fch` | 1110 | Zejście rekurencyjne: deklaracje, instrukcje, wyrażenia, typy generyczne (`[T]`), `enum`, `match`, `export`, `link`, `const`, `test "…" { }` |
+| `src/gen.fch` | 9370 | Sprawdzanie typów i IR: struktury, funkcje, metody, zasięgi i zwalnianie, instrukcje, wyrażenia, funkcje wbudowane, mapy, błędy jako wartości, typy generyczne (monomorfizacja), enumy i `match`, wektory (SIMD), metadane debuggera (`-g`), tryb `index` |
+| `src/cimport.fch` | 1410 | libclang: funkcje, struktury i unie (pola, przesunięcia, wyrównanie), enumy, stałe, zmienne globalne, makra (także o wartości struktury) |
 | `src/platform.fch` | 120 | `Target`: triple, układ danych, kompilator C, znak typu `char` na danym systemie |
-| `src/linker.fch` | 480 | Pamięć podręczna (runtime, obiekt programu, pliki C/C++), biblioteki (`link`, pkg-config), podpowiedzi przy błędach linkera |
-| `src/main.fch` | 530 | Sterownik: wiersz poleceń, wczytywanie modułów i nakładek, `build/run/test/fmt/ir/index/lsp` |
+| `src/linker.fch` | 580 | Pamięć podręczna (runtime, obiekt programu, pliki C/C++), biblioteki (`link`, pkg-config), podpowiedzi przy błędach linkera |
+| `src/main.fch` | 600 | Sterownik: wiersz poleceń, wczytywanie modułów i nakładek, `build/run/test/fmt/ir/index/lsp` |
 | `src/manifest.fch` | 240 | `finch.toml`: mały czytnik TOML, listy dla poszczególnych systemów |
-| `src/fmt.fch` | 225 | `finch fmt` i formatowanie w serwerze języka |
+| `src/fmt.fch` | 220 | `finch fmt` i formatowanie w serwerze języka |
 | `src/lsp.fch` | 950 | Serwer języka (§11) |
-| `src/docs.fch` | 140 | Jeden opis funkcji wbudowanych, wspólny dla podpowiedzi i dymków |
+| `src/docs.fch` | 170 | Jeden opis funkcji wbudowanych, wspólny dla podpowiedzi i dymków |
 | `std/*.fch` | 1040 | `json`, `path`, `time` (+`_windows`), `proc` (+`_windows`), `fs`, `thread` |
-| `runtime/finch_rt.c` | 1150 | Runtime w C: teksty, tablice, mapy, pliki, wypisywanie liczb, fs, wątki, uruchamianie testów, ścieżka wywołań |
+| `runtime/finch_rt.c` | 1380 | Runtime w C: teksty, tablice, mapy, pliki, wypisywanie liczb, fs, wątki, uruchamianie testów, ścieżka wywołań |
 | `bootstrap/` | | `build.sh`, `install.sh`, pliki startowe (§10) |
 
 ---

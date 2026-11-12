@@ -67,22 +67,22 @@ Design decisions that shape the rest:
 
 | File | Lines | Responsibility |
 |---|---|---|
-| `src/lexer.fch` | 470 | Tokens, positions, `"""` text, `"\(x)"` turned into `("…" + str(x) + "…")` tokens |
-| `src/ast.fch` | 170 | One `Node` struct with a `kind` string, children, type names, positions (`line`, `endLine`) |
-| `src/parser.fch` | 910 | Recursive descent: declarations, statements, expressions, generics (`[T]`), `enum`, `match`, `export`, `link`, `const`, `test "…" { }` |
-| `src/gen.fch` | 7030 | Type check + IR: structs, functions, methods, scopes and drops, statements, expressions, built-ins, maps, errors as values, generics (monomorphisation), enums and `match`, vectors (SIMD), `-g` debug metadata, the `index` mode |
-| `src/cimport.fch` | 790 | libclang: functions, structs and unions (fields, offsets, padding), enums, constants, globals, macros (also struct-valued) |
+| `src/lexer.fch` | 480 | Tokens, positions, `"""` text, `"\(x)"` turned into `("…" + str(x) + "…")` tokens |
+| `src/ast.fch` | 210 | One `Node` struct with a `kind` string, children, type names, positions (`line`, `endLine`) |
+| `src/parser.fch` | 1110 | Recursive descent: declarations, statements, expressions, generics (`[T]`), `enum`, `match`, `export`, `link`, `const`, `test "…" { }` |
+| `src/gen.fch` | 9370 | Type check + IR: structs, functions, methods, scopes and drops, statements, expressions, built-ins, maps, errors as values, generics (monomorphisation), enums and `match`, vectors (SIMD), `-g` debug metadata, the `index` mode |
+| `src/cimport.fch` | 1410 | libclang: functions, structs and unions (fields, offsets, padding), enums, constants, globals, macros (also struct-valued) |
 | `src/platform.fch` | 120 | `Target`: triple, data layout, C compiler, signedness of `char` per system |
-| `src/linker.fch` | 480 | The cache (runtime, program object, C/C++ files), libraries (`link`, pkg-config), link-error advice |
-| `src/main.fch` | 530 | Driver: CLI, loader with module lookup and overlays, `build/run/test/fmt/ir/index/lsp` |
+| `src/linker.fch` | 580 | The cache (runtime, program object, C/C++ files), libraries (`link`, pkg-config), link-error advice |
+| `src/main.fch` | 600 | Driver: CLI, loader with module lookup and overlays, `build/run/test/fmt/ir/index/lsp` |
 | `src/manifest.fch` | 240 | `finch.toml`: a small TOML reader, per-target lists |
-| `src/fmt.fch` | 225 | `finch fmt` and LSP formatting |
+| `src/fmt.fch` | 220 | `finch fmt` and LSP formatting |
 | `src/lsp.fch` | 950 | The language server (§11) |
 | `src/cimport.fch` (C++ part) | | A header that isn't C is read as C++ (`looksLikeC`, `translateCpp`): `extern "C"` wrappers for its functions, methods, constructors and destructors (one per arity where defaults exist) and a C header describing them go to the cache; the C header is imported as usual, the wrappers are linked (`-ffunction-sections` + `--gc-sections` / `-dead_strip` drop the unused). `CImports.cppNames` maps `ns.f`, `Class#method`, `Class.new` to the wrappers; `cppCall()` in gen.fch picks one by arity and literal argument types and calls it through `callC` |
 | `src/diag.fch` | 260 | How errors and warnings are shown: the code line, the `^` span (UTF-8 and tab aware), `help:`/`note:`, colours for a terminal only, the build status line. `finch index` keeps one plain line per error for the language server |
-| `src/docs.fch` | 140 | One description of the built-ins, shared by hover and completion |
+| `src/docs.fch` | 170 | One description of the built-ins, shared by hover and completion |
 | `std/*.fch` | 1040 | `json`, `path`, `time` (+`_windows`), `proc` (+`_windows`), `fs`, `thread` |
-| `runtime/finch_rt.c` | 1150 | The C runtime: text, arrays, maps, files, float printing, fs, threads, the test runner, the call chain |
+| `runtime/finch_rt.c` | 1380 | The C runtime: text, arrays, maps, files, float printing, fs, threads, the test runner, the call chain |
 | `bootstrap/` | | `build.sh`, `install.sh`, the seeds (§10) |
 
 ---

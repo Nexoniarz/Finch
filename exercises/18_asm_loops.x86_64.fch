@@ -1,0 +1,27 @@
+// 18: assembly, step 3: a loop
+//
+// The processor works on a few very fast boxes called registers. Most instructions take one register and change it:
+//   mov a, b      a = b                     add a, b      a = a + b          sub a, b      a = a - b
+//   imul a, b     a = a * b                 shl a, n      a = a * 2^n        shr a, n      a = a / 2^n
+//   inc a / dec a a + 1 / a - 1             cmp a, b      compare (sets flags)   jnz / jl / jmp: jump
+// In Finch:  asm("add {x}, {y}", mut x, y)   {x} is your variable in a register; mut means the code changes it.
+// These are x86-64 (Intel syntax). They run on a usual PC; on ARM, see the ARM manual for the same ideas.
+//
+// A loop in assembly is a label and a jump back to it:
+//   2:              a label (a number followed by a colon)
+//   dec {n}         n = n - 1, and the processor notes whether the result is 0
+//   jnz 2b          jump back to label 2 (b = backwards) if it was Not Zero
+//
+// TODO: sum = 1 + 2 + ... + n, with a loop in assembly. Assume n >= 1.
+
+fn sum_to_asm(int n) -> int {
+    sum := 0
+    // TODO: "2:\n add {sum}, {n}\n dec {n}\n jnz 2b"   (sum and n both change)
+    return sum
+}
+
+test "sum_to_asm" {
+    assert(sum_to_asm(1) == 1)
+    assert(sum_to_asm(4) == 10)
+    assert(sum_to_asm(100) == 5050)
+}

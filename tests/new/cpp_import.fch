@@ -18,6 +18,5 @@ fn main() {
     print(c.value(), Counter.twice(21), counter_total(c))
     c.delete()
 
-    print(geo.checked(7))
-    print(geo.checked(-1))
+    print(geo.checked(7))            // the exception itself: tests/new/fail/cpp_exception.fch
 }

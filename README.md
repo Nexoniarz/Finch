@@ -55,7 +55,7 @@ fn main() {
   arguments and exceptions work, with no C bridge to write.
 - **Any C library, directly.** `import "raylib.h"` + `link "raylib"`, and you can call it, structs by value
   and callbacks included. Headers are read by libclang, so there is nothing to declare by hand.
-- **Written in itself.** The compiler is Finch code, and nothing else: `src/*.fch`, about 12k lines. It is built from a
+- **Written in itself.** The compiler is Finch code, and nothing else: `src/*.fch`, about 16k lines. It is built from a
   seed (its own LLVM IR, `bootstrap/`) and then from itself, and the two come out identical.
 
 ## Quick start
@@ -95,6 +95,7 @@ Pick the guide that fits you:
 | **Technicians** | Know computers, new to programming: install, whole language, C libraries, troubleshooting | [for-technicians.md](docs/en/for-technicians.md) | [dla-technikow.md](docs/pl/dla-technikow.md) |
 | **Engineers** | Everything: lexer, grammar, AST, type rules, IR lowering, libclang import, ABI, internals | [for-engineers.md](docs/en/for-engineers.md) | [dla-inzynierow.md](docs/pl/dla-inzynierow.md) |
 | **Cheat sheet** | Every function, method, operator and command on one page | [cheatsheet.md](docs/en/cheatsheet.md) | [sciaga.md](docs/pl/sciaga.md) |
+| **Exercises** | Learning by doing: 18 small tasks with tests that check them, from `print` to assembly | [exercises/](exercises/README.md) | [exercises/](exercises/README.pl.md) |
 
 ## The language at a glance
 
@@ -187,6 +188,7 @@ std/        the standard library, in Finch: json, path, time, proc, fs, thread
 runtime/    the small C runtime linked into every program
 bootstrap/  build.sh and the seeds: the compiler's own LLVM IR, one per system
 examples/   example programs
+exercises/  practice: small tasks with tests (exercises/next.sh shows the next one), and their solutions
 editors/    VS Code extension, Kate highlighting and LSP setup
 tests/      run/ new/ (golden output), fail/ new/fail/ (expected errors), run.sh, cross.sh, shared.sh, lsp_test.py
 docs/       en/ and pl/ guides for three audiences

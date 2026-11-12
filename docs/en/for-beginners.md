@@ -762,8 +762,10 @@ fn main() {
 
 ```
 hello.fch:3:11: error: there is no variable named 'agee'
-    3 |     print(agee)
-      |           ^
+   |
+ 3 |     print(agee)
+   |           ^^^^
+   = help: did you mean 'age'?
 ```
 
 How to read it:
@@ -771,7 +773,9 @@ How to read it:
 - `hello.fch` is the file,
 - `3` is the **line** number,
 - `11` is how far into the line (the **column**),
-- then the explanation, and the line itself with a `^` pointing at the problem.
+- then the explanation, the line itself with `^^^^` under the problem, and a `help:` line with what to try.
+
+In a terminal the message comes in colour, so the important parts stand out.
 
 Here we simply misspelled `age`.
 
