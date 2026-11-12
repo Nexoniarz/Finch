@@ -1,21 +1,23 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 300" width="1000" height="300">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 829 238" width="829" height="238">
   <title>Finch</title>
-  <g transform="translate(0 6) scale(0.56)">
+  <g transform="translate(219.56 -31)">
+  <g transform="translate(-216.33 46.95) scale(0.40254)">
   <path d="M226.6 37.0 Q256.0 20.0 285.4 37.0 L430.9 121.0 Q460.4 138.0 460.4 172.0 L460.4 340.0 Q460.4 374.0 430.9 391.0 L285.4 475.0 Q256.0 492.0 226.6 475.0 L81.1 391.0 Q51.6 374.0 51.6 340.0 L51.6 172.0 Q51.6 138.0 81.1 121.0 Z" fill="#FF7A1A"/>
   <g transform="translate(256 256) scale(1.45) translate(-94.50 -150.00)">
     <path d="M60 230 L60 112 C60 84 78 70 104 70 M32 142 L98 142" fill="none" stroke="#FFFFFF" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
     <circle cx="153.0" cy="74.0" r="19" fill="#FFC145"/>
   </g>
   </g>
-  <g transform="translate(330 20)">
-  <g fill="none" stroke="#F5F3EF" stroke-width="30" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M60 230 L60 112 C60 84 78 70 104 70"/>
-    <path d="M32 142 L98 142"/>
-    <path d="M150 146 L150 230"/>
-    <path d="M210 230 L210 146 M210 188 C210 162 230 142 258 142 C286 142 302 160 302 188 L302 230"/>
-    <path d="M428 162 C414 148 400 142 384 142 C356 142 336 162 336 187 C336 212 356 232 384 232 C400 232 414 226 428 212"/>
-    <path d="M478 230 L478 70 M478 188 C478 162 498 142 526 142 C554 142 570 160 570 188 L570 230"/>
+  <g transform="translate(0 0)">
+    <g fill="none" stroke="#F5F3EF" stroke-width="30" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M60 230 L60 112 C60 84 78 70 104 70"/>
+      <path d="M32 142 L98 142"/>
+      <path d="M150 146 L150 230"/>
+      <path d="M210 230 L210 146 M210 188 C210 162 230 142 258 142 C286 142 302 160 302 188 L302 230"/>
+      <path d="M428 162 C414 148 400 142 384 142 C356 142 336 162 336 187 C336 212 356 232 384 232 C400 232 414 226 428 212"/>
+      <path d="M478 230 L478 70 M478 188 C478 162 498 142 526 142 C554 142 570 160 570 188 L570 230"/>
+    </g>
+    <circle cx="150" cy="96" r="19" fill="#FF7A1A"/>
   </g>
-  <circle cx="150" cy="96" r="19" fill="#FF7A1A"/>
   </g>
 </svg>
