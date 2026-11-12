@@ -1,0 +1,5 @@
+// expect: deref(...) takes a pointer (like one from addr(x) or new(...)), but this is int
+fn main() {
+    x := 3
+    print(deref(x))
+}

@@ -4220,46 +4220,46 @@ fn unify(ptr[Gen] g, ptr[Val] l, ptr[Val] r) -> bool {
         // a number written in the code adapts to the other side; otherwise
         // the smaller type grows into the bigger one
         if l.lit && !r.lit && fits(l.v, l.ty, r.ty) {
-            l.value = Val(v: l.v, ty: r.ty, lit: true)
+            l[0] = Val(v: l.v, ty: r.ty, lit: true)
             return true
         }
         if r.lit && !l.lit && fits(r.v, r.ty, l.ty) {
-            r.value = Val(v: r.v, ty: l.ty, lit: true)
+            r[0] = Val(v: r.v, ty: l.ty, lit: true)
             return true
         }
         if widens(l.ty, r.ty) {
-            l.value = Val(v: intCast(g, l.v, l.ty, r.ty), ty: r.ty)
+            l[0] = Val(v: intCast(g, l.v, l.ty, r.ty), ty: r.ty)
             return true
         }
         if widens(r.ty, l.ty) {
-            r.value = Val(v: intCast(g, r.v, r.ty, l.ty), ty: l.ty)
+            r[0] = Val(v: intCast(g, r.v, r.ty, l.ty), ty: l.ty)
             return true
         }
         return false
     }
     if isInt(l.ty) && isFloat(r.ty) {
-        l.value = coerce(g, l.value, r.ty, Node0(), "")
+        l[0] = coerce(g, l[0], r.ty, Node0(), "")
         return true
     }
     if isFloat(l.ty) && isInt(r.ty) {
-        r.value = coerce(g, r.value, l.ty, Node0(), "")
+        r[0] = coerce(g, r[0], l.ty, Node0(), "")
         return true
     }
     if isFloat(l.ty) && isFloat(r.ty) {
         // a number written in the code adapts to an f32 on the other side: x * 2.0 stays f32
         if l.ty.kind == "f32" && r.lit {
-            r.value = Val(v: floatCast(g, r.v, r.ty, l.ty), ty: l.ty)
+            r[0] = Val(v: floatCast(g, r.v, r.ty, l.ty), ty: l.ty)
             return true
         }
         if r.ty.kind == "f32" && l.lit {
-            l.value = Val(v: floatCast(g, l.v, l.ty, r.ty), ty: r.ty)
+            l[0] = Val(v: floatCast(g, l.v, l.ty, r.ty), ty: r.ty)
             return true
         }
         if l.ty.kind == "f32" {
-            l.value = Val(v: floatCast(g, l.v, l.ty, T("float")), ty: T("float"))
+            l[0] = Val(v: floatCast(g, l.v, l.ty, T("float")), ty: T("float"))
         }
         if r.ty.kind == "f32" {
-            r.value = Val(v: floatCast(g, r.v, r.ty, T("float")), ty: T("float"))
+            r[0] = Val(v: floatCast(g, r.v, r.ty, T("float")), ty: T("float"))
         }
         return true
     }
@@ -4611,6 +4611,9 @@ fn ref(ptr[Gen] g, ast.Node e, bool write) -> Ref {
     if e.kind == "index" {
         return index(g, e, write)
     }
+    if e.kind == "call" && e.name == "deref" && lookup(g, e.name) < 0 && findFn(g, g.module, e.name) < 0 {
+        return Ref(isPlace: true, pl: derefPlace(g, e))     // deref(p) = x
+    }
     return Ref(isPlace: false, val: expr(g, e))
 }
 
@@ -4837,15 +4840,16 @@ fn member(ptr[Gen] g, ast.Node m, bool write) -> Ref {
         }
         panicIf(g, op(g, "icmp eq ptr " + pv + ", null"), "used ." + m.name + " on a null pointer", m)
         target := t.elem[0]
-        structHasValue := false
-        if target.kind == "struct" {
-            structHasValue = g.structs[findStruct(g, target.module, target.name)].fnames.contains("value")
-        }
-        if m.name == "value" && !structHasValue {
+        // on a pointer to a struct, .name is always a field (so a field called value is never in doubt);
+        // the whole thing a pointer points to is deref(p), and p.value too when there are no fields to mix it up with
+        if target.kind != "struct" {
+            if m.name != "value" {
+                fail(g, m, "a " + ast.show(t) + " only has '.value' (the thing it points to, also written deref(p))")
+            }
             return Ref(isPlace: true, pl: Place(addr: pv, ty: target))
         }
-        if target.kind != "struct" {
-            fail(g, m, "a " + ast.show(t) + " only has '.value' (the thing it points to)")
+        if m.name == "value" && !g.structs[findStruct(g, target.module, target.name)].fnames.contains("value") {
+            fail(g, m, ast.show(target) + " has no field 'value' (the whole " + ast.show(target) + " it points to is deref(" + argText(m.kids[0]) + "))")
         }
         obj = Ref(isPlace: true, pl: Place(addr: pv, ty: target))
         t = target
@@ -6123,6 +6127,10 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     if n == "cpu_has" && lookup(g, n) < 0 && findFn(g, g.module, n) < 0 {
         return cpuHasCall(g, c)
     }
+    if n == "deref" && lookup(g, n) < 0 && findFn(g, g.module, n) < 0 && !g.ci.fns.has(n) {
+        pl := derefPlace(g, c)
+        return Val(v: load(g, llty(g, pl.ty), pl.addr), ty: pl.ty)
+    }
     if n == "asm" && lookup(g, n) < 0 && findFn(g, g.module, n) < 0 && !g.ci.fns.has(n) {
         return asmCall(g, c)
     }
@@ -7071,6 +7079,23 @@ fn callValue(ptr[Gen] g, Val fv, ast.Node c, int first, str shown) -> Val {
     release(g, fv)
     heldEnd(g, mark)
     return r
+}
+
+// deref(p): the whole value p points to (the other way from addr(x)); it can be read and assigned
+fn derefPlace(ptr[Gen] g, ast.Node c) -> Place {
+    checkArgs(g, c, 0, 1, "deref")
+    if g.index {
+        noteRef(g, c, c.col, 5, docs.hover(docs.find(docs.builtins(), "deref")), "", 0, 0)
+    }
+    p := expr(g, c.kids[0])
+    if p.ty.kind != "ptr" {
+        fail(g, c.kids[0], "deref(...) takes a pointer (like one from addr(x) or new(...)), but this is " + ast.show(p.ty))
+    }
+    if p.ty.elem.len == 0 {
+        fail(g, c.kids[0], "this ptr has no type, so Finch doesn't know what's inside (give it one: ptr[int] q = p)")
+    }
+    panicIf(g, op(g, "icmp eq ptr " + p.v + ", null"), "deref(...) of a null pointer", c)
+    return Place(addr: p.v, ty: p.ty.elem[0])
 }
 
 // ---------- inline assembly ----------

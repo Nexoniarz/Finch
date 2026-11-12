@@ -10,14 +10,19 @@ struct Box {
 fn main() {
     last := new(Node(value: 2, next: null))
     first := Node(value: 1, next: last)
-    p := addr(first)
+    p := addr(first)                // Node has a field called value: p.value is that field
     print(p.value, p.next.value)
     p.value = 10
     print(first.value)
     b := Box(3)
     q := addr(b)
-    print(q.value, q.size)
-    q.value = Box(7)
+    print(deref(q), q.size)        // the whole Box: deref(q); .name on a pointer to a struct is a field
+    deref(q) = Box(7)
     print(b)
+    n := 5
+    pn := addr(n)
+    pn.value += 1                   // a ptr[int] has no fields: .value is the number, like deref(pn)
+    deref(pn) *= 2
+    print(n, deref(pn))
     free(last)
 }

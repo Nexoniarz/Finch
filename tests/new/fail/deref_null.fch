@@ -1,0 +1,5 @@
+// expect: runtime error: deref(...) of a null pointer
+fn main() {
+    ptr[int] p = null
+    print(deref(p))
+}

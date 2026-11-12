@@ -366,7 +366,8 @@ Automatic only when nothing is lost: smaller → bigger number, any int → floa
 |---|---|
 | `ptr[int] p` | `int *p` |
 | `addr(x)` | `&x` (a struct variable given where `ptr[ThatStruct]` goes: `push(body)` = `push(addr(body))`) |
-| `p.value` | `*p` |
+| `deref(p)` | `*p` (also `deref(p) = v`; `p.value` on a pointer to a number) |
+| `p.x` | `p->x`: on a pointer to a struct, `.name` is always a field |
 | `p.field` | `p->field` |
 | `p[i]` | `p[i]` |
 | `null` | `NULL` |
@@ -450,7 +451,7 @@ A C function's `char *` result is a `str` already; structs by value work with th
 | `division by zero` | `/` or `%` by 0 |
 | `index 5 is out of range (the length is 3)` | `a[5]` |
 | `pop() on an empty array` | |
-| `used .value on a null pointer` | `.value` / `.field` / `[i]` through `null` |
+| `used .value on a null pointer`, `deref(...) of a null pointer` | `.value` / `.field` / `[i]` / `deref` through `null` |
 | `can't turn "x" into int` | `int("x")` |
 | `can't read the file "…"` | `read_file` (without `or`) |
 | `the key "x" is not in the map` | `m["x"]` |

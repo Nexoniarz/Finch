@@ -533,7 +533,7 @@ Testem akceptacyjnym jest `tests/lsp_test.py`.
 | Przepełnienie liczby całkowitej ze znakiem | UB | zdefiniowane zawinięcie (bez `nsw`) |
 | Dzielenie całkowite przez zero, `INT_MIN / -1` | UB | błąd kompilacji, jeśli to stała; w przeciwnym razie błąd w trakcie działania |
 | Indeks tablicy poza zakresem | UB | błąd w trakcie działania (także dla pól `[N]T` struktur C) |
-| Dereferencja `null` | UB | błąd w trakcie działania dla `.value`, `.pole`, `[i]` |
+| Dereferencja `null` | UB | błąd w trakcie działania dla `deref(p)`, `.value`, `.pole`, `[i]` |
 | Użycie po zwolnieniu / podwójne zwolnienie tablic, tekstów, struktur | częste błędy | niemożliwe: tych nie zwalnia się ręcznie |
 | Wyciek pamięci tablic, tekstów, struktur | częsty błąd | niemożliwy bez `new` |
 | `x & 1 == 0` | `x & (1 == 0)` | `(x & 1) == 0` |

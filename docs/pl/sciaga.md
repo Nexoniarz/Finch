@@ -366,7 +366,8 @@ Automatycznie tylko wtedy, gdy nic nie ginie: mniejsza liczba → większa, licz
 |---|---|
 | `ptr[int] p` | `int *p` |
 | `addr(x)` | `&x` (zmienna-struktura podana tam, gdzie oczekiwany jest `ptr[TaStruktura]`: `push(cialo)` = `push(addr(cialo))`) |
-| `p.value` | `*p` |
+| `deref(p)` | `*p` (także `deref(p) = v`; `p.value` na wskaźniku do liczby) |
+| `p.x` | `p->x`: na wskaźniku do struktury `.nazwa` to zawsze pole |
 | `p.pole` | `p->pole` |
 | `p[i]` | `p[i]` |
 | `null` | `NULL` |
@@ -450,7 +451,7 @@ Wynik `char *` funkcji C od razu jest `str`; struktury przez wartość działaj�
 | `division by zero` | `/` albo `%` przez 0 |
 | `index 5 is out of range (the length is 3)` | `a[5]` |
 | `pop() on an empty array` | |
-| `used .value on a null pointer` | `.value` / `.pole` / `[i]` przez `null` |
+| `used .value on a null pointer`, `deref(...) of a null pointer` | `.value` / `.pole` / `[i]` / `deref` przez `null` |
 | `can't turn "x" into int` | `int("x")` |
 | `can't read the file "…"` | `read_file` (bez `or`) |
 | `the key "x" is not in the map` | `m["x"]` |
