@@ -44,13 +44,18 @@ fn main() {
   into SSE, AVX2, AVX-512 or NEON instructions, so one piece of code is fast on a desktop, a laptop and ARM.
 - **Errors that talk like a person:**
   ```
-  game.fch:3:13: error: 'y' must be i32, but this is int (use i32(...) to convert)
-      3 |     i32 y = x
-        |             ^
+  game.fch:3:13: error: 'y' must be i32, but this is int
+     |
+   3 |     i32 y = x
+     |             ^
+     = help: use i32(...) to convert
   ```
+  In a terminal they come in colour, and `finch build` says how long it took.
+- **C++ libraries too.** `import "imgui.h"`, then `ImGui.Button("OK")`: namespaces, classes, overloads, default
+  arguments and exceptions work, with no C bridge to write.
 - **Any C library, directly.** `import "raylib.h"` + `link "raylib"`, and you can call it, structs by value
   and callbacks included. Headers are read by libclang, so there is nothing to declare by hand.
-- **Written in itself.** The compiler is Finch code, and nothing else: `src/*.fch`, about 12k lines. It is built from a
+- **Written in itself.** The compiler is Finch code, and nothing else: `src/*.fch`, about 16k lines. It is built from a
   seed (its own LLVM IR, `bootstrap/`) and then from itself, and the two come out identical.
 
 ## Quick start
@@ -90,6 +95,7 @@ Pick the guide that fits you:
 | **Technicians** | Know computers, new to programming: install, whole language, C libraries, troubleshooting | [for-technicians.md](docs/en/for-technicians.md) | [dla-technikow.md](docs/pl/dla-technikow.md) |
 | **Engineers** | Everything: lexer, grammar, AST, type rules, IR lowering, libclang import, ABI, internals | [for-engineers.md](docs/en/for-engineers.md) | [dla-inzynierow.md](docs/pl/dla-inzynierow.md) |
 | **Cheat sheet** | Every function, method, operator and command on one page | [cheatsheet.md](docs/en/cheatsheet.md) | [sciaga.md](docs/pl/sciaga.md) |
+| **Exercises** | Learning by doing: 18 small tasks with tests that check them, from `print` to assembly | [exercises/](exercises/README.md) | [exercises/](exercises/README.pl.md) |
 
 ## The language at a glance
 
@@ -97,12 +103,14 @@ Pick the guide that fits you:
 |---|---|
 | Variables | `x := 5` (inferred) or `int x = 5`; `const W = 640` |
 | Types | `int` `float` `bool` `char` `str`, sized `i8`…`i64` `u8`…`u64` `f32` `f64`, arrays `[]T`, maps `map[K]V`, pointers `ptr[T]`, vectors `f32x8` `i8x32`… |
-| Functions | `fn add(int a, int b) -> int { return a + b }` |
+| Functions | `fn add(int a, int b) -> int { return a + b }`; `fn grow(mut []int list)` changes the caller's variable: `grow(mut nums)` |
 | Structs | `struct Point { … }` with one field per line (`int x`, `int y = 0`); create with `Point(1, 2)` or `Point(x: 1)` |
 | Methods | `fn Point.move(int dx) { self.x += dx }` → `p.move(3)` |
-| Arrays | `nums := [1, 2, 3]`, `nums.push(4)`, `nums[0]`, `nums.len`, `for i, n in nums { }` |
+| Arrays | `nums := [1, 2, 3]`, `nums.push(4)`, `nums[0]`, `nums.len`, `for i, n in nums { }`, `people.sort_by(fn(a, b) { return a.age < b.age })`, `filter`, `map`, `any`, `all` |
+| Functions as values | `fn(int) -> int f = double`, `f := fn(int x) -> int { return x + n }` (takes copies of what it uses), struct fields and lists of them |
 | Maps | `ages := ["ann": 31]`, `ages["bob"] = 25`, `ages.has("cy")`, `counts[w] += 1`, `for k, v in ages { }` |
 | Errors | `fn parse(str s) -> int! { … return error("bad") }` → `parse(s) or 0`, `parse(s) or { … }`, `try parse(s)` |
+| Assembly | `asm("add {x}, {y}", mut x, y)`, `asm("cpuid", eax: mut a)`: Intel syntax on x86, sizes picked for you on ARM64 |
 | Vectors (SIMD) | `v := f32x8(list, i)`, `v * 2.0 + w`, `v.sum()`, `select(v > 0.0, v, 0.0)`, `t.lookup(idx)`, `acc.dot_add(a, b)`, `v.store(list, i)` |
 | Processors | `--cpu native`; `@cpu("avx2") fn …` with `if cpu_has("avx2")`; floats computed as written (`fma`/`muladd` to fuse) |
 | Text | `"hp \(hp)"`, `"a" + "b"`, `str(42)`, `int("42")`, `s.split(",")`, `s.upper()`, `s[0]` |
@@ -110,10 +118,12 @@ Pick the guide that fits you:
 | Memory | automatic for arrays, text and structs; `new(...)` / `free(...)` for your own heap structures |
 | Enums, match | `enum Color { Red, Green }`, `match c { Red -> ... else -> ... }` (also as a value) |
 | Generics | `fn max[T](T a, T b) -> T`, `struct Stack[T]`, `Stack[int]()` |
+| Optional values | `fn find(str n) -> Person?`, `return null`, `find(n) or guest`, `if p := find(n) { }`, `x == null` |
+| Interfaces | `interface Shape { fn area() -> float }`: any struct with those methods is one; `[]Shape shapes = [Circle(1.0), Rect(2.0, 3.0)]` |
 | Modules | `import shapes` → `shapes.area(b)`, `import ui/button as btn`; the standard library: `json`, `path`, `time`, `proc`, `fs`, `thread` |
 | Threads | `thread.spawn(addr(work), addr(data))`, `t.join()`, `thread.mutex()`, `atomic_add(addr(n), 1)` |
 | Tests | `test "name" { assert(x == 3) }` next to the code, run with `finch test` |
-| C interop | `import "stdio.h"`, `link "glfw"`, `link "mine.c"` / `"glue.cpp"`, unions, `#define`s (also `(Color){…}`), `addr(fn)` for callbacks |
+| C interop | `import "stdio.h"`, `link "glfw"`, `link "mine.c"` / `"glue.cpp"` / `"crate/Cargo.toml"`, unions, `#define`s (also `(Color){…}`), `addr(fn)` for callbacks |
 | I/O | `print(...)`, `input("? ")`, `read_file`, `write_file`, `shell` |
 | Tools | `finch run/build/test/fmt/ir/lsp`, `finch.toml` for a project, a build cache, `--target windows/arm64/macos/android`, `--cpu native`, `-g` for gdb/lldb, `-O0`, the chain of calls on runtime errors |
 
@@ -163,6 +173,11 @@ Pick the guide that fits you:
 - [x] The compiler on every system it builds for: Linux, macOS (Apple Silicon and Intel), Windows; releases made by CI
 - [x] Vector types (`f32x8`, `i8x32`, …) for SIMD, and `--cpu native`
 - [x] Masks, shuffles, byte lookup and `dot_add` for kernels; `@cpu` and `cpu_has`; `fma`/`muladd`, float bits, f16 and bf16
+- [x] `mut` parameters (change the caller's variable without pointers); inline assembly with `asm(...)` on x86-64 and ARM64
+- [x] Functions as values: `fn(int) -> bool` types, functions written in place that keep copies of what they use, `sort_by`, `filter`, `map`, `any`, `all`
+- [x] Optional values `T?` (`or`, `if v := x`) and interfaces (any type with the methods is one)
+- [x] C++ headers imported directly: namespaces, classes, overloads, default arguments, exceptions as runtime errors
+- [x] Rust crates through `Cargo.toml` (`import "crate/Cargo.toml"` with cbindgen, or `link` it with your own header)
 
 ## Layout
 
@@ -173,6 +188,7 @@ std/        the standard library, in Finch: json, path, time, proc, fs, thread
 runtime/    the small C runtime linked into every program
 bootstrap/  build.sh and the seeds: the compiler's own LLVM IR, one per system
 examples/   example programs
+exercises/  practice: small tasks with tests (exercises/next.sh shows the next one), and their solutions
 editors/    VS Code extension, Kate highlighting and LSP setup
 tests/      run/ new/ (golden output), fail/ new/fail/ (expected errors), run.sh, cross.sh, shared.sh, lsp_test.py
 docs/       en/ and pl/ guides for three audiences

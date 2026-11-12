@@ -1,6 +1,7 @@
 // The Finch parser, written in Finch: tokens -> ast.Program.
 import lexer
 import ast
+import diag
 
 struct Parser {
     []lexer.Token toks
@@ -8,10 +9,15 @@ struct Parser {
     int depth      // inside ( ) and [ ] newlines don't end anything
     int file
     str path
+    bool plain      // finch index: the error as one line, for the language server
 }
 
 fn fail(ptr[Parser] p, lexer.Token t, str msg) {
-    print(p.path + ":" + str(t.line) + ":" + str(t.col) + ": error: " + msg)
+    if p.plain {
+        print(p.path + ":" + str(t.line) + ":" + str(t.col) + ": error: " + msg)
+    } else {
+        diag.errorAt(p.path, t.line, t.col, msg, "")
+    }
     exit(1)
 }
 
@@ -89,8 +95,48 @@ fn isTypeName(str n) -> bool {
     return names.contains(n) || ast.vecType(n).kind.len > 0
 }
 
-// int, str, ptr[T], []T, Name, module.Name
+// int, str, ptr[T], []T, Name, module.Name, and any of them with ? after: may be missing (null)
 fn parseType(ptr[Parser] p) -> ast.Type {
+    t := parseBaseType(p)
+    if at(p, "?") && !cur(p).nl {
+        next(p)
+        if at(p, "?") {
+            fail(p, cur(p), "one ? is enough: T? is a T or nothing")
+        }
+        return ast.optOf(t)
+    }
+    return t
+}
+
+fn parseBaseType(ptr[Parser] p) -> ast.Type {
+    if at(p, "fn") {
+        // fn(int, int) -> bool: a function as a value
+        next(p)
+        expect(p, "(", "'(' (a function type looks like fn(int) -> bool)")
+        out := ast.Type(kind: "fn")
+        out.elem.push(ast.simple("void"))
+        p.depth += 1
+        while !at(p, ")") {
+            if at(p, "mut") {
+                fail(p, cur(p), "a function value can't have mut parameters (yet): it gets copies, like any call")
+            }
+            out.elem.push(parseType(p))
+            if !accept(p, ",") {
+                break
+            }
+        }
+        p.depth -= 1
+        expect(p, ")", "')'")
+        if accept(p, "->") {
+            if !at(p, "!") {
+                out.elem[0] = parseType(p)
+            }
+            if accept(p, "!") {
+                out.name = "!"
+            }
+        }
+        return out
+    }
     if accept(p, "[") {
         expect(p, "]", "']' (an array type looks like []int)")
         return ast.arrayOf(parseType(p))
@@ -157,6 +203,9 @@ fn genericDeclAhead(ptr[Parser] p) -> bool {
         } else if k == "]" {
             depth -= 1
             if depth == 0 {
+                if i + 2 < p.toks.len && p.toks[i + 1].kind == "?" && !p.toks[i + 1].nl {
+                    i += 1                  // Stack[int]? s
+                }
                 return i + 1 < p.toks.len && p.toks[i + 1].kind == "ident" && !p.toks[i + 1].nl
             }
         } else if k == "eof" || p.toks[i].nl && depth == 0 {
@@ -180,10 +229,15 @@ fn genericCallAhead(ptr[Parser] p) -> bool {
     if peekKind(p, 1) != "[" || p.toks[p.i + 1].nl || peekKind(p, 2) == "]" {
         return false
     }
+    // only what a type can be made of: steps[0](x) and steps[i + 1](x) are an element, called
+    typeTokens := ["ident", "[", "]", ",", ".", "fn", "(", ")", "->", "!"]
     depth := 0
     i := p.i + 1
     while i < p.toks.len {
         k := p.toks[i].kind
+        if depth > 0 && !typeTokens.contains(k) {
+            return false
+        }
         if k == "[" {
             depth += 1
         } else if k == "]" {
@@ -203,6 +257,9 @@ fn atDeclaration(ptr[Parser] p) -> bool {
     if genericDeclAhead(p) {
         return true
     }
+    if at(p, "fn") && peekKind(p, 1) == "(" {
+        return true             // fn(int) -> int f = double
+    }
     if at(p, "[") {
         return peekKind(p, 1) == "]"
     }
@@ -213,8 +270,17 @@ fn atDeclaration(ptr[Parser] p) -> bool {
     if n == "ident" {
         return !p.toks[p.i + 1].nl
     }
+    if n == "?" && peekKind(p, 2) == "?" {
+        return true                 // int?? x: parseType says one ? is enough
+    }
+    if n == "?" && peekKind(p, 2) == "ident" {
+        return !p.toks[p.i + 1].nl && !p.toks[p.i + 2].nl         // int? x
+    }
     if (cur(p).text == "ptr" || cur(p).text == "map") && n == "[" {
         return true
+    }
+    if n == "." && peekKind(p, 2) == "ident" && peekKind(p, 3) == "?" {
+        return peekKind(p, 4) == "ident" && !p.toks[p.i + 4].nl     // shapes.Box? b
     }
     return n == "." && peekKind(p, 2) == "ident" && peekKind(p, 3) == "ident" && !p.toks[p.i + 3].nl
 }
@@ -261,13 +327,15 @@ fn parseProgram(ptr[Parser] p) -> ast.Program {
         } else if at(p, "link") {
             lt := next(p)
             lib := expect(p, "string", "a library name in quotes, like link \"glfw\"").text
-            ownCode := lib.ends_with(".c") || lib.ends_with(".o") || lib.ends_with(".a") || lib.ends_with(".cpp") || lib.ends_with(".cc") || lib.ends_with(".cxx") || lib.ends_with(".lib")      // your own C or C++ code, next to the .fch file
+            ownCode := lib.ends_with(".c") || lib.ends_with(".o") || lib.ends_with(".a") || lib.ends_with(".cpp") || lib.ends_with(".cc") || lib.ends_with(".cxx") || lib.ends_with(".lib") || lib.ends_with("Cargo.toml")      // your own C, C++ or Rust code, next to the .fch file
             if !ownCode && (lib.starts_with("lib") || lib.contains(".so") || lib.contains("/")) {
                 fail(p, lt, "write just the library's name: for libglfw.so that's  link \"glfw\"")
             }
             prog.links.push(lib)
         } else if at(p, "struct") {
             prog.structs.push(parseStruct(p))
+        } else if at(p, "ident") && cur(p).text == "interface" && peekKind(p, 1) == "ident" {
+            prog.ifaces.push(parseInterface(p))
         } else if at(p, "const") {
             prog.consts.push(parseConst(p))
         } else if at(p, "ident") && cur(p).text == "test" && peekKind(p, 1) == "string" {
@@ -468,6 +536,54 @@ fn parseTParams(ptr[Parser] p) -> []str {
     return names
 }
 
+// interface Shape { fn area() -> float }: what a type must be able to do. Any struct or enum with these methods is one.
+fn parseInterface(ptr[Parser] p) -> ast.Node {
+    s := node(p, "interface")
+    next(p)
+    s.name = expect(p, "ident", "an interface name").text
+    expect(p, "{", "'{'")
+    while !at(p, "}") {
+        if at(p, "eof") {
+            fail(p, cur(p), "an interface is never closed (missing '}')")
+        }
+        if !at(p, "fn") {
+            fail(p, cur(p), "unexpected " + describe(cur(p)) + " (an interface lists methods, one per line: fn area() -> float)")
+        }
+        m := node(p, "fn")
+        next(p)
+        m.name = expect(p, "ident", "a method name").text
+        expect(p, "(", "'('")
+        p.depth += 1
+        while !at(p, ")") {
+            if at(p, "mut") {
+                fail(p, cur(p), "an interface's methods can't take mut parameters (yet)")
+            }
+            prm := node(p, "param")
+            prm.ty = parseType(p)
+            prm.name = expect(p, "ident", "a parameter name").text
+            m.kids.push(prm)
+            if !accept(p, ",") {
+                break
+            }
+        }
+        p.depth -= 1
+        expect(p, ")", "')'")
+        m.ty = ast.simple("void")
+        if accept(p, "->") {
+            if !at(p, "!") {
+                m.ty = parseType(p)
+            }
+            m.fallible = accept(p, "!")
+        }
+        if at(p, "{") {
+            fail(p, cur(p), "an interface only names its methods; their code goes in each struct's own  fn Type." + m.name + "(...) { ... }")
+        }
+        s.kids.push(m)
+    }
+    next(p)
+    return s
+}
+
 fn parseStruct(ptr[Parser] p) -> ast.Node {
     s := node(p, "struct")
     expect(p, "struct", "'struct'")
@@ -516,6 +632,7 @@ fn parseFn(ptr[Parser] p) -> ast.Node {
     if !at(p, ")") {
         while true {
             prm := node(p, "param")
+            prm.mutable = accept(p, "mut")
             prm.ty = parseType(p)
             prm.name = expect(p, "ident", "a parameter name").text
             f.kids.push(prm)
@@ -621,8 +738,11 @@ fn parseStatement(ptr[Parser] p) -> ast.Node {
         s.kids.push(parseStatement(p))
         return s
     }
-    if k == "fn" || k == "struct" || k == "import" || k == "link" {
-        fail(p, cur(p), "'" + k + "' can't be used here in the self-hosted compiler")
+    if k == "fn" && peekKind(p, 1) != "(" {
+        fail(p, cur(p), "a function can't be made inside another one (put it outside, or make it a value:  name := fn(int x) -> int { ... })")
+    }
+    if k == "struct" || k == "import" || k == "link" {
+        fail(p, cur(p), "'" + k + "' goes at the top level of the file, outside any function")
     }
 
     if atDeclaration(p) {
@@ -667,6 +787,12 @@ fn parseStatement(ptr[Parser] p) -> ast.Node {
 fn parseIf(ptr[Parser] p) -> ast.Node {
     s := node(p, "if")
     expect(p, "if", "'if'")
+    if at(p, "ident") && peekKind(p, 1) == ":=" {
+        // if p := find(name) { ... }: only when there is a value, which p then is
+        s.name = next(p).text
+        next(p)
+        s.flag = true
+    }
     s.kids.push(parseExpr(p))
     s.kids.push(parseBlock(p))
     if accept(p, "else") {
@@ -788,7 +914,15 @@ fn parseArgs(ptr[Parser] p, ptr[ast.Node] call) {
                 next(p)
             }
             call.names.push(name)
-            call.kids.push(parseExpr(p))
+            if at(p, "mut") {
+                // f(mut x): x is given to a mut parameter, which changes it
+                m := node(p, "mut")
+                next(p)
+                m.kids.push(parseExpr(p))
+                call.kids.push(m)
+            } else {
+                call.kids.push(parseExpr(p))
+            }
             if !accept(p, ",") {
                 break
             }
@@ -811,6 +945,12 @@ fn parsePostfix(ptr[Parser] p) -> ast.Node {
                 parseArgs(p, addr(m))
             }
             e = m
+        } else if at(p, "(") && !cur(p).nl {
+            // make_adder(10)(1), steps[0](x): a call of whatever function value comes before
+            cv := node(p, "callv")
+            cv.kids.push(e)
+            parseArgs(p, addr(cv))
+            e = cv
         } else if at(p, "[") {
             ix := node(p, "index")
             next(p)
@@ -827,8 +967,53 @@ fn parsePostfix(ptr[Parser] p) -> ast.Node {
     return e
 }
 
+// fn(int a, int b) -> int { return a + b }: a function written where it is used. The parameters may leave out
+// their types (fn(a, b) { ... }) where the type that is wanted says them, like an argument of sort_by.
+fn parseLambda(ptr[Parser] p) -> ast.Node {
+    e := node(p, "lambda")
+    expect(p, "fn", "'fn'")
+    expect(p, "(", "'('")
+    p.depth += 1
+    while !at(p, ")") {
+        prm := node(p, "param")
+        if at(p, "mut") {
+            fail(p, cur(p), "a function value can't have mut parameters (yet): it gets copies, like any call")
+        }
+        if at(p, "ident") && (peekKind(p, 1) == "," || peekKind(p, 1) == ")") {
+            prm.name = next(p).text             // its type comes from where the function goes
+        } else {
+            prm.ty = parseType(p)
+            prm.name = expect(p, "ident", "a parameter name").text
+        }
+        e.kids.push(prm)
+        if !accept(p, ",") {
+            break
+        }
+    }
+    p.depth -= 1
+    expect(p, ")", "')'")
+    if accept(p, "->") {
+        e.flag = true                           // the result is written out
+        e.ty = ast.simple("void")
+        if !at(p, "!") {
+            e.ty = parseType(p)
+        }
+        e.fallible = accept(p, "!")
+    }
+    if !at(p, "{") {
+        fail(p, cur(p), "unexpected " + describe(cur(p)) + " (a function value's body comes next, in { })")
+    }
+    body := parseBlock(p)
+    e.endLine = body.endLine
+    e.kids.push(body)
+    return e
+}
+
 fn parsePrimary(ptr[Parser] p) -> ast.Node {
     t := cur(p)
+    if t.kind == "fn" && peekKind(p, 1) == "(" {
+        return parseLambda(p)
+    }
     e := node(p, "")
     k := t.kind
     if k == "int" || k == "float" || k == "char" {
@@ -923,7 +1108,7 @@ fn parsePrimary(ptr[Parser] p) -> ast.Node {
     return e
 }
 
-fn parse([]lexer.Token toks, int file, str path) -> ast.Program {
-    parser := Parser(toks: toks, i: 0, depth: 0, file: file, path: path)
+fn parse([]lexer.Token toks, int file, str path, bool plain) -> ast.Program {
+    parser := Parser(toks: toks, i: 0, depth: 0, file: file, path: path, plain: plain)
     return parseProgram(addr(parser))
 }

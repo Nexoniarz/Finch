@@ -1,0 +1,19 @@
+// expect: give it an interface type
+interface Shape {
+    fn area() -> float
+}
+struct Sq {
+    float s
+}
+struct Ci {
+    float r
+}
+fn Ci.area() -> float {
+    return self.r
+}
+fn Sq.area() -> float {
+    return 1.0
+}
+fn main() {
+    shapes := [Ci(1.0), Sq(2.0)]
+}

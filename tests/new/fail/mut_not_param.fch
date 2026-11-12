@@ -1,0 +1,6 @@
+// expect: 'list' is not a mut parameter of show
+fn show([]int list) { print(list) }
+fn main() {
+    nums := [1]
+    show(mut nums)
+}

@@ -1,0 +1,8 @@
+// expect: this is P?, which may be null, so it has no '.name' until it is checked
+struct P {
+    str name
+}
+fn main() {
+    P? p = P("a")
+    print(p.name)
+}

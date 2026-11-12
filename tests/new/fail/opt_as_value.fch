@@ -1,0 +1,6 @@
+// expect: 'x' must be int, but this is int?, which may be null
+// expect: help: give a fallback
+fn main() {
+    int? m = 3
+    int x = m
+}

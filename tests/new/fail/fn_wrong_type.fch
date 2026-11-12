@@ -1,0 +1,7 @@
+// expect: must be fn(int) -> int, but this is fn(str) -> int
+fn apply(fn(int) -> int f) -> int {
+    return f(1)
+}
+fn main() {
+    print(apply(fn(str s) -> int { return s.len }))
+}

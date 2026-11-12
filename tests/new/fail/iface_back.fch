@@ -1,0 +1,17 @@
+// expect: can't be turned back into the type inside it
+interface Shape {
+    fn area() -> float
+}
+struct Sq {
+    float s
+}
+struct Ci {
+    float r
+}
+fn Ci.area() -> float {
+    return self.r
+}
+fn main() {
+    Shape x = Ci(1.0)
+    Ci c = x
+}

@@ -1,0 +1,6 @@
+// expect: 'a' is given as mut to join, so it can't be used by another argument
+fn join(mut []int a, []int b) { a.push(b.len) }
+fn main() {
+    a := [1]
+    join(mut a, a)
+}

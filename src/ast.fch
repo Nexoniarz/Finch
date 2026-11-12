@@ -1,7 +1,10 @@
 // The syntax tree of the self-hosted compiler.
 
 // A type as written or resolved.
-//   kind: "void" "int" "bool" "char" "float" "str" "null" "ptr" "array" "named" "struct"
+//   kind: "void" "int" "bool" "char" "float" "str" "null" "ptr" "array" "named" "struct" "fn"
+//   fn(int, str) -> bool: elem[0] is the result ("void" for none), then the parameters; name "!" if it can fail
+//   "opt": T?, a T or nothing (null); elem[0] is T
+//   "iface": an interface (name, module): any struct or enum with its methods, boxed
 //   elem: the element of an array or the target of a ptr (zero or one entry)
 //   name, module: structs ("" module = the main file)
 struct Type {
@@ -27,6 +30,12 @@ fn mapOf(Type k, Type v) -> Type {
     out := Type(kind: "map")
     out.elem.push(k)
     out.elem.push(v)
+    return out
+}
+
+fn optOf(Type t) -> Type {
+    out := Type(kind: "opt")
+    out.elem.push(t)
     return out
 }
 
@@ -75,13 +84,16 @@ fn same(Type a, Type b) -> bool {
     if a.kind != b.kind {
         return false
     }
-    if a.kind == "struct" || a.kind == "named" || a.kind == "enum" {
+    if a.kind == "struct" || a.kind == "named" || a.kind == "enum" || a.kind == "iface" {
         return a.name == b.name && a.module == b.module
+    }
+    if a.kind == "fn" && a.name != b.name {
+        return false
     }
     if (a.kind == "fixed" || a.kind == "vec") && a.count != b.count {
         return false
     }
-    if a.kind == "array" || a.kind == "ptr" || a.kind == "map" || a.kind == "fixed" || a.kind == "vec" {
+    if a.kind == "array" || a.kind == "ptr" || a.kind == "map" || a.kind == "fixed" || a.kind == "vec" || a.kind == "fn" || a.kind == "opt" {
         if a.elem.len != b.elem.len {
             return false
         }
@@ -96,6 +108,28 @@ fn same(Type a, Type b) -> bool {
 }
 
 fn show(Type t) -> str {
+    if t.kind == "opt" {
+        if t.elem[0].kind == "fn" {
+            return "(" + show(t.elem[0]) + ")?"
+        }
+        return show(t.elem[0]) + "?"
+    }
+    if t.kind == "fn" {
+        []str ps
+        for i in 1..t.elem.len {
+            ps.push(show(t.elem[i]))
+        }
+        out := "fn(" + ps.join(", ") + ")"
+        if t.elem[0].kind != "void" {
+            out = out + " -> " + show(t.elem[0])
+            if t.name == "!" {
+                out = out + "!"
+            }
+        } else if t.name == "!" {
+            out = out + " -> !"
+        }
+        return out
+    }
     if t.kind == "array" {
         return "[]" + show(t.elem[0])
     }
@@ -120,7 +154,7 @@ fn show(Type t) -> str {
         }
         return "ptr[" + show(t.elem[0]) + "]"
     }
-    if t.kind == "struct" || t.kind == "named" || t.kind == "enum" {
+    if t.kind == "struct" || t.kind == "named" || t.kind == "enum" || t.kind == "iface" {
         if t.module.len > 0 {
             return t.module + "." + t.name
         }
@@ -146,6 +180,7 @@ struct Node {
     Type ty       // declared type (decl, param, field, fn result)
     bool flag     // decl: has a type; or: the right side is a { block }
     bool fallible // fn: -> T!  or  -> !
+    bool mutable  // param: mut T name, the caller's own variable (changes reach it)
     bool exported // export fn: a C function of a library (finch build --shared)
     str cpu       // @cpu("avx2,fma") fn: the processor features the function may use
     []Node kids
@@ -166,6 +201,7 @@ struct Program {
     []str links     // link "glfw", link "mine.c"
     []Node structs
     []Node enums
+    []Node ifaces   // interface Name { fn method(...) -> T }: kids are the methods (no bodies)
     []Node fns
     []Node consts   // const NAME = value
     []str tests     // the functions made from test "..." { } blocks, in order

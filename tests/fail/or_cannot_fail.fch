@@ -1,4 +1,4 @@
-// expect: this call can't fail, so it needs no 'or' or 'try'
+// expect: this call can't fail and its value is never null, so it needs no 'or'
 fn main() {
     print(int(3.5) or 0)
 }

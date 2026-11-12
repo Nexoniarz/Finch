@@ -42,6 +42,9 @@ compiler works inside. For that, see the [guide for engineers](for-engineers.md)
 29. [Threads](#29-threads)
 30. [C++, Rust and Android](#30-c-rust-and-android)
 31. [Vectors (SIMD)](#31-vectors-simd)
+32. [Assembly inside Finch: asm](#32-assembly-inside-finch-asm)
+33. [Optional values: T?](#33-optional-values-t)
+34. [Interfaces](#34-interfaces)
 
 ---
 
@@ -486,12 +489,89 @@ fn no_result(str message) {       // no "->": returns nothing
 
 - Arguments behave like copies: changing a parameter never changes the caller's variable.
   (Finch only really copies when needed: a function that doesn't change an array gets it for free.)
-  To change the caller's variable, pass a pointer: see [Pointers](#14-pointers).
+  To change the caller's variable, make the parameter `mut` (below).
 - A function with `-> type` must return a value on every path. Finch checks this.
 - A function cannot be defined inside another function.
 - A function that can fail is written `-> int!` (or `-> !` with no result); see
   [Errors as values](#errors-as-values).
 - Long calls can be split over several lines inside the brackets; a comma after the last argument is fine.
+
+### Changing the caller's variable: `mut`
+
+```c
+fn add_enemy(mut []str enemies, str name) {
+    enemies.push(name)            // changes the caller's list itself
+}
+
+fn heal(mut Player p, int by) {
+    p.hp += by
+}
+
+list := ["bat"]
+add_enemy(mut list, "rat")        // list is now ["bat", "rat"]
+heal(mut hero, 5)                 // also a field or an element: mut hero.hp, mut team[2]
+```
+
+`mut` is written in both places: in the function, so you can see what it changes, and at the call, so whoever reads
+the call knows the variable will change. Nothing is copied: the function works on the caller's variable directly.
+
+- The argument must be a variable, a field or an element (not `mut 5` or `mut f()`), of exactly the parameter's type.
+- A variable given as `mut` can't be used by another argument of the same call (`join(mut a, a)`), so a function never
+  sees a half-changed value.
+- Loop variables (`for x in list`) and constants can't be given as `mut`.
+
+### Functions as values
+
+A function can be stored in a variable, passed to another function, kept in a list or a struct, and called later.
+Its type is written `fn(parameter types) -> result`:
+
+```c
+fn double(int x) -> int {
+    return x * 2
+}
+
+fn apply(fn(int) -> int f, int x) -> int {
+    return f(x)
+}
+
+apply(double, 5)                                   // 10: a named function as a value
+apply(fn(int x) -> int { return x * x }, 7)        // 49: a function written right where it is used
+
+shout := fn(str s) -> str { return s.upper() + "!" }
+print(shout("hi"))                                 // HI!
+```
+
+A function written in the code can use the variables around it. It takes a **copy** of each one when it is made,
+so it never sees later changes and never points at something that is gone:
+
+```c
+fn make_adder(int n) -> fn(int) -> int {
+    return fn(int x) -> int { return x + n }       // keeps its own n
+}
+
+add10 := make_adder(10)
+print(add10(1))                                    // 11
+```
+
+- The copies are read-only inside the function (`count += 1` there is an error that says so). To get a result
+  out, `return` it.
+- Where the type is already known, the parameter types and the result can be left out:
+  `people.sort_by(fn(a, b) { return a.age < b.age })`.
+- Function types can fail like any function: `fn(str) -> int!`, called with `or` / `try`.
+- A struct field can hold one: `Button(on_click: fn() { ... })`, called as `b.on_click()`.
+- A variable of a function type that was never given one holds nothing yet; calling it stops the program with a
+  clear message.
+- Generic functions take them too: `fn twice[T](fn(T) -> T f, T x) -> T`. A generic function itself can't be a
+  value (it is a different function for each type); wrap it: `fn(int a, int b) -> int { return max(a, b) }`.
+
+Lists have methods that take a function:
+
+| Method | Gives |
+|---|---|
+| `list.sort_by(fn(a, b) { return a.age < b.age })` | sorts in place by your rule (stable: equal ones keep their order) |
+| `list.filter(fn(x) { return x > 0 })` | a new list of the elements the function says yes to |
+| `list.map(fn(int x) -> str { return str(x) })` | a new list of the function's results (write its result type) |
+| `list.any(fn(x) { ... })`, `list.all(fn(x) { ... })` | `bool`; they stop as soon as the answer is known |
 
 ---
 
@@ -517,6 +597,8 @@ grid := [[1, 2], [3, 4]]   // arrays of arrays
 | `a.resize(n)` | make it `n` long (new elements are zero) |
 | `a.contains(x)`, `a.find(x)` | is `x` there? its index, or -1 (numbers, chars, bools, str) |
 | `a.sort()`, `a.reverse()` | in place (numbers, chars, str) |
+| `a.sort_by(fn(x, y) { return … })` | in place, by your rule (see [Functions as values](#functions-as-values)) |
+| `a.filter(f)`, `a.map(f)`, `a.any(f)`, `a.all(f)` | with a function: the elements it keeps, its results, is it true for any / all |
 | `a.slice(s, e)` | a new array with elements `s` … `e-1` |
 | `a.join(sep)` | for `[]str`: one text with `sep` between the parts |
 | `a.ptr` | the address of the first element (for C) |
@@ -930,12 +1012,20 @@ success, no unwinding, and the cost of a failure is building its message.
 ### Compile errors
 
 ```
-game.fch:12:9: error: 'score' must be int, but this is str
-   12 |     score = "high"
-      |             ^
+game.fch:12:13: error: 'y' must be i32, but this is int
+    |
+ 12 |     i32 y = x
+    |             ^
+    = help: use i32(...) to convert
 ```
 
-Format: `file:line:column: error: explanation`, then the line with a `^` under the spot.
+Format: `file:line:column: error: explanation` (terminals and editors jump to it), then the line with `^` under the
+spot, and the hint on a `help:` line. Inside a generic function a `note:` says which version was being built.
+Warnings look the same, in yellow, and the program is still built.
+
+In a terminal the messages are in colour; in a pipe, a file or an editor they are plain. `NO_COLOR=1` or
+`FINCH_COLOR=never` turns colour off, `FINCH_COLOR=always` keeps it even in a pipe. The same goes for runtime errors
+(which then also show the line of code the program stopped on) and for `finch test`.
 
 ### Runtime errors
 
@@ -1198,7 +1288,6 @@ write_file(path.join("out", "config.json"), json.pretty(doc))
 
 Not there yet:
 
-- Interfaces.
 - Unicode-aware text: `.len`, `s[i]` and `upper()` work on bytes / ASCII.
 - Checks that stop two threads from changing the same array at once (use a mutex).
 - Windows on ARM64, 32-bit systems, WebAssembly.
@@ -1256,7 +1345,7 @@ name = "game"                        # the program finch build makes (from the e
 entry = "src/main.fch"               # used when finch run / build / test get no file
 paths = ["src", "lib"]               # folders with Finch modules
 include = ["vendor/SDL3/include"]    # folders with C headers (also for your .c / .cpp files)
-links = ["SDL3", "native/glue.cpp"]  # libraries, and your own .c / .cpp / .o / .a files
+links = ["SDL3", "native/glue.cpp"]  # libraries, and your own .c / .cpp / .o / .a files or Rust crates (Cargo.toml)
 libdirs = ["vendor/SDL3/lib"]        # folders with libraries
 cflags = ["-DFAST"]                  # for your .c / .cpp files
 ldflags = ["-Wl,-rpath,$ORIGIN"]     # for the linker
@@ -1328,35 +1417,61 @@ is there and says whether it did. `thread.cpus()` says how many threads the mach
 
 ## 30. C++, Rust and Android
 
-Finch talks to other languages through C, the way every language does.
+**C++**: import the header itself. Finch reads it as C++ when it isn't C (namespaces, classes, `.hpp`):
 
-**C++**: put what Finch calls behind a C header, with `extern "C"` on the C++ side:
+```c
+import "imgui.h"                       // Dear ImGui, as it comes
+link "imgui.cpp"                       // and its code, like any library
 
-```cpp
-// glue.h
-#ifdef __cplusplus
-extern "C" {
-#endif
-int physics_step(float dt);
-#ifdef __cplusplus
-}
-#endif
+ImGui.Begin("Tools")                   // a function in a namespace: Namespace.function
+if ImGui.Button("OK") { ... }          // default arguments are filled in by C++
+ImGui.TextWrapped(message)             // printf-style functions print the text as it is
+ImGui.End()
 ```
 
-and `import "glue.h"` with `link "glue.cpp"` (or `links = ["glue.cpp"]` in `finch.toml`). The `.cpp` file is built with
-the C++ compiler (`clang++` or `g++`, or `FINCH_CXX`), which then also links, so the C++ library comes along.
-A C++ library that has a C API (Box2D 3, Jolt's JoltC, PhysX's C wrapper) is imported like any C library.
+| C++ | Finch |
+|---|---|
+| `ns::f(a, b)` | `ns.f(a, b)` (nested namespaces joined with `_`: `outer_inner.f`) |
+| a function in no namespace | `f(a, b)` |
+| `obj->method(x)` | `obj.method(x)`, on a pointer to the class or on a struct |
+| `Class::stat(x)` | `Class.stat(x)` |
+| `new Class(a)`, `delete p` | `Class.new(a)` (a `ptr[Class]`), `p.delete()` |
+| default arguments | leave them out, as in C++ |
+| overloads | the one that fits the arguments |
+| `T &` | a pointer (`addr(x)`), or a copy for `const T &` of a number or a plain struct |
+| a plain struct (public fields, no virtual, plain copy) | a Finch struct: `Vec2(1.0, 2.0)`, by value |
+| any other class | used through a pointer only |
+| `enum class Mode { Fast }` | `Mode_Fast`; plain enums keep their names |
+| an exception | a runtime error: `runtime error: a C++ exception: negative number` |
 
-**Rust**: make a `staticlib` and export C functions:
+How it works: Finch writes a small C++ file of `extern "C"` functions, one for each function, method, constructor and
+destructor (one for each number of arguments where some have defaults), and a C header that describes them, into its
+cache folder. It imports that header like any C header and builds the C++ file with your program; the linker then
+leaves out the ones you don't call. Templates, operators and functions that take things like `std::string` by value
+are not available (calling one says why); a C wrapper of your own still works for those.
+
+A C++ library with a C API (Box2D 3, Jolt's JoltC, PhysX's C wrapper) is imported like any C library, and your own
+`.cpp` files can be linked with `link "glue.cpp"` (built with `clang++` or `g++`, or `FINCH_CXX`).
+
+**Rust**: point Finch at the crate's `Cargo.toml`. Its library is a `staticlib` whose C functions are `extern "C"`:
 
 ```rust
-// Cargo.toml: [lib] crate-type = ["staticlib"]
+// pathfind/Cargo.toml:  [lib] crate-type = ["staticlib"]
 #[no_mangle]
 pub extern "C" fn path_len(x: f32, y: f32) -> f32 { (x * x + y * y).sqrt() }
 ```
 
-Write the header (`float path_len(float x, float y);`, or let `cbindgen` write it), then `import "pathfind.h"` and
-`link "target/release/libpathfind.a"`. On Linux a Rust static library also needs `links = ["dl", "pthread"]`.
+```c
+import "pathfind/Cargo.toml"     // cbindgen writes the C header, cargo builds the crate, Finch links it
+print(path_len(3.0, 4.0))
+```
+
+`import "…/Cargo.toml"` needs `cbindgen` (`cargo install cbindgen`). Without it, write the header yourself
+(`float path_len(float x, float y);`) and use `import "pathfind.h"` with `link "pathfind/Cargo.toml"`: Finch runs
+`cargo build --release` each build (quick when nothing changed), links `target/release/lib<name>.a` and adds what Rust's
+standard library needs from the system. `#[repr(C)]` structs work by value like C structs. For Windows programs the crate
+is built for `x86_64-pc-windows-gnu`, and for `--target` the matching Rust target, which `rustup target add` installs.
+A crate without `crate-type = ["staticlib"]` gets an error that shows the two lines to add.
 
 **Android**: `finch build game.fch --target android --shared` makes `libgame.so` for 64-bit ARM Android (API 24 and
 up) with the NDK's clang, found through `ANDROID_NDK_HOME` (or `FINCH_CC`). Load it from an app, for example through
@@ -1552,3 +1667,131 @@ Lanes wider than the processor's registers are split by LLVM, and the same code 
 
 On NixOS, Nix's clang wrapper removes `-march=native` inside `nix-shell`. Finch tells the wrapper to keep it, so
 `--cpu native` works there too; if it ever has no effect, Finch warns.
+
+---
+
+## 32. Assembly inside Finch: asm
+
+`asm(...)` puts processor instructions right in your code. It is how you try one instruction and see what it does,
+or use one that Finch has no word for.
+
+```c
+fn add_asm(int a, int b) -> int {
+    total := a
+    asm("add {total}, {b}", mut total, b)      // {total}: that variable, in a register the compiler picks
+    return total
+}
+
+i32 leaf = 0
+i32 b = 0
+i32 c = 0
+i32 d = 0
+asm("cpuid", eax: mut leaf, ebx: mut b, ecx: mut c, edx: mut d)    // eax: that exact register
+
+asm("mov rcx, 4\n imul {m}, rcx", mut m, scratch: "rcx")         // rcx is used, so its value is lost
+```
+
+| Written | Means |
+|---|---|
+| `{x}` in the text, `x` as an argument | `x` goes into a register the compiler picks, written there in its place |
+| `mut x` | the instructions change `x`: it is read first and written back after |
+| `n: 7` with `{n}` in the text | a value that is not a variable, under a name |
+| `eax: mut x` (no `{eax}` in the text) | `x` in exactly that register |
+| `scratch: "rcx, rdx"` | registers the instructions use for themselves |
+| `{x:w}` | how the register is written (as in C: `w`, `x`, `s`, `d` on ARM64) |
+| `{{`, `}}` | a brace itself (AVX-512's `{k1}` is `{{k1}}`) |
+
+- x86-64 uses **Intel syntax** (`add dst, src`), the one in Intel's and AMD's manuals.
+- On ARM64 a register is named by its size, and Finch picks the name from the variable: `w0` for an `i32`, `x0` for an
+  `int`, `s0` for an `f32`, `d0` for a `float`.
+- Values must fit in a register: numbers, `char`, pointers, vectors (`f32x4` and so on go in vector registers).
+- The compiler assumes the instructions may read and write memory and the flags, so it never moves your code around
+  them. Instructions for another processor fail at build time, so keep them behind `--target` or two versions of a
+  function; `cpu_has(...)` tells which features the processor running the program has.
+
+---
+
+## 33. Optional values: T?
+
+`T?` is a `T` that may be missing. It is how a function says "I found nothing" without an error and without a
+made-up value like -1:
+
+```c
+fn find(map[str]Person people, str name) -> Person? {
+    if people.has(name) {
+        return people[name]        // a Person goes in as it is
+    }
+    return null                    // or nothing
+}
+```
+
+A `Person?` can't be used as a `Person` until you say what happens when it is missing. There are three ways:
+
+```c
+p := find(people, "ann") or guest          // a fallback
+p := find(people, "ann") or {              // or a block that leaves (return, break, continue, exit)
+    print("no Ann")
+    return
+}
+if p := find(people, "ann") {              // or only when it is there
+    print(p.name)
+} else {
+    print("no Ann")
+}
+if find(people, "zed") == null { ... }     // and the question itself
+```
+
+- Any type can be optional: `int?`, `str?`, `[]int?` (a list of maybe-numbers), struct fields (`str? nickname`).
+  A variable `int? x` with nothing given starts as `null`. `print` shows `null` or the value.
+- A `ptr` can already be `null`, so `ptr[T]?` is not needed (and not allowed).
+- Using one directly is an error that says what to do: `'x' must be int, but this is int?, which may be null`,
+  `this is P?, which may be null, so it has no '.name' until it is checked`.
+
+---
+
+## 34. Interfaces
+
+An interface names what a type can do. **Any** struct or enum that has those methods is one: there is nothing more
+to write.
+
+```c
+interface Shape {
+    fn area() -> float
+    fn name() -> str
+}
+
+struct Circle {
+    float r
+}
+
+fn Circle.area() -> float {
+    return 3.14159 * self.r * self.r
+}
+
+fn Circle.name() -> str {
+    return "circle"
+}
+
+// Rect has area() and name() too, so it is a Shape as well
+
+fn total([]Shape shapes) -> float {
+    sum := 0.0
+    for s in shapes {
+        sum += s.area()            // each one's own area()
+    }
+    return sum
+}
+
+[]Shape shapes = [Circle(1.0), Rect(2.0, 3.0)]
+print(total(shapes), shapes)
+```
+
+- An interface value keeps its own copy of the value (like everything in Finch): changing it through a method that
+  changes `self` changes that copy, and assigning it copies it.
+- They go anywhere a type goes: lists, struct fields, `Shape?`, function parameters and results, `sort_by`.
+- The methods must match exactly (the same parameter types, result, and `!`). If one is missing or different, the
+  error says so: `Sq can't be a Shape: it has no method area() -> float` with `help: add  fn Sq.area() -> float { ... }`.
+- A list of different types needs the interface type written: `[]Shape shapes = [...]`.
+- An interface value can't be turned back into the type inside it; use its methods.
+- `print(shape)` shows the value inside: `Circle(r: 1)`. A `Shape` with nothing in it yet prints `null`, and calling
+  a method on it stops the program with a clear message.

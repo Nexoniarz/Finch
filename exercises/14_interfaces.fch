@@ -1,0 +1,37 @@
+// 14: interfaces
+//
+//   interface Shape { fn area() -> float }
+//
+// Any struct with those methods IS a Shape, nothing more to write. Different structs can then sit in one list:
+//   []Shape shapes = [Circle(1.0), Square(2.0)]
+//
+// TODO: give Square the method that makes it a Shape, then finish total_area.
+
+interface Shape {
+    fn area() -> float
+}
+
+struct Circle {
+    float r
+}
+
+struct Square {
+    float side
+}
+
+fn Circle.area() -> float {
+    return 3.0 * self.r * self.r
+}
+
+// TODO: fn Square.area() -> float { ... }
+
+fn total_area([]Shape shapes) -> float {
+    total := 0.0
+    // TODO: add up every shape's area
+    return total
+}
+
+test "total_area" {
+    []Shape shapes = [Circle(1.0)]           // TODO: add Square(2.0) when Square is a Shape
+    assert(total_area(shapes) == 7.0)
+}

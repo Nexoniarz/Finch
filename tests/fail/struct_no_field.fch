@@ -1,4 +1,5 @@
-// expect: the struct P has no field 'y' (it has: x)
+// expect: the struct P has no field 'y'
+// expect: help: it has: x
 struct P {
     int x
 }

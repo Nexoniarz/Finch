@@ -1,4 +1,5 @@
-// expect: can't use '+' on f32x8 and i32x8 (convert one: f32x8(...))
+// expect: can't use '+' on f32x8 and i32x8
+// expect: help: convert one: f32x8(...)
 fn main() {
     a := f32x8(1.0)
     b := i32x8(1)

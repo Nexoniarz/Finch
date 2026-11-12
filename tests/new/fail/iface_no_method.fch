@@ -1,0 +1,17 @@
+// expect: the interface Shape has no method 'perimeter'
+interface Shape {
+    fn area() -> float
+}
+struct Sq {
+    float s
+}
+struct Ci {
+    float r
+}
+fn Ci.area() -> float {
+    return self.r
+}
+fn main() {
+    Shape x = Ci(1.0)
+    print(x.perimeter())
+}

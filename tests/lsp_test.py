@@ -220,6 +220,80 @@ if not ok3:  # show what the compiler's index says about the module, to see wher
     labels = [l for l in idx.splitlines() if l.startswith("@I") or (l.startswith("@F") and "base" in l)][:6]
 check("completion: a module under another name", ok3, labels)
 
+# mut parameters and functions as values
+src5 = """fn grow(mut []int list, int n) {
+    list.push(n)
+}
+
+fn main() {
+    nums := [3, 1, 2]
+    grow(mut nums, 4)
+    double := fn(int x) -> int { return x * 2 }
+    nums.sort_by(fn(a, b) { return a < b })
+    print(nums.map(double), double(5))
+}
+"""
+lines5 = src5.split("\n")
+path5 = os.path.join(d, "fnvalues.fch")
+open(path5, "w").write(src5)
+uri5 = pathlib.Path(path5).resolve().as_uri()
+td5 = {"uri": uri5}
+c.notify("textDocument/didOpen", {"textDocument": {"uri": uri5, "languageId": "finch", "version": 1, "text": src5}})
+check("mut and function values compile", c.diagnostics(uri5) == [])
+h = c.request("textDocument/hover", {"textDocument": td5, "position": {"line": 9, "character": lines5[9].index("double(5)")}})
+check("hover: a variable holding a function", h and "fn(int) -> int double" in h["contents"]["value"], h)
+h = c.request("textDocument/hover", {"textDocument": td5, "position": {"line": 6, "character": lines5[6].index("grow")}})
+check("hover: mut in a signature", h and "fn grow(mut []int list, int n)" in h["contents"]["value"], h)
+syms = c.request("textDocument/documentSymbol", {"textDocument": td5})
+names5 = [x["name"] for x in syms]
+check("document symbols leave out function values", names5 == ["grow", "main"], names5)
+e5 = src5.replace("    print(nums.map(double), double(5))\n", "    print(nums.map(double), double(5))\n    nums.\n")
+c.notify("textDocument/didChange", {"textDocument": {"uri": uri5, "version": 2}, "contentChanges": [{"text": e5}]})
+comp = c.request("textDocument/completion", {"textDocument": td5, "position": {"line": 10, "character": 9}})
+labels = [i["label"] for i in comp["items"]]
+check("completion: sort_by, filter, map, any, all", all(x in labels for x in ["sort_by", "filter", "map", "any", "all"]), labels)
+e5 = src5.replace("{ return x * 2 }", "{ nums.push(x)\n return x * 2 }")
+c.notify("textDocument/didChange", {"textDocument": {"uri": uri5, "version": 3}, "contentChanges": [{"text": e5}]})
+diags = c.diagnostics(uri5)
+check("error: a captured copy can't be changed", diags and "is a copy this function value took" in diags[0]["message"], diags)
+
+# interfaces and optional values
+src6 = """interface Shape {
+    fn area() -> float
+}
+
+struct Sq {
+    float s
+}
+
+fn Sq.area() -> float {
+    return self.s * self.s
+}
+
+fn main() {
+    Shape sh = Sq(2.0)
+    int? maybe = 3
+    print(sh.area(), maybe or 0)
+}
+"""
+lines6 = src6.split("\n")
+path6 = os.path.join(d, "shapes.fch")
+open(path6, "w").write(src6)
+uri6 = pathlib.Path(path6).resolve().as_uri()
+td6 = {"uri": uri6}
+c.notify("textDocument/didOpen", {"textDocument": {"uri": uri6, "languageId": "finch", "version": 1, "text": src6}})
+check("interfaces and optionals compile", c.diagnostics(uri6) == [])
+h = c.request("textDocument/hover", {"textDocument": td6, "position": {"line": 15, "character": lines6[15].index("maybe")}})
+check("hover: an optional variable", h and "int? maybe" in h["contents"]["value"], h)
+syms = c.request("textDocument/documentSymbol", {"textDocument": td6})
+names6 = [x["name"] for x in syms]
+check("document symbols: the interface", "Shape" in names6 and "Sq" in names6, names6)
+e6 = src6.replace("    print(sh.area(), maybe or 0)\n", "    print(sh.area(), maybe or 0)\n    sh.\n")
+c.notify("textDocument/didChange", {"textDocument": {"uri": uri6, "version": 2}, "contentChanges": [{"text": e6}]})
+comp = c.request("textDocument/completion", {"textDocument": td6, "position": {"line": 16, "character": 7}})
+labels = [i["label"] for i in comp["items"]]
+check("completion: an interface's methods", "area" in labels, labels)
+
 c.request("shutdown", None)
 c.notify("exit", None)
 c.p.wait(timeout=5)

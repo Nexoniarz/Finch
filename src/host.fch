@@ -3,6 +3,7 @@
 // the Windows one).
 import "stdlib.h"
 import "unistd.h"
+import "sys/time.h"
 import "clang-c/Index.h"
 
 // libclang's description of a file that isn't on disk: its Length is C's `unsigned long`, which is 64 bits here
@@ -37,6 +38,18 @@ fn tempDir() -> str {
 
 fn pathSeparator() -> str {
     return ":"
+}
+
+// is this stream (0 in, 1 out, 2 errors) a terminal a person is looking at, not a pipe or a file?
+fn isTerminal(int fd) -> bool {
+    return isatty(i32(fd)) == 1
+}
+
+// milliseconds, for saying how long a build took (gettimeofday: plain C every bootstrap seed can read)
+fn millis() -> int {
+    timeval tv
+    gettimeofday(addr(tv), null)
+    return int(tv.tv_sec) * 1000 + int(tv.tv_usec) / 1000
 }
 
 fn pid() -> int {

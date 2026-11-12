@@ -489,6 +489,25 @@ fn main() {
 }
 ```
 
+### Własna kolejność
+
+`sort()` ustawia liczby od małych do dużych. Żeby samemu wybrać kolejność, daj `sort_by` małą funkcję, która
+odpowiada na jedno pytanie: *czy `a` idzie przed `b`?*
+
+```c
+fn main() {
+    wyniki := [10, 25, 7]
+    wyniki.sort_by(fn(a, b) { return a > b })      // najpierw duże
+    print(wyniki)                                  // [25, 10, 7]
+
+    duze := wyniki.filter(fn(w) { return w >= 10 }) // zostaw tylko niektóre
+    print(duze)                                    // [25, 10]
+}
+```
+
+`fn(a, b) { ... }` to funkcja bez nazwy, napisana tam, gdzie jest potrzebna. Spotkasz je jeszcze później; na razie
+myśl o niej jak o małej zasadzie, którą przekazujesz.
+
 ### Przechodzenie po liście
 
 `for ... in` odwiedza po kolei każdą wartość:
@@ -742,8 +761,10 @@ fn main() {
 
 ```
 hello.fch:3:11: error: there is no variable named 'wiekk'
-    3 |     print(wiekk)
-      |           ^
+   |
+ 3 |     print(wiekk)
+   |           ^^^^^
+   = help: did you mean 'wiek'?
 ```
 
 Jak to czytać:
@@ -751,7 +772,9 @@ Jak to czytać:
 - `hello.fch` to plik,
 - `3` to numer **linii**,
 - `11` mówi, jak daleko w linii (to **kolumna**),
-- dalej jest wyjaśnienie, a pod nim ta linia ze znakiem `^`, który wskazuje problem.
+- dalej jest wyjaśnienie, pod nim ta linia z `^^^^^` pod problemem i linia `help:` z podpowiedzią, co zrobić.
+
+W terminalu komunikat jest kolorowy, więc ważne części się wyróżniają.
 
 Komunikaty są po angielsku; tutaj znaczy to „nie ma zmiennej o nazwie 'wiekk'”. Po prostu literówka w `wiek`.
 

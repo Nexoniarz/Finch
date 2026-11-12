@@ -1,0 +1,9 @@
+// A Rust crate, linked through its Cargo.toml (cargo builds it); the header is written by hand
+import "rustlib/rust_geo.h"
+link "rustlib/Cargo.toml"
+
+fn main() {
+    print(path_len(3.0, 4.0))
+    print(manhattan(Point(1, 2), Point(4, -2)))
+    print(count_words("a small quick sharp bird"))
+}

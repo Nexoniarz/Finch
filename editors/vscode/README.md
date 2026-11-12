@@ -7,7 +7,7 @@ Support for the [Finch](https://github.com/Nexoniarz/Finch) programming language
 - **Completion**: variables, functions, structs, keywords, built-ins, struct fields and array/str methods after `.`, names from imported C headers
 - **Hover** shows types and signatures; **Go to Definition** (F12); **Outline** of functions and structs; **parameter hints**
 - **Run** button (▶ in the editor title, or `Ctrl+F5`) and **Finch: Build This File**; compile errors land in the Problems panel
-- Snippets: `main`, `fn`, `fnr`, `struct`, `if`, `ife`, `for`, `foreach`, `while`, `input`, …
+- Snippets: `main`, `fn`, `fnr`, `struct`, `if`, `ife`, `for`, `foreach`, `while`, `input`, `fnv` (a function value), `fnm` (a mut parameter), `sortby`, `asm`, `interface`, `ifv`, `fno`, …
 
 ## Requirements
 

@@ -1,0 +1,21 @@
+10
+49
+11 15
+Hello, Cy (one of 2)
+Hello, Dee (one of 2)
+12 hey!!
+Bob 25
+Dee 25
+Ann 31
+Cy 40
+2 Ann
+["Bob:25", "Dee:25", "Ann:31", "Cy:40"]
+true false
+[9, 5, 3, 1] [18, 10, 6, 2] [9, 3]
+clicked 0
+6 3
+42 -1
+101 42 2 1
+7 -2
+fn() -> str
+fn(int) -> int

@@ -1,0 +1,27 @@
+// 11: values that may be missing: T?
+//
+//   fn find(...) -> Person? { ... return null }      a Person, or nothing
+//   p := find(...) or guest                          a fallback when there is nothing
+//   if p := find(...) { use p }                      only when there is something
+//
+// TODO: finish first_even and describe.
+
+fn first_even([]int nums) -> int? {
+    // TODO: give back the first even number; null if there is none
+    return null
+}
+
+// "first even: 4", or "no even number"
+fn describe([]int nums) -> str {
+    return ""                   // TODO: use  if n := first_even(nums) { ... }
+}
+
+test "first_even" {
+    assert((first_even([3, 4, 6]) or -1) == 4)
+    assert(first_even([1, 3]) == null)
+}
+
+test "describe" {
+    assert(describe([7, 4]) == "first even: 4")
+    assert(describe([1]) == "no even number")
+}

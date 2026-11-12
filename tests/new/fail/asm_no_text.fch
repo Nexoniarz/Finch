@@ -1,0 +1,5 @@
+// expect: asm(...) starts with the instructions as text
+fn main() {
+    x := 1
+    asm(x)
+}

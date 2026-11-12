@@ -1,0 +1,6 @@
+// expect: grow changes 'list', so say so at the call:  mut nums
+fn grow(mut []int list) { list.push(1) }
+fn main() {
+    nums := [1]
+    grow(nums)
+}

@@ -14,6 +14,8 @@
       <item>enum</item>
       <item>export</item>
       <item>const</item>
+      <item>mut</item>
+      <item>interface</item>
     </list>
     <list name="control">
       <item>if</item>
@@ -87,6 +89,7 @@
       <item>fma</item>
       <item>muladd</item>
       <item>cpu_has</item>
+      <item>asm</item>
       <item>f32_bits</item>
       <item>f32_from_bits</item>
       <item>f64_bits</item>

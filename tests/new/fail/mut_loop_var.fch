@@ -1,0 +1,7 @@
+// expect: the loop variable 'x' can't be changed
+fn bump(mut int n) { n += 1 }
+fn main() {
+    for x in [1, 2] {
+        bump(mut x)
+    }
+}

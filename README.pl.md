@@ -45,14 +45,19 @@ fn main() {
   na instrukcje SSE, AVX2, AVX-512 albo NEON, więc ten sam kod jest szybki na komputerze stacjonarnym, laptopie i ARM-ie.
 - **Komunikaty, które da się zrozumieć:**
   ```
-  gra.fch:3:13: error: 'y' must be i32, but this is int (use i32(...) to convert)
-      3 |     i32 y = x
-        |             ^
+  gra.fch:3:13: error: 'y' must be i32, but this is int
+     |
+   3 |     i32 y = x
+     |             ^
+     = help: use i32(...) to convert
   ```
+  W terminalu są kolorowe, a `finch build` mówi, ile trwało budowanie.
+- **Biblioteki C++ też.** `import "imgui.h"`, potem `ImGui.Button("OK")`: przestrzenie nazw, klasy, przeciążenia,
+  argumenty domyślne i wyjątki działają, bez pisania nakładki w C.
 - **Biblioteki C bez pośredników.** Wystarczy `import "raylib.h"` i `link "raylib"`, żeby z niej korzystać, łącznie
   ze strukturami przekazywanymi przez wartość i funkcjami zwrotnymi. Nagłówki czyta libclang, więc niczego nie trzeba
   deklarować ręcznie.
-- **Napisany w samym sobie.** Kompilator to wyłącznie kod w Finchu: `src/*.fch`, ok. 12 tys. linii. Buduje się go
+- **Napisany w samym sobie.** Kompilator to wyłącznie kod w Finchu: `src/*.fch`, ok. 16 tys. linii. Buduje się go
   z pliku startowego (jego własnego kodu LLVM IR, w `bootstrap/`), a potem jeszcze raz nim samym. Oba wyniki są identyczne.
 
 ## Na start
@@ -92,6 +97,7 @@ Wybierz przewodnik dla siebie:
 | **Dla techników** | Znasz komputery, ale programowanie jest dla ciebie nowe: instalacja, cały język, biblioteki C, rozwiązywanie problemów | [dla-technikow.md](docs/pl/dla-technikow.md) | [for-technicians.md](docs/en/for-technicians.md) |
 | **Dla inżynierów** | Wszystko: lekser, gramatyka, AST, reguły typów, generowanie IR, import przez libclang, ABI, budowa kompilatora | [dla-inzynierow.md](docs/pl/dla-inzynierow.md) | [for-engineers.md](docs/en/for-engineers.md) |
 | **Ściąga** | Wszystkie funkcje, metody, operatory i polecenia na jednej stronie | [sciaga.md](docs/pl/sciaga.md) | [cheatsheet.md](docs/en/cheatsheet.md) |
+| **Ćwiczenia** | Nauka w praktyce: 18 małych zadań z testami, które je sprawdzają, od `print` po asembler | [exercises/](exercises/README.pl.md) | [exercises/](exercises/README.md) |
 
 ## Język w pigułce
 
@@ -99,12 +105,14 @@ Wybierz przewodnik dla siebie:
 |---|---|
 | Zmienne | `x := 5` (typ wynika z wartości) albo `int x = 5`; `const W = 640` |
 | Typy | `int` `float` `bool` `char` `str`, o podanym rozmiarze: `i8`…`i64` `u8`…`u64` `f32` `f64`, tablice `[]T`, mapy `map[K]V`, wskaźniki `ptr[T]`, wektory `f32x8` `i8x32`… |
-| Funkcje | `fn dodaj(int a, int b) -> int { return a + b }` |
+| Funkcje | `fn dodaj(int a, int b) -> int { return a + b }`; `fn powieksz(mut []int lista)` zmienia zmienną wywołującego: `powieksz(mut liczby)` |
 | Struktury | `struct Punkt { … }`, jedno pole w linii (`int x`, `int y = 0`); tworzy się je przez `Punkt(1, 2)` albo `Punkt(x: 1)` |
 | Metody | `fn Punkt.przesun(int dx) { self.x += dx }` → `p.przesun(3)` |
-| Tablice | `liczby := [1, 2, 3]`, `liczby.push(4)`, `liczby[0]`, `liczby.len`, `for i, n in liczby { }` |
+| Tablice | `liczby := [1, 2, 3]`, `liczby.push(4)`, `liczby[0]`, `liczby.len`, `for i, n in liczby { }`, `ludzie.sort_by(fn(a, b) { return a.wiek < b.wiek })`, `filter`, `map`, `any`, `all` |
+| Funkcje jako wartości | `fn(int) -> int f = podwoj`, `f := fn(int x) -> int { return x + n }` (bierze kopie tego, czego używa), także w polach struktur i listach |
 | Mapy | `wiek := ["ania": 31]`, `wiek["bob"] = 25`, `wiek.has("cyryl")`, `ile[slowo] += 1`, `for k, v in wiek { }` |
 | Błędy | `fn parsuj(str s) -> int! { … return error("zła liczba") }` → `parsuj(s) or 0`, `parsuj(s) or { … }`, `try parsuj(s)` |
+| Asembler | `asm("add {x}, {y}", mut x, y)`, `asm("cpuid", eax: mut a)`: składnia Intela na x86, rozmiary dobierane same na ARM64 |
 | Wektory (SIMD) | `v := f32x8(lista, i)`, `v * 2.0 + w`, `v.sum()`, `select(v > 0.0, v, 0.0)`, `t.lookup(idx)`, `acc.dot_add(a, b)`, `v.store(lista, i)` |
 | Procesory | `--cpu native`; `@cpu("avx2") fn …` razem z `if cpu_has("avx2")`; liczby zmiennoprzecinkowe liczone tak, jak zapisane (`fma`/`muladd` do łączenia) |
 | Tekst | `"hp: \(hp)"`, `"a" + "b"`, `str(42)`, `int("42")`, `s.split(",")`, `s.upper()`, `s[0]` |
@@ -112,10 +120,12 @@ Wybierz przewodnik dla siebie:
 | Pamięć | tablice, teksty i struktury zwalniają się same; `new(...)` / `free(...)` dla własnych struktur na stercie |
 | Enumy i `match` | `enum Kolor { Czerwony, Zielony }`, `match k { Czerwony -> ... else -> ... }` (również jako wartość) |
 | Typy generyczne | `fn max[T](T a, T b) -> T`, `struct Stos[T]`, `Stos[int]()` |
+| Wartości opcjonalne | `fn znajdz(str n) -> Osoba?`, `return null`, `znajdz(n) or gosc`, `if o := znajdz(n) { }`, `x == null` |
+| Interfejsy | `interface Ksztalt { fn pole() -> float }`: każda struktura z tymi metodami nim jest; `[]Ksztalt k = [Kolo(1.0), Prostokat(2.0, 3.0)]` |
 | Moduły | `import ksztalty` → `ksztalty.pole(p)`, `import ui/button as btn`; biblioteka standardowa: `json`, `path`, `time`, `proc`, `fs`, `thread` |
 | Wątki | `thread.spawn(addr(praca), addr(dane))`, `t.join()`, `thread.mutex()`, `atomic_add(addr(n), 1)` |
 | Testy | `test "nazwa" { assert(x == 3) }` tuż obok kodu, uruchamiane przez `finch test` |
-| Współpraca z C | `import "stdio.h"`, `link "glfw"`, `link "moje.c"` / `"glue.cpp"`, unie, `#define` (także `(Color){…}`), `addr(fn)` jako funkcja zwrotna |
+| Współpraca z C | `import "stdio.h"`, `link "glfw"`, `link "moje.c"` / `"glue.cpp"` / `"biblioteka/Cargo.toml"`, unie, `#define` (także `(Color){…}`), `addr(fn)` jako funkcja zwrotna |
 | Wejście i wyjście | `print(...)`, `input("? ")`, `read_file`, `write_file`, `shell` |
 | Narzędzia | `finch run/build/test/fmt/ir/lsp`, `finch.toml` dla projektu, pamięć podręczna kompilacji, `--target windows/arm64/macos/android`, `--cpu native`, `-g` dla gdb i lldb, `-O0`, ścieżka wywołań przy błędzie w trakcie działania |
 
@@ -165,6 +175,11 @@ Wybierz przewodnik dla siebie:
 - [x] Kompilator na każdym systemie, na który buduje: Linux, macOS (Apple Silicon i Intel), Windows; wydania robi CI
 - [x] Typy wektorowe (`f32x8`, `i8x32`, …) dla SIMD i `--cpu native`
 - [x] Maski, przestawianie, tabele bajtów i `dot_add` dla jąder obliczeniowych; `@cpu` i `cpu_has`; `fma`/`muladd`, bity liczb, f16 i bf16
+- [x] Parametry `mut` (zmiana zmiennej wywołującego bez wskaźników); wstawki asemblera `asm(...)` na x86-64 i ARM64
+- [x] Funkcje jako wartości: typy `fn(int) -> bool`, funkcje pisane na miejscu, które trzymają kopie tego, czego używają, `sort_by`, `filter`, `map`, `any`, `all`
+- [x] Wartości opcjonalne `T?` (`or`, `if v := x`) i interfejsy (każdy typ z tymi metodami nim jest)
+- [x] Nagłówki C++ importowane wprost: przestrzenie nazw, klasy, przeciążenia, argumenty domyślne, wyjątki jako błędy
+- [x] Biblioteki Rusta przez `Cargo.toml` (`import "biblioteka/Cargo.toml"` z cbindgen albo `link` z własnym nagłówkiem)
 
 ## Co gdzie leży
 
@@ -175,6 +190,7 @@ std/        biblioteka standardowa w Finchu: json, path, time, proc, fs, thread
 runtime/    mały runtime w C, dołączany do każdego programu
 bootstrap/  build.sh i pliki startowe: własny LLVM IR kompilatora, osobno dla każdego systemu
 examples/   przykładowe programy
+exercises/  ćwiczenia: małe zadania z testami (exercises/next.sh pokazuje następne) i ich rozwiązania
 editors/    rozszerzenie do VS Code, podświetlanie składni i konfiguracja LSP dla Kate
 tests/      run/ new/ (wzorcowe wyniki), fail/ new/fail/ (oczekiwane błędy), run.sh, cross.sh, shared.sh, lsp_test.py
 docs/       przewodniki po angielsku (en/) i po polsku (pl/) dla trzech grup czytelników

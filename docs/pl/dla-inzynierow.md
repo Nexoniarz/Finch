@@ -68,20 +68,22 @@ Decyzje, od których zależy cała reszta:
 
 | Plik | Linie | Za co odpowiada |
 |---|---|---|
-| `src/lexer.fch` | 470 | Tokeny, pozycje, tekst `"""`, zamiana `"\(x)"` na tokeny `("…" + str(x) + "…")` |
-| `src/ast.fch` | 170 | Jedna struktura `Node` z rodzajem (`kind`) jako tekstem, dziećmi, nazwami typów i pozycją (`line`, `endLine`); rozpoznawanie typów wektorowych |
-| `src/parser.fch` | 910 | Zejście rekurencyjne: deklaracje, instrukcje, wyrażenia, typy generyczne (`[T]`), `enum`, `match`, `export`, `link`, `const`, `test "…" { }` |
-| `src/gen.fch` | 7030 | Sprawdzanie typów i IR: struktury, funkcje, metody, zasięgi i zwalnianie, instrukcje, wyrażenia, funkcje wbudowane, mapy, błędy jako wartości, typy generyczne (monomorfizacja), enumy i `match`, wektory (SIMD), metadane debuggera (`-g`), tryb `index` |
-| `src/cimport.fch` | 790 | libclang: funkcje, struktury i unie (pola, przesunięcia, wyrównanie), enumy, stałe, zmienne globalne, makra (także o wartości struktury) |
+| `src/cimport.fch` (część C++) | | Nagłówek, który nie jest C, jest czytany jako C++ (`looksLikeC`, `translateCpp`): nakładki `extern "C"` na jego funkcje, metody, konstruktory i destruktory (po jednej na liczbę argumentów, gdy są domyślne) i opisujący je nagłówek C trafiają do katalogu podręcznego; nagłówek C jest importowany jak zwykle, nakładki są linkowane (`-ffunction-sections` + `--gc-sections` / `-dead_strip` usuwają nieużywane). `CImports.cppNames` mapuje `ns.f`, `Klasa#metoda`, `Klasa.new` na nakładki; `cppCall()` w gen.fch wybiera jedną po liczbie argumentów i typach literałów i woła ją przez `callC` |
+| `src/diag.fch` | 260 | Jak wyglądają błędy i ostrzeżenia: linia kodu, zakres `^` (z UTF-8 i tabulatorami), `help:`/`note:`, kolory tylko w terminalu, linia stanu po budowaniu. `finch index` zostawia jedną zwykłą linię na błąd dla serwera języka |
+| `src/lexer.fch` | 480 | Tokeny, pozycje, tekst `"""`, zamiana `"\(x)"` na tokeny `("…" + str(x) + "…")` |
+| `src/ast.fch` | 210 | Jedna struktura `Node` z rodzajem (`kind`) jako tekstem, dziećmi, nazwami typów i pozycją (`line`, `endLine`); rozpoznawanie typów wektorowych |
+| `src/parser.fch` | 1110 | Zejście rekurencyjne: deklaracje, instrukcje, wyrażenia, typy generyczne (`[T]`), `enum`, `match`, `export`, `link`, `const`, `test "…" { }` |
+| `src/gen.fch` | 9370 | Sprawdzanie typów i IR: struktury, funkcje, metody, zasięgi i zwalnianie, instrukcje, wyrażenia, funkcje wbudowane, mapy, błędy jako wartości, typy generyczne (monomorfizacja), enumy i `match`, wektory (SIMD), metadane debuggera (`-g`), tryb `index` |
+| `src/cimport.fch` | 1410 | libclang: funkcje, struktury i unie (pola, przesunięcia, wyrównanie), enumy, stałe, zmienne globalne, makra (także o wartości struktury) |
 | `src/platform.fch` | 120 | `Target`: triple, układ danych, kompilator C, znak typu `char` na danym systemie |
-| `src/linker.fch` | 480 | Pamięć podręczna (runtime, obiekt programu, pliki C/C++), biblioteki (`link`, pkg-config), podpowiedzi przy błędach linkera |
-| `src/main.fch` | 530 | Sterownik: wiersz poleceń, wczytywanie modułów i nakładek, `build/run/test/fmt/ir/index/lsp` |
+| `src/linker.fch` | 580 | Pamięć podręczna (runtime, obiekt programu, pliki C/C++), biblioteki (`link`, pkg-config), podpowiedzi przy błędach linkera |
+| `src/main.fch` | 600 | Sterownik: wiersz poleceń, wczytywanie modułów i nakładek, `build/run/test/fmt/ir/index/lsp` |
 | `src/manifest.fch` | 240 | `finch.toml`: mały czytnik TOML, listy dla poszczególnych systemów |
-| `src/fmt.fch` | 225 | `finch fmt` i formatowanie w serwerze języka |
+| `src/fmt.fch` | 220 | `finch fmt` i formatowanie w serwerze języka |
 | `src/lsp.fch` | 950 | Serwer języka (§11) |
-| `src/docs.fch` | 140 | Jeden opis funkcji wbudowanych, wspólny dla podpowiedzi i dymków |
+| `src/docs.fch` | 170 | Jeden opis funkcji wbudowanych, wspólny dla podpowiedzi i dymków |
 | `std/*.fch` | 1040 | `json`, `path`, `time` (+`_windows`), `proc` (+`_windows`), `fs`, `thread` |
-| `runtime/finch_rt.c` | 1150 | Runtime w C: teksty, tablice, mapy, pliki, wypisywanie liczb, fs, wątki, uruchamianie testów, ścieżka wywołań |
+| `runtime/finch_rt.c` | 1380 | Runtime w C: teksty, tablice, mapy, pliki, wypisywanie liczb, fs, wątki, uruchamianie testów, ścieżka wywołań |
 | `bootstrap/` | | `build.sh`, `install.sh`, pliki startowe (§10) |
 
 ---
@@ -373,6 +375,10 @@ gdy sam znika. Nie ma liczenia referencji ani garbage collectora; wszystkie decy
 | `a.pop()`, `a.remove(i)` | element jest przenoszony na zewnątrz (świeży) |
 | `for x in lista` | `x` pożycza kolejne elementy; jeśli ciało pętli może zmienić `lista`, elementy są kopiowane |
 | wywołanie metody `v.m()` | `self` **to jest** `v` (przekazywany jest adres): bez kopii, zmiany widzi wywołujący |
+| `fn(A, B) -> R` | `{ ptr, ptr }`: funkcja i jej otoczenie. Każdą wartość-funkcję wywołuje się `f(ptr env, A, B)`; nazwana funkcja idzie przez opakowanie `@finch.val.*`, które pomija `env`. Lambda staje się własnym `FnSig` (`lambda`, `cnames`, `ctypes`, `envTy`), definiowanym później przez zwykłą pętlę; jej otoczenie to `{ ptr drop, ptr copy, przechwycone... }` na stercie, więc `finch_fn_copy` / `finch_fn_drop` (runtime) kopiują i zwalniają każdą wartość-funkcję bez wiedzy o jej zawartości. Przechwycone zmienne to kopie zrobione w chwili obliczenia lambdy (`lambdaExpr`, `envHelpers`), w niej tylko do odczytu (`Var.captured`) |
+| `T?` | `{ i1 jest, T wartość }`; posiadające, gdy `T` jest. Kopiowanie i zwalnianie sprawdzają flagę (`copyFn` / `dropFn`, rodzaj `"opt"`). `T` i `null` wchodzą same (`coerce`); wychodzi tylko przez `orSource()` (`x or ...`), `ifSome()` (`if v := x`) i `== null` |
+| interfejs | `{ ptr pudełko, ptr tablica }`: własna kopia wartości na stercie i stała tablica `[drop, copy, format, metody...]` dla każdej pary (typ, interfejs) (`ifaceTable`, `boxHelpers`). Wywołanie metody bierze wpis k+3 i podaje pudełko jako `self` (`ifaceCall`). Spełnianie jest strukturalne i sprawdzane przy zamianie wartości (`toIface` → `ifaceMethod`); `finch_iface_copy` / `finch_iface_drop` w runtime |
+| parametr `mut T x` | miejsce wywołującego (przekazywany jest adres, `mutArg()` / `mutPlace()`): bez kopii i bez zwalniania; `checkMutArgs()` odrzuca tę samą zmienną w innym argumencie posiadającym albo `mut` i jako odbiorcę |
 | mapy | są właścicielami kluczy i wartości tak jak tablice elementów; `m[k] = v` przenosi albo kopiuje `v` i zwalnia starą wartość |
 
 Literał tekstowy to świeża wartość z `cap = 0`: przeniesienie go nic nie kosztuje, zwalnianie jest pomijane

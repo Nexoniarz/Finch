@@ -1,0 +1,34 @@
+// 02: functions
+//
+//   fn name(type param, type param) -> result_type {
+//       return value
+//   }
+//
+// TODO: fill in the three functions.
+
+fn double(int x) -> int {
+    return 0                    // TODO: x times two
+}
+
+fn is_even(int n) -> bool {
+    return false                // TODO: true when n divides by 2 (hint: n % 2 is what is left over)
+}
+
+fn average(float a, float b) -> float {
+    return 0.0                  // TODO
+}
+
+test "double" {
+    assert(double(4) == 8)
+    assert(double(-3) == -6)
+}
+
+test "is_even" {
+    assert(is_even(10))
+    assert(!is_even(7))
+    assert(is_even(0))
+}
+
+test "average" {
+    assert(average(2.0, 4.0) == 3.0)
+}

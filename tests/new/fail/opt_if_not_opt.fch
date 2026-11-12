@@ -1,0 +1,5 @@
+// expect: if v := ... needs a value that may be null (T?), but this is int
+fn main() {
+    if v := 5 {
+    }
+}

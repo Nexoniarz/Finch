@@ -1,4 +1,5 @@
-// expect: 'check' can't fail, so it can't return an error (make it fallible: -> !)
+// expect: 'check' can't fail, so it can't return an error
+// expect: help: make it fallible: -> !
 fn check(int n) {
     if n < 0 {
         return error("negative")

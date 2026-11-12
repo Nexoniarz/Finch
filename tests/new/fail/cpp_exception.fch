@@ -1,0 +1,7 @@
+// expect: runtime error: a C++ exception: negative number
+import "cpp_throw.hpp"
+
+fn main() {
+    print(checks.positive(3))
+    print(checks.positive(-1))
+}

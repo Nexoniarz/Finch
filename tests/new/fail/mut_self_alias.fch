@@ -1,0 +1,9 @@
+// expect: is what Bag.take is called on
+struct Bag {
+    []int items
+}
+fn Bag.take(mut []int from) { self.items.push(from.pop()) }
+fn main() {
+    b := Bag(items: [1])
+    b.take(mut b.items)
+}

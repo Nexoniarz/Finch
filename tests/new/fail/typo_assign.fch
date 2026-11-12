@@ -1,0 +1,5 @@
+// expect: help: did you mean 'total'? Or create it with totl := ...
+fn main() {
+    total := 1
+    totl = 5
+}

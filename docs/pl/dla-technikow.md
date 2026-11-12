@@ -42,6 +42,9 @@ i rozwiązywanie typowych problemów. Nie opisuje, jak kompilator działa od śr
 29. [Wątki](#29-wątki)
 30. [C++, Rust i Android](#30-c-rust-i-android)
 31. [Wektory (SIMD)](#31-wektory-simd)
+32. [Asembler w kodzie Fincha: asm](#32-asembler-w-kodzie-fincha-asm)
+33. [Wartości opcjonalne: T?](#33-wartości-opcjonalne-t)
+34. [Interfejsy](#34-interfejsy)
 
 ---
 
@@ -490,12 +493,89 @@ fn bez_wyniku(str komunikat) {    // bez "->": niczego nie zwraca
 
 - Argumenty zachowują się jak kopie: zmiana parametru nigdy nie zmienia zmiennej wywołującego.
   (Finch kopiuje naprawdę tylko wtedy, gdy trzeba: funkcja, która nie zmienia tablicy, dostaje ją za darmo.)
-  Żeby zmienić zmienną wywołującego, przekaż wskaźnik: zob. [Wskaźniki](#14-wskaźniki).
+  Żeby zmienić zmienną wywołującego, oznacz parametr jako `mut` (niżej).
 - Funkcja z `-> typ` musi zwracać wartość na każdej ścieżce. Finch to sprawdza.
 - Nie można zdefiniować funkcji wewnątrz innej funkcji.
 - Funkcję, która może się nie udać, zapisuje się `-> int!` (albo `-> !` bez wyniku); zob.
   [Błędy jako wartości](#błędy-jako-wartości).
 - Długie wywołania można rozbić na kilka linii w nawiasach; przecinek po ostatnim argumencie jest dozwolony.
+
+### Zmiana zmiennej wywołującego: `mut`
+
+```c
+fn dodaj_wroga(mut []str wrogowie, str imie) {
+    wrogowie.push(imie)           // zmienia listę wywołującego
+}
+
+fn ulecz(mut Gracz g, int ile) {
+    g.hp += ile
+}
+
+lista := ["nietoperz"]
+dodaj_wroga(mut lista, "szczur")  // lista to teraz ["nietoperz", "szczur"]
+ulecz(mut bohater, 5)             // także pole albo element: mut bohater.hp, mut druzyna[2]
+```
+
+`mut` pisze się w obu miejscach: w funkcji, żeby było widać, co zmienia, i przy wywołaniu, żeby czytający wiedział,
+że zmienna się zmieni. Nic nie jest kopiowane: funkcja działa bezpośrednio na zmiennej wywołującego.
+
+- Argument musi być zmienną, polem albo elementem (nie `mut 5` ani `mut f()`), dokładnie typu parametru.
+- Zmiennej podanej jako `mut` nie może używać inny argument tego samego wywołania (`polacz(mut a, a)`), więc funkcja
+  nigdy nie widzi wartości zmienionej w połowie.
+- Zmiennych pętli (`for x in lista`) i stałych nie można podać jako `mut`.
+
+### Funkcje jako wartości
+
+Funkcję można zapisać w zmiennej, przekazać innej funkcji, trzymać w liście albo w strukturze i wywołać później.
+Jej typ zapisuje się `fn(typy parametrów) -> wynik`:
+
+```c
+fn podwoj(int x) -> int {
+    return x * 2
+}
+
+fn zastosuj(fn(int) -> int f, int x) -> int {
+    return f(x)
+}
+
+zastosuj(podwoj, 5)                                // 10: nazwana funkcja jako wartość
+zastosuj(fn(int x) -> int { return x * x }, 7)     // 49: funkcja napisana tam, gdzie jest potrzebna
+
+krzyk := fn(str s) -> str { return s.upper() + "!" }
+print(krzyk("hej"))                                // HEJ!
+```
+
+Funkcja napisana w kodzie może używać zmiennych wokół niej. Gdy powstaje, bierze **kopię** każdej z nich, więc nie
+widzi późniejszych zmian i nigdy nie wskazuje na coś, czego już nie ma:
+
+```c
+fn dodawacz(int n) -> fn(int) -> int {
+    return fn(int x) -> int { return x + n }       // ma własne n
+}
+
+dodaj10 := dodawacz(10)
+print(dodaj10(1))                                  // 11
+```
+
+- Kopie są w niej tylko do odczytu (`licznik += 1` w środku to błąd, który to wyjaśnia). Żeby oddać wynik, użyj
+  `return`.
+- Tam, gdzie typ jest już znany, typy parametrów i wynik można pominąć:
+  `ludzie.sort_by(fn(a, b) { return a.wiek < b.wiek })`.
+- Typy funkcji mogą się nie udać jak każda funkcja: `fn(str) -> int!`, wywoływana z `or` / `try`.
+- Pole struktury może trzymać funkcję: `Przycisk(klik: fn() { ... })`, wywołanie `p.klik()`.
+- Zmienna typu funkcji, której nic nie przypisano, jeszcze nic nie trzyma; jej wywołanie zatrzymuje program
+  z jasnym komunikatem.
+- Funkcje generyczne też je przyjmują: `fn dwa_razy[T](fn(T) -> T f, T x) -> T`. Sama funkcja generyczna nie może być
+  wartością (dla każdego typu jest inną funkcją); opakuj ją: `fn(int a, int b) -> int { return max(a, b) }`.
+
+Listy mają metody, które przyjmują funkcję:
+
+| Metoda | Daje |
+|---|---|
+| `lista.sort_by(fn(a, b) { return a.wiek < b.wiek })` | sortuje w miejscu według twojej zasady (stabilnie: równe zostają w swojej kolejności) |
+| `lista.filter(fn(x) { return x > 0 })` | nową listę elementów, na które funkcja mówi tak |
+| `lista.map(fn(int x) -> str { return str(x) })` | nową listę wyników funkcji (napisz typ wyniku) |
+| `lista.any(fn(x) { ... })`, `lista.all(fn(x) { ... })` | `bool`; kończą, gdy tylko odpowiedź jest znana |
 
 ---
 
@@ -521,6 +601,8 @@ siatka := [[1, 2], [3, 4]] // tablice tablic
 | `a.resize(n)` | zmiana długości na `n` (nowe elementy to zera) |
 | `a.contains(x)`, `a.find(x)` | czy `x` tam jest? jego indeks albo -1 (liczby, znaki, bool, str) |
 | `a.sort()`, `a.reverse()` | w miejscu (liczby, znaki, str) |
+| `a.sort_by(fn(x, y) { return … })` | w miejscu, według twojej zasady (zob. [Funkcje jako wartości](#funkcje-jako-wartości)) |
+| `a.filter(f)`, `a.map(f)`, `a.any(f)`, `a.all(f)` | z funkcją: elementy, które zostawia, jej wyniki, czy prawda dla któregoś / wszystkich |
 | `a.slice(p, k)` | nowa tablica z elementami `p` … `k-1` |
 | `a.join(sep)` | dla `[]str`: jeden tekst z `sep` między częściami |
 | `a.ptr` | adres pierwszego elementu (dla C) |
@@ -933,12 +1015,20 @@ nie ma odwijania stosu, a niepowodzenie kosztuje tyle, co zbudowanie komunikatu.
 ### Błędy kompilacji
 
 ```
-gra.fch:12:9: error: 'wynik' must be int, but this is str
-   12 |     wynik = "wysoki"
-      |             ^
+gra.fch:12:13: error: 'y' must be i32, but this is int
+    |
+ 12 |     i32 y = x
+    |             ^
+    = help: use i32(...) to convert
 ```
 
-Format: `plik:linia:kolumna: error: wyjaśnienie`, a pod spodem linia z `^` pod miejscem błędu.
+Format: `plik:linia:kolumna: error: wyjaśnienie` (terminal i edytor potrafią do niego skoczyć), pod spodem linia z `^`
+pod miejscem błędu, a wskazówka w linii `help:`. W funkcji generycznej `note:` mówi, która jej wersja była budowana.
+Ostrzeżenia wyglądają tak samo, na żółto, a program i tak się buduje.
+
+W terminalu komunikaty są kolorowe; w potoku, pliku czy edytorze zwykłe. `NO_COLOR=1` albo `FINCH_COLOR=never`
+wyłącza kolory, `FINCH_COLOR=always` zostawia je nawet w potoku. Tak samo działają błędy w trakcie działania (które
+wtedy pokazują też linię kodu, na której program stanął) i `finch test`.
 
 ### Błędy w trakcie działania
 
@@ -1204,7 +1294,6 @@ write_file(path.join("out", "config.json"), json.pretty(dok))
 
 Czego jeszcze nie ma:
 
-- Interfejsów.
 - Tekstów świadomych Unicode: `.len`, `s[i]` i `upper()` działają na bajtach / ASCII.
 - Zabezpieczenia przed zmienianiem tej samej tablicy przez dwa wątki naraz (użyj muteksu).
 - Windowsa na ARM64, systemów 32-bitowych, WebAssembly.
@@ -1264,7 +1353,7 @@ name = "gra"                         # program, który zbuduje finch build (z pl
 entry = "src/main.fch"               # używany, gdy finch run / build / test nie dostaną pliku
 paths = ["src", "lib"]               # katalogi z modułami Fincha
 include = ["vendor/SDL3/include"]    # katalogi z nagłówkami C (także dla twoich plików .c / .cpp)
-links = ["SDL3", "native/glue.cpp"]  # biblioteki i twoje pliki .c / .cpp / .o / .a
+links = ["SDL3", "native/glue.cpp"]  # biblioteki i twoje pliki .c / .cpp / .o / .a albo biblioteki Rusta (Cargo.toml)
 libdirs = ["vendor/SDL3/lib"]        # katalogi z bibliotekami
 cflags = ["-DFAST"]                  # dla twoich plików .c / .cpp
 ldflags = ["-Wl,-rpath,$ORIGIN"]     # dla linkera
@@ -1336,35 +1425,62 @@ tylko wtedy, gdy jest tam `stara`, i mówi, czy to zrobiło. `thread.cpus()` mó
 
 ## 30. C++, Rust i Android
 
-Finch rozmawia z innymi językami przez C, tak jak każdy język.
+**C++**: importuj sam nagłówek. Finch czyta go jako C++, gdy nie jest to C (przestrzenie nazw, klasy, `.hpp`):
 
-**C++**: to, co ma wołać Finch, wystaw przez nagłówek C, z `extern "C"` po stronie C++:
+```c
+import "imgui.h"                       // Dear ImGui, taki, jaki jest
+link "imgui.cpp"                       // i jego kod, jak każda biblioteka
 
-```cpp
-// glue.h
-#ifdef __cplusplus
-extern "C" {
-#endif
-int krok_fizyki(float dt);
-#ifdef __cplusplus
-}
-#endif
+ImGui.Begin("Narzędzia")               // funkcja w przestrzeni nazw: Przestrzen.funkcja
+if ImGui.Button("OK") { ... }          // domyślne argumenty uzupełnia C++
+ImGui.TextWrapped(komunikat)           // funkcje w stylu printf wypisują tekst taki, jaki jest
+ImGui.End()
 ```
 
-i `import "glue.h"` z `link "glue.cpp"` (albo `links = ["glue.cpp"]` w `finch.toml`). Plik `.cpp` kompiluje kompilator
-C++ (`clang++` albo `g++`, albo `FINCH_CXX`), który potem też linkuje, więc biblioteka C++ dołącza się sama.
-Bibliotekę C++ z API w C (Box2D 3, JoltC dla Jolta, nakładka C na PhysX) importuje się jak każdą bibliotekę C.
+| C++ | Finch |
+|---|---|
+| `ns::f(a, b)` | `ns.f(a, b)` (zagnieżdżone przestrzenie łączone `_`: `zewn_wewn.f`) |
+| funkcja poza przestrzenią nazw | `f(a, b)` |
+| `obj->metoda(x)` | `obj.metoda(x)`, na wskaźniku do klasy albo na strukturze |
+| `Klasa::stat(x)` | `Klasa.stat(x)` |
+| `new Klasa(a)`, `delete p` | `Klasa.new(a)` (`ptr[Klasa]`), `p.delete()` |
+| domyślne argumenty | pomiń je, jak w C++ |
+| przeciążenia | ta wersja, która pasuje do argumentów |
+| `T &` | wskaźnik (`addr(x)`) albo kopia dla `const T &` liczby czy zwykłej struktury |
+| zwykła struktura (publiczne pola, bez virtual, zwykła kopia) | struktura Fincha: `Vec2(1.0, 2.0)`, przez wartość |
+| każda inna klasa | tylko przez wskaźnik |
+| `enum class Tryb { Szybki }` | `Tryb_Szybki`; zwykłe enumy zachowują nazwy |
+| wyjątek | błąd w trakcie działania: `runtime error: a C++ exception: negative number` |
 
-**Rust**: zbuduj `staticlib` i wystaw funkcje C:
+Jak to działa: Finch zapisuje w swoim katalogu podręcznym mały plik C++ z funkcjami `extern "C"`, po jednej dla każdej
+funkcji, metody, konstruktora i destruktora (po jednej na każdą liczbę argumentów, gdy niektóre mają wartości
+domyślne), oraz nagłówek C, który je opisuje. Importuje ten nagłówek jak każdy nagłówek C i buduje plik C++ razem
+z programem; linker pomija te, których nie wołasz. Szablony, operatory i funkcje przyjmujące np. `std::string` przez
+wartość nie są dostępne (wywołanie mówi dlaczego); dla nich nadal działa własna nakładka w C.
+
+Bibliotekę C++ z API w C (Box2D 3, JoltC dla Jolta, nakładka C na PhysX) importuje się jak każdą bibliotekę C, a własne
+pliki `.cpp` można dołączyć przez `link "glue.cpp"` (budowane `clang++` albo `g++`, albo `FINCH_CXX`).
+
+**Rust**: wskaż Finchowi `Cargo.toml` biblioteki. Jej biblioteka to `staticlib` z funkcjami C oznaczonymi `extern "C"`:
 
 ```rust
-// Cargo.toml: [lib] crate-type = ["staticlib"]
+// trasa/Cargo.toml:  [lib] crate-type = ["staticlib"]
 #[no_mangle]
 pub extern "C" fn dlugosc(x: f32, y: f32) -> f32 { (x * x + y * y).sqrt() }
 ```
 
-Napisz nagłówek (`float dlugosc(float x, float y);` albo wygeneruj go przez `cbindgen`), a potem `import "trasa.h"`
-i `link "target/release/libtrasa.a"`. Na Linuksie biblioteka statyczna z Rusta potrzebuje też `links = ["dl", "pthread"]`.
+```c
+import "trasa/Cargo.toml"        // cbindgen pisze nagłówek C, cargo buduje bibliotekę, Finch ją linkuje
+print(dlugosc(3.0, 4.0))
+```
+
+`import "…/Cargo.toml"` potrzebuje `cbindgen` (`cargo install cbindgen`). Bez niego napisz nagłówek sam
+(`float dlugosc(float x, float y);`) i użyj `import "trasa.h"` z `link "trasa/Cargo.toml"`: Finch przy każdym budowaniu
+uruchamia `cargo build --release` (szybko, gdy nic się nie zmieniło), linkuje `target/release/lib<nazwa>.a` i dodaje to,
+czego biblioteka standardowa Rusta potrzebuje od systemu. Struktury `#[repr(C)]` działają przez wartość jak struktury C.
+Dla programów na Windowsa biblioteka jest budowana dla `x86_64-pc-windows-gnu`, a dla `--target` dla pasującego celu
+Rusta, który instaluje `rustup target add`. Biblioteka bez `crate-type = ["staticlib"]` dostaje błąd z dwiema liniami
+do dodania.
 
 **Android**: `finch build gra.fch --target android --shared` tworzy `libgra.so` dla 64-bitowego Androida na ARM
 (API 24 i nowsze) clangiem z NDK, którego Finch szuka przez `ANDROID_NDK_HOME` (albo `FINCH_CC`). Wczytaj ją z aplikacji,
@@ -1564,3 +1680,130 @@ się różnić od dodawania ich po kolei.
 
 Na NixOS nakładka Niksa na clanga usuwa `-march=native` w `nix-shell`. Finch mówi jej, żeby to zostawiła, więc
 `--cpu native` działa i tam; gdyby kiedyś nie miało żadnego skutku, Finch ostrzeże.
+
+---
+
+## 32. Asembler w kodzie Fincha: asm
+
+`asm(...)` wstawia instrukcje procesora prosto do kodu. Tak można wypróbować jedną instrukcję i zobaczyć, co robi,
+albo użyć takiej, na którą Finch nie ma słowa.
+
+```c
+fn dodaj_asm(int a, int b) -> int {
+    suma := a
+    asm("add {suma}, {b}", mut suma, b)        // {suma}: ta zmienna, w rejestrze wybranym przez kompilator
+    return suma
+}
+
+i32 lisc = 0
+i32 b = 0
+i32 c = 0
+i32 d = 0
+asm("cpuid", eax: mut lisc, ebx: mut b, ecx: mut c, edx: mut d)    // eax: dokładnie ten rejestr
+
+asm("mov rcx, 4\n imul {m}, rcx", mut m, scratch: "rcx")         // rcx jest używany, więc jego wartość przepada
+```
+
+| Zapis | Znaczenie |
+|---|---|
+| `{x}` w tekście, `x` jako argument | `x` trafia do rejestru wybranego przez kompilator, wpisanego w to miejsce |
+| `mut x` | instrukcje zmieniają `x`: najpierw jest czytany, potem zapisywany z powrotem |
+| `n: 7` z `{n}` w tekście | wartość, która nie jest zmienną, pod nazwą |
+| `eax: mut x` (bez `{eax}` w tekście) | `x` dokładnie w tym rejestrze |
+| `scratch: "rcx, rdx"` | rejestry, których instrukcje używają na własne potrzeby |
+| `{x:w}` | jak zapisać rejestr (jak w C: `w`, `x`, `s`, `d` na ARM64) |
+| `{{`, `}}` | sam nawias klamrowy (`{k1}` z AVX-512 to `{{k1}}`) |
+
+- Na x86-64 obowiązuje **składnia Intela** (`add cel, źródło`), ta z podręczników Intela i AMD.
+- Na ARM64 nazwa rejestru zależy od rozmiaru, a Finch dobiera ją do zmiennej: `w0` dla `i32`, `x0` dla `int`, `s0`
+  dla `f32`, `d0` dla `float`.
+- Wartości muszą mieścić się w rejestrze: liczby, `char`, wskaźniki, wektory (`f32x4` itd. idą do rejestrów wektorowych).
+- Kompilator zakłada, że instrukcje mogą czytać i zapisywać pamięć oraz flagi, więc nigdy nie przestawia kodu wokół
+  nich. Instrukcje dla innego procesora nie zbudują się, więc trzymaj je za `--target` albo w dwóch wersjach funkcji;
+  `cpu_has(...)` mówi, jakie możliwości ma procesor, na którym działa program.
+
+---
+
+## 33. Wartości opcjonalne: T?
+
+`T?` to `T`, którego może nie być. Tak funkcja mówi „nic nie znalazłam” bez błędu i bez zmyślonej wartości w rodzaju -1:
+
+```c
+fn znajdz(map[str]Osoba ludzie, str imie) -> Osoba? {
+    if ludzie.has(imie) {
+        return ludzie[imie]        // Osoba wchodzi taka, jaka jest
+    }
+    return null                    // albo nic
+}
+```
+
+`Osoba?` nie może być użyta jako `Osoba`, dopóki nie powiesz, co się dzieje, gdy jej nie ma. Są trzy sposoby:
+
+```c
+o := znajdz(ludzie, "ania") or gosc        // wartość zastępcza
+o := znajdz(ludzie, "ania") or {           // albo blok, który wychodzi (return, break, continue, exit)
+    print("nie ma Ani")
+    return
+}
+if o := znajdz(ludzie, "ania") {           // albo tylko wtedy, gdy jest
+    print(o.imie)
+} else {
+    print("nie ma Ani")
+}
+if znajdz(ludzie, "zenek") == null { ... } // i samo pytanie
+```
+
+- Każdy typ może być opcjonalny: `int?`, `str?`, `[]int?` (lista może-liczb), pola struktur (`str? ksywka`).
+  Zmienna `int? x` bez wartości zaczyna jako `null`. `print` pokazuje `null` albo wartość.
+- `ptr` już może być `null`, więc `ptr[T]?` nie jest potrzebne (i nie jest dozwolone).
+- Użycie wprost to błąd, który mówi, co zrobić: `'x' must be int, but this is int?, which may be null`,
+  `this is P?, which may be null, so it has no '.name' until it is checked`.
+
+---
+
+## 34. Interfejsy
+
+Interfejs nazywa, co typ potrafi. **Każda** struktura albo enum, która ma te metody, nim jest: nie trzeba nic więcej
+pisać.
+
+```c
+interface Ksztalt {
+    fn pole() -> float
+    fn nazwa() -> str
+}
+
+struct Kolo {
+    float r
+}
+
+fn Kolo.pole() -> float {
+    return 3.14159 * self.r * self.r
+}
+
+fn Kolo.nazwa() -> str {
+    return "koło"
+}
+
+// Prostokat też ma pole() i nazwa(), więc też jest Ksztaltem
+
+fn razem([]Ksztalt ksztalty) -> float {
+    suma := 0.0
+    for k in ksztalty {
+        suma += k.pole()           // pole() każdego z nich
+    }
+    return suma
+}
+
+[]Ksztalt ksztalty = [Kolo(1.0), Prostokat(2.0, 3.0)]
+print(razem(ksztalty), ksztalty)
+```
+
+- Wartość-interfejs trzyma własną kopię wartości (jak wszystko w Finchu): metoda zmieniająca `self` zmienia tę kopię,
+  a przypisanie ją kopiuje.
+- Mogą być wszędzie tam, gdzie typ: w listach, polach struktur, jako `Ksztalt?`, parametry i wyniki funkcji, w `sort_by`.
+- Metody muszą pasować dokładnie (te same typy parametrów, wynik i `!`). Gdy jakiejś brakuje albo jest inna, błąd to
+  mówi: `Sq can't be a Shape: it has no method area() -> float` z `help: add  fn Sq.area() -> float { ... }`.
+- Lista różnych typów potrzebuje zapisanego typu interfejsu: `[]Ksztalt ksztalty = [...]`.
+- Wartości-interfejsu nie da się zamienić z powrotem na typ, który jest w środku; używaj jej metod.
+- `print(ksztalt)` pokazuje wartość w środku: `Kolo(r: 1)`. `Ksztalt`, w którym jeszcze nic nie ma, wypisuje się jako
+  `null`, a wywołanie na nim metody zatrzymuje program z jasnym komunikatem.

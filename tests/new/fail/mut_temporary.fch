@@ -1,0 +1,5 @@
+// expect: mut needs a variable, a field or an element
+fn grow(mut []int list) { list.push(1) }
+fn main() {
+    grow(mut [1, 2])
+}

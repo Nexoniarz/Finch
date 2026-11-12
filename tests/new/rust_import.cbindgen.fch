@@ -1,0 +1,6 @@
+// A Rust crate imported by its Cargo.toml: cbindgen writes the header, cargo builds the library
+import "rustlib/Cargo.toml"
+
+fn main() {
+    print(path_len(6.0, 8.0), manhattan(Point(0, 0), Point(2, 3)), count_words("one two"))
+}

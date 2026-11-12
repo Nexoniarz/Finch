@@ -194,5 +194,65 @@
       "}"
     ],
     "description": "A struct that holds any type"
+  },
+  "function value": {
+    "prefix": "fnv",
+    "body": [
+      "${1:name} := fn(${2:int x}) -> ${3:int} {",
+      "\treturn $0",
+      "}"
+    ],
+    "description": "A function as a value: it can be stored, passed and called later (it keeps copies of the variables it uses)"
+  },
+  "sort_by": {
+    "prefix": "sortby",
+    "body": [
+      "${1:list}.sort_by(fn(a, b) { return a.${2:age} < b.${2:age} })"
+    ],
+    "description": "Sort a list by your own rule"
+  },
+  "mut parameter function": {
+    "prefix": "fnm",
+    "body": [
+      "fn ${1:name}(mut ${2:[]int} ${3:list}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "A function that changes the caller's variable: call it with  name(mut x)"
+  },
+  "asm": {
+    "prefix": "asm",
+    "body": [
+      "asm(\"${1:add} {${2:x}}, {${3:y}}\", mut ${2:x}, ${3:y})"
+    ],
+    "description": "Processor instructions inside Finch (Intel syntax on x86)"
+  },
+  "interface": {
+    "prefix": "interface",
+    "body": [
+      "interface ${1:Shape} {",
+      "\tfn ${2:area}() -> ${3:float}",
+      "}"
+    ],
+    "description": "What a type can do: any struct or enum with these methods is one"
+  },
+  "if value": {
+    "prefix": "ifv",
+    "body": [
+      "if ${1:v} := ${2:maybe} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Use a T? only when it holds a value"
+  },
+  "optional result": {
+    "prefix": "fno",
+    "body": [
+      "fn ${1:find}(${2:str name}) -> ${3:Person}? {",
+      "\t$0",
+      "\treturn null",
+      "}"
+    ],
+    "description": "A function that may find nothing (T?)"
   }
 }

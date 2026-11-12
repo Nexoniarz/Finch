@@ -1,0 +1,5 @@
+// expect: {y} in the asm text is not one of its values
+fn main() {
+    x := 1
+    asm("add {x}, {y}", mut x)
+}

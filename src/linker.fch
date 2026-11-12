@@ -3,6 +3,7 @@
 import platform
 import cimport
 import host
+import diag
 
 // 32-bit FNV-1a, as hex: names the cached runtime object after what it was built from
 fn fingerprint(str text) -> str {
@@ -43,7 +44,148 @@ fn quote(str a) -> str {
 
 // a file of the program's own (next to the .fch file), not a library's name
 fn isOwnCode(str l) -> bool {
-    return l.ends_with(".c") || l.ends_with(".o") || l.ends_with(".a") || l.ends_with(".lib") || isCpp(l)
+    return l.ends_with(".c") || l.ends_with(".o") || l.ends_with(".a") || l.ends_with(".lib") || isCpp(l) || l.ends_with("Cargo.toml")
+}
+
+// ---------- Rust ----------
+//   link "pathfind/Cargo.toml": cargo builds the crate (its Cargo.toml says  [lib] crate-type = ["staticlib"]) and the
+//   program links its lib<name>.a. Its C functions are the crate's  #[no_mangle] pub extern "C" fn ...
+
+// the Rust target for a Finch target, or "" for the system cargo builds for by default
+fn rustTarget(platform.Target tg) -> str {
+    if tg.windows {
+        return "x86_64-pc-windows-gnu"          // Finch's Windows programs are MinGW programs
+    }
+    if !tg.cross {
+        return ""
+    }
+    if tg.android {
+        return "aarch64-linux-android"
+    }
+    if tg.darwin {
+        if tg.arm64 {
+            return "aarch64-apple-darwin"
+        }
+        return "x86_64-apple-darwin"
+    }
+    if tg.arm64 {
+        return "aarch64-unknown-linux-gnu"
+    }
+    return "x86_64-unknown-linux-gnu"
+}
+
+// the crate's library name: [lib] name = "...", else the package name, with - as _
+fn crateName(str manifest) -> str {
+    text := read_file(manifest) or ""
+    section := ""
+    pkg := ""
+    lib := ""
+    for raw in text.split("\n") {
+        line := raw.trim()
+        if line.starts_with("[") {
+            section = line
+            continue
+        }
+        if line.starts_with("name") && line.contains("=") {
+            v := line.sub(line.find("=") + 1, line.len).trim()
+            if v.contains("#") {
+                v = v.sub(0, v.find("#")).trim()
+            }
+            v = v.replace("\"", "").replace("'", "")
+            if section == "[package]" {
+                pkg = v
+            } else if section == "[lib]" {
+                lib = v
+            }
+        }
+    }
+    if lib.len > 0 {
+        return lib.replace("-", "_")
+    }
+    return pkg.replace("-", "_")
+}
+
+fn rustLib(str manifest, platform.Target tg) -> str! {
+    if !file_exists(manifest) {
+        return error("error: there is no Rust crate at " + manifest)
+    }
+    name := crateName(manifest)
+    if name.len == 0 {
+        return error("error: " + manifest + " has no [package] name")
+    }
+    target := rustTarget(tg)
+    dir := manifest.sub(0, manifest.len - 10)          // the folder, with its / ("Cargo.toml" is 10 letters)
+    cmd := "cargo build --release --quiet --manifest-path " + quote(manifest)
+    built := dir + "target/release/lib" + name + ".a"
+    if target.len > 0 {
+        cmd = cmd + " --target " + target
+        built = dir + "target/" + target + "/release/lib" + name + ".a"
+    }
+    log := host.tempDir() + "/finch_cargo_" + str(host.pid()) + ".log"
+    status := host.run(cmd + " > " + quote(log) + " 2>&1")
+    output := read_file(log) or ""
+    host.remove(log)
+    if status == 127 || output.contains("cargo: command not found") || output.contains("is not recognized") {
+        return error("error: Rust's cargo wasn't found, to build " + manifest + " (install Rust from https://rustup.rs; on Nix: add cargo and rustc to shell.nix)")
+    }
+    if status != 0 {
+        hint := ""
+        if output.contains("target may not be installed") || output.contains("can't find crate for `std`") {
+            hint = "\n  (the Rust target isn't installed:  rustup target add " + target + ")"
+        }
+        return error(output.trim() + "\nerror: cargo couldn't build " + manifest + hint)
+    }
+    if !file_exists(built) {
+        return error("error: cargo built " + manifest + ", but there is no lib" + name + ".a: add this to its Cargo.toml\n\n    [lib]\n    crate-type = [\"staticlib\"]\n")
+    }
+    return built
+}
+
+// import "pathfind/Cargo.toml": cbindgen writes the crate's C header (from its extern "C" functions and #[repr(C)]
+// types) into the cache, and that header is imported like any other
+fn rustHeader(str manifest) -> str! {
+    if !file_exists(manifest) {
+        return error("there is no Rust crate at " + manifest)
+    }
+    name := crateName(manifest)
+    dir := manifest.sub(0, manifest.len - 10)
+    out := host.cacheDir() + "/rust"
+    host.makeDirs(out)
+    header := out + "/" + name + "_" + fingerprint(manifest) + ".h"
+    log := host.tempDir() + "/finch_cbindgen_" + str(host.pid()) + ".log"
+    status := host.run("cbindgen --lang c --quiet --output " + quote(header) + " " + quote(dir) + " > " + quote(log) + " 2>&1")
+    output := read_file(log) or ""
+    host.remove(log)
+    if status == 127 || output.contains("not found") || output.contains("is not recognized") {
+        return error("importing a Rust crate needs cbindgen, which writes its C header (install it: cargo install cbindgen), or write the header yourself and  import \"" + name + ".h\"  with  link \"" + manifest + "\"")
+    }
+    if status != 0 || !file_exists(header) {
+        return error("cbindgen couldn't write a C header for " + manifest + ": " + output.trim())
+    }
+    return header
+}
+
+// what a Rust static library needs from the system, after it on the link line
+fn rustSystemLibs(platform.Target tg) -> str {
+    if tg.windows {
+        return " -lws2_32 -luserenv -lntdll -lbcrypt -ladvapi32 -lkernel32"
+    }
+    if tg.darwin {
+        return ""                   // clang links libSystem (libc and libm) on macOS already
+    }
+    if tg.android {
+        return " -ldl -lm -lc"
+    }
+    return " -lpthread -ldl -lm"
+}
+
+// the C wrappers Finch writes for a C++ header (cimport.fch, translateCpp)
+fn isWrapper(str l) -> bool {
+    if !isCpp(l) {
+        return false
+    }
+    text := read_file(l) or ""
+    return text.starts_with("// Made by Finch from ")
 }
 
 fn isCpp(str l) -> bool {
@@ -56,7 +198,11 @@ fn cxxFor(str cc) -> str {
         return getenv("FINCH_CXX")
     }
     words := cc.split(" ")
-    first := words[0]
+    at := 0
+    while at < words.len - 1 && words[at].contains("=") {
+        at += 1                         // NIX_ENFORCE_NO_NATIVE=0 clang: settings before the compiler itself
+    }
+    first := words[at]
     if first.ends_with("clang") {
         first = first + "++"
     } else if first.ends_with("gcc") {
@@ -64,7 +210,7 @@ fn cxxFor(str cc) -> str {
     } else if first.ends_with("cc") {
         first = first.sub(0, first.len - 2) + "c++"
     }
-    words[0] = first
+    words[at] = first
     return words.join(" ")
 }
 
@@ -277,11 +423,11 @@ fn linkFailed(str output, cimport.CImports ci, platform.Target tg) -> int {
         }
     }
     if missing.items.len == 0 && libs.items.len == 0 {
-        print(output + "error: linking failed")
+        diag.passOn(output + "error: linking failed")
         return 1
     }
     for lib in libs.items {
-        print("error: the library '" + lib + "' wasn't found. Is it installed? (on Nix: add it to shell.nix)")
+        diag.passOn("error: the library '" + lib + "' wasn't found. Is it installed? (on Nix: add it to shell.nix)")
     }
     // the missing functions, grouped by the header they came from
     []str headers
@@ -312,19 +458,19 @@ fn linkFailed(str output, cimport.CImports ci, platform.Target tg) -> int {
             list = list + " and " + str(names.len - 3) + " more"
         }
         if headers[k].len == 0 {
-            print("error: no code found for " + list)
+            diag.passOn("error: no code found for " + list)
             continue
         }
         verb := "come"
         if names.len == 1 {
             verb = "comes"
         }
-        print("error: " + list + " " + verb + " from \"" + headers[k] + "\", but its library isn't linked")
-        print("  the header only says the functions exist; their code lives in a library.")
-        print("  add this at the top of your file (with the library's real name):")
-        print("")
-        print("      link \"" + guessLib(headers[k]) + "\"")
-        print("")
+        diag.passOn("error: " + list + " " + verb + " from \"" + headers[k] + "\", but its library isn't linked")
+        diag.say("  the header only says the functions exist; their code lives in a library.")
+        diag.say("  add this at the top of your file (with the library's real name):")
+        diag.say("")
+        diag.say("      link \"" + guessLib(headers[k]) + "\"")
+        diag.say("")
     }
     return 1
 }
@@ -380,7 +526,7 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
         cc = getenv("FINCH_CC")
     }
     rtobj := runtimeObject(b.rt, tg, cc) or {
-        print(err)
+        diag.passOn(err)
         return 1
     }
     target := ""
@@ -390,7 +536,7 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
     log := b.out + ".log"
     // -ffp-contract=on: only what asks to be fused is (muladd); a * b + c stays two roundings, whatever clang's default
     obj := irObject(clang, target + " " + b.opt + " -ffp-contract=on" + b.extra, b.ir, b.name + "\n" + tg.triple, log) or {
-        print(err)
+        diag.passOn(err)
         host.remove(log)
         return 1
     }
@@ -402,6 +548,21 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
         }
     }
     cmd := linkWith + " " + quote(obj) + " " + quote(rtobj) + " -o " + quote(b.out)
+    for l in b.links {
+        if isWrapper(l) {
+            // a C++ header's wrappers cover all it declares: the ones the program doesn't call go, and with them
+            // what they would need (a library's demo code, parts that aren't linked)
+            if tg.darwin {
+                cmd = cmd + " -Wl,-dead_strip"
+            } else {
+                cmd = cmd + " -Wl,--gc-sections"
+            }
+            break
+        }
+    }
+    if tg.windows && linkWith != cc && linkWith.contains("g++") {
+        cmd = cmd + " -static-libgcc -static-libstdc++"     // MinGW's C++ library inside the .exe: no DLLs to carry
+    }
     // static inline C functions the program calls: a C file that keeps a pointer to each
     inl := inlineFile(b.ir, ci)
     if inl.len > 0 {
@@ -410,7 +571,7 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
             pic = ""
         }
         o := cObject(inl, cc, " -O2" + pic + b.cflags, tg, log) or {
-            print(err)
+            diag.passOn(err)
             host.remove(log)
             return 1
         }
@@ -448,12 +609,24 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
             if isCpp(l) {
                 compiler = cxxFor(cc)
             }
-            o := cObject(l, compiler, " -O2" + pic + b.cflags, tg, log) or {
-                print(err)
+            flags := " -O2" + pic + b.cflags
+            if isWrapper(l) {
+                flags = flags + " -ffunction-sections -fdata-sections"     // each wrapper on its own, for the linker to drop
+            }
+            o := cObject(l, compiler, flags, tg, log) or {
+                diag.passOn(err)
                 host.remove(log)
                 return 1
             }
             cmd = cmd + " " + quote(o)
+        } else if l.ends_with("Cargo.toml") {
+            // a Rust crate: cargo builds its static library, then Rust's own needs from the system come after it
+            lib := rustLib(l, tg) or {
+                diag.passOn(err)
+                host.remove(log)
+                return 1
+            }
+            cmd = cmd + " " + quote(lib) + rustSystemLibs(tg)
         } else if l.ends_with(".o") || l.ends_with(".a") || l.ends_with(".lib") {
             cmd = cmd + " " + quote(l)
         } else {
@@ -464,7 +637,7 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
     output := read_file(log) or ""
     host.remove(log)
     if status == 127 {
-        print("error: no C compiler found to link with ('" + cc + "'; install one, or set FINCH_CC)")
+        diag.passOn("error: no C compiler found to link with ('" + cc + "'; install one, or set FINCH_CC)")
         return 1
     }
     if status != 0 {

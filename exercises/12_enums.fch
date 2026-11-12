@@ -1,0 +1,22 @@
+// 12: enums and match
+//
+//   enum Light { Red, Yellow, Green }
+//   match light {
+//       Red -> ...
+//       Yellow -> ...
+//       else -> ...
+//   }
+//
+// TODO: the light that comes next: Red -> Green -> Yellow -> Red.
+
+enum Light { Red, Yellow, Green }
+
+fn Light.next() -> Light {
+    return Light.Red            // TODO: use match self { ... } as a value
+}
+
+test "the lights go round" {
+    assert(Light.Red.next() == Light.Green)
+    assert(Light.Green.next() == Light.Yellow)
+    assert(Light.Yellow.next() == Light.Red)
+}

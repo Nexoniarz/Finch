@@ -1,0 +1,6 @@
+// expect: 'seen' is a copy this function value took when it was made
+fn main() {
+    []int seen
+    keep := fn(int x) { seen.push(x) }
+    keep(1)
+}

@@ -1,0 +1,21 @@
+// 09: maps (a key for each value)
+//
+//   ages := ["ann": 31]      ages["bob"] = 25      ages.has("cy")      ages.len
+//   counts[w] += 1           a key that isn't there yet starts at 0
+//   for key, value in ages { }
+//
+// TODO: count how many times each word appears.
+
+fn word_count(str text) -> map[str]int {
+    map[str]int counts
+    // TODO: for each word of text.split(" ")
+    return counts
+}
+
+test "word_count" {
+    c := word_count("the cat saw the other cat")
+    assert(c["the"] == 2)
+    assert(c["cat"] == 2)
+    assert(c["saw"] == 1)
+    assert(c.len == 4)
+}

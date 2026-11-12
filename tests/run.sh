@@ -16,8 +16,21 @@ pass=0; failed=0
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
+# a test named x.x86_64.fch or x.arm64.fch is for that processor only (inline asm)
+case "$(uname -m)" in aarch64|arm64) arch=arm64 ;; *) arch=x86_64 ;; esac
+other_arch() {  # file -> true if it is for another processor, or needs Rust tools this machine doesn't have
+    case "$1" in
+        *.x86_64.fch) [ $arch != x86_64 ] ;;
+        *.arm64.fch) [ $arch != arm64 ] ;;
+        *.rust.fch) ! command -v cargo > /dev/null 2>&1 || [ "${OS:-}" = Windows_NT ] ;;
+        *.cbindgen.fch) ! command -v cargo > /dev/null 2>&1 || ! command -v cbindgen > /dev/null 2>&1 || [ "${OS:-}" = Windows_NT ] ;;
+        *) false ;;
+    esac
+}
+
 for f in run/*.fch new/*.fch; do
     grep -q "^fn main" "$f" || continue
+    other_arch "$f" && continue
     want="${f%.fch}.out"
     input="${f%.fch}.in"
     [ -f "$input" ] || input=/dev/null
@@ -42,16 +55,44 @@ for f in run/*.fch new/*.fch; do
     pass=$((pass + 1))
 done
 
+# every "// expect: ..." line at the top of the file must be in what the compiler said (the error, its help: line, ...)
+expects_met() {  # file, output -> true if all its expect lines are there; $expect is the first one missing
+    local line
+    while IFS= read -r line; do
+        case "$line" in "// expect: "*) ;; *) break ;; esac
+        expect=${line#// expect: }
+        [[ "$2" == *"$expect"* ]] || return 1
+    done < "$1"
+    return 0
+}
+
 for f in fail/*.fch new/fail/*.fch; do
-    expect=$(head -1 "$f" | sed -n 's|^// expect: ||p')
     got=$("$FINCH" run "$f" < /dev/null 2>&1)
     status=$?
     got=$(echo "$got" | tr -d '\r')
-    if [ $status -ne 0 ] && [[ "$got" == *"$expect"* ]]; then
+    if [ $status -ne 0 ] && expects_met "$f" "$got"; then
         pass=$((pass + 1))
     else
         failed=$((failed + 1))
         echo "FAIL $f (wanted: $expect)"
+        echo "$got" | head -5
+    fi
+done
+
+# the exercises' solutions must keep passing (and the exercises themselves must keep compiling)
+for f in ../exercises/solutions/[0-9]*.fch ../exercises/[0-9]*.fch; do
+    other_arch "$f" && continue
+    got=$("$FINCH" test "$f" 2>&1 | tr -d '\r')
+    if [[ "$f" == */solutions/* ]]; then
+        ok=0; [[ "$got" == *" 0 failed"* ]] && ok=1
+    else
+        ok=1; echo "$got" | grep -qE '^[^ ]+:[0-9]+:[0-9]+: error:' && ok=0
+    fi
+    if [ $ok = 1 ]; then
+        pass=$((pass + 1))
+    else
+        failed=$((failed + 1))
+        echo "FAIL exercise $f"
         echo "$got" | head -5
     fi
 done

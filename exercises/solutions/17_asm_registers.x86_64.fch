@@ -1,0 +1,34 @@
+// 17: assembly, step 2: several values and fixed registers
+//
+// The processor works on a few very fast boxes called registers. Most instructions take one register and change it:
+//   mov a, b      a = b                     add a, b      a = a + b          sub a, b      a = a - b
+//   imul a, b     a = a * b                 shl a, n      a = a * 2^n        shr a, n      a = a / 2^n
+//   inc a / dec a a + 1 / a - 1             cmp a, b      compare (sets flags)   jnz / jl / jmp: jump
+// In Finch:  asm("add {x}, {y}", mut x, y)   {x} is your variable in a register; mut means the code changes it.
+// These are x86-64 (Intel syntax). They run on a usual PC; on ARM, see the ARM manual for the same ideas.
+//
+// Some instructions use fixed registers. eax: mut x puts x in exactly that register.
+// scratch: "rcx" tells Finch your code uses rcx for itself (its old value is lost).
+//
+// TODO: finish both functions.
+
+// (a + b) * c
+fn mul_add(int a, int b, int c) -> int {
+    out := a
+    asm("add {out}, {b}\n imul {out}, {c}", mut out, b, c)
+    return out
+}
+
+// x * 10 using only shifts and adds: x*8 + x*2 (hint: copy x into rcx first)
+fn times10(int x) -> int {
+    asm("mov rcx, {x}\n shl {x}, 3\n shl rcx, 1\n add {x}, rcx", mut x, scratch: "rcx")
+    return x
+}
+
+test "mul_add" {
+    assert(mul_add(2, 3, 4) == 20)
+}
+
+test "times10" {
+    assert(times10(7) == 70)
+}

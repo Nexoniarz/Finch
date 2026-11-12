@@ -27,6 +27,8 @@ run_exe() {  # program, stdin -> output without Windows' \r
 
 for f in run/*.fch new/*.fch; do
     grep -q "^fn main" "$f" || continue
+    case "$target-$f" in arm64-*.x86_64.fch|windows-*.arm64.fch) continue ;; esac     # inline asm for another processor
+    case "$f" in *.rust.fch|*.cbindgen.fch) continue ;; esac                         # Rust for another system needs its target installed
     input="${f%.fch}.in"
     [ -f "$input" ] || input=/dev/null
     exe="$tmp/$(basename "${f%.fch}")$ext"
@@ -35,22 +37,32 @@ for f in run/*.fch new/*.fch; do
     fi
     got=$(run_exe "$exe" "$input")
     # (warnings come from the build, which is not part of what the program prints)
-    if [ "$got" == "$(tr -d '\r' < "${f%.fch}.out" | grep -v ': warning: ')" ]; then
+    want=$(tr -d '\r' < "${f%.fch}.out" | awk '/: warning: /{skip=1; next} skip && /^ +([0-9]+ +)?[|=]/{next} {skip=0; print}')
+    if [ "$got" == "$want" ]; then
         pass=$((pass + 1))
     else
         failed=$((failed + 1)); echo "FAIL $f"; diff <(echo "$got") "${f%.fch}.out" | head -10
     fi
 done
 
+expects_met() {  # file, output -> true if all its "// expect:" lines are there
+    local line
+    while IFS= read -r line; do
+        case "$line" in "// expect: "*) ;; *) break ;; esac
+        expect=${line#// expect: }
+        [[ "$2" == *"$expect"* ]] || return 1
+    done < "$1"
+    return 0
+}
+
 for f in fail/*.fch new/fail/*.fch; do
-    expect=$(head -1 "$f" | sed -n 's|^// expect: ||p')
     exe="$tmp/$(basename "${f%.fch}")$ext"
     if "$FINCH" build "$f" --target "$target" -o "$exe" > "$tmp/out" 2>&1; then
         got=$(run_exe "$exe" /dev/null)
     else
         got=$(cat "$tmp/out")
     fi
-    if [[ "$got" == *"$expect"* ]]; then
+    if expects_met "$f" "$got"; then
         pass=$((pass + 1))
     else
         failed=$((failed + 1)); echo "FAIL $f (wanted: $expect)"; echo "$got" | head -5

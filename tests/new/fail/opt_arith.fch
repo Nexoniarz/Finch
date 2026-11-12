@@ -1,0 +1,6 @@
+// expect: can't use '+' on int? and int
+// expect: help: a T? may be null
+fn main() {
+    int? m = 3
+    print(m + 1)
+}

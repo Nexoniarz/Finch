@@ -1,0 +1,5 @@
+// expect: so upper() can't be called on it until it is checked
+fn main() {
+    str? s = "hi"
+    print(s.upper())
+}

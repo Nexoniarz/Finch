@@ -491,6 +491,25 @@ fn main() {
 }
 ```
 
+### Your own order
+
+`sort()` puts numbers from small to big. To choose the order yourself, give `sort_by` a small function that answers
+one question: *does `a` go before `b`?*
+
+```c
+fn main() {
+    scores := [10, 25, 7]
+    scores.sort_by(fn(a, b) { return a > b })      // big ones first
+    print(scores)                                  // [25, 10, 7]
+
+    big := scores.filter(fn(s) { return s >= 10 }) // keep only some
+    print(big)                                     // [25, 10]
+}
+```
+
+`fn(a, b) { ... }` is a function without a name, written right where it is needed. You will meet more of them later;
+for now, think of it as a little rule you hand over.
+
 ### Going through a list
 
 `for ... in` visits every value, one by one:
@@ -743,8 +762,10 @@ fn main() {
 
 ```
 hello.fch:3:11: error: there is no variable named 'agee'
-    3 |     print(agee)
-      |           ^
+   |
+ 3 |     print(agee)
+   |           ^^^^
+   = help: did you mean 'age'?
 ```
 
 How to read it:
@@ -752,7 +773,9 @@ How to read it:
 - `hello.fch` is the file,
 - `3` is the **line** number,
 - `11` is how far into the line (the **column**),
-- then the explanation, and the line itself with a `^` pointing at the problem.
+- then the explanation, the line itself with `^^^^` under the problem, and a `help:` line with what to try.
+
+In a terminal the message comes in colour, so the important parts stand out.
 
 Here we simply misspelled `age`.
 

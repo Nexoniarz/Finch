@@ -1,0 +1,19 @@
+// expect: Sq can't be a Shape: its method is area() -> int, but Shape wants area() -> float
+interface Shape {
+    fn area() -> float
+}
+struct Sq {
+    float s
+}
+struct Ci {
+    float r
+}
+fn Ci.area() -> float {
+    return self.r
+}
+fn Sq.area() -> int {
+    return 1
+}
+fn main() {
+    Shape x = Sq(1.0)
+}

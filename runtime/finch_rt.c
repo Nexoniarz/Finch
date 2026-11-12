@@ -70,6 +70,53 @@ void finch_trace_init(void *(*top)(void), void (*set)(void *)) {
     trace_set = set;
 }
 
+// Colours, only for a terminal a person looks at (not a pipe or a file): NO_COLOR turns them off,
+// FINCH_COLOR=always|never decides. fd 1 is the output, 2 the errors.
+static int color_on(int fd) {
+    static int known[3] = {-1, -1, -1};
+    if (known[fd] >= 0) return known[fd];
+    const char *force = getenv("FINCH_COLOR");
+    const char *term = getenv("TERM");
+    int on;
+    if (force && strcmp(force, "always") == 0) on = 1;
+    else if (force && strcmp(force, "never") == 0) on = 0;
+    else if (getenv("NO_COLOR") && *getenv("NO_COLOR")) on = 0;
+    else if (term && strcmp(term, "dumb") == 0) on = 0;
+#ifdef _WIN32
+    else if (!_isatty(fd)) on = 0;
+    else {
+        HANDLE h = GetStdHandle(fd == 1 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE);
+        DWORD mode = 0;
+        if (GetConsoleMode(h, &mode)) SetConsoleMode(h, mode | 0x0004);     // ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        on = 1;
+    }
+#else
+    else on = isatty(fd);
+#endif
+    known[fd] = on;
+    return on;
+}
+#define PAINT(fd, code) (color_on(fd) ? "\033[" code "m" : "")
+#define PLAIN(fd) (color_on(fd) ? "\033[0m" : "")
+
+// line `line` of a source file, for showing where a program stopped (a terminal only)
+static void show_source_line(const char *file, int64_t line) {
+    FILE *f = fopen(file, "r");
+    if (!f) return;
+    char buf[512];
+    int64_t n = 0;
+    while (fgets(buf, sizeof buf, f)) {
+        if (strchr(buf, '\n') || feof(f)) n++;
+        if (n == line) {
+            size_t len = strlen(buf);
+            while (len && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) buf[--len] = 0;
+            fprintf(stderr, " %s%lld |%s %s\n", PAINT(2, "1;34"), (long long)line, PLAIN(2), buf);
+            break;
+        }
+    }
+    fclose(f);
+}
+
 static void print_trace(void) {
     if (!trace_top) return;
     FFrame *f = trace_top();
@@ -78,14 +125,25 @@ static void print_trace(void) {
             fprintf(stderr, "  ...\n");
             break;
         }
-        fprintf(stderr, "  in %s (%s:%lld)\n", f->name, f->file, (long long)f->line);
+        fprintf(stderr, "%s  in %s (%s:%lld)%s\n", PAINT(2, "2"), f->name, f->file, (long long)f->line, PLAIN(2));
     }
 }
+
+static const char *stop_file;
+static int64_t stop_line;
 
 static __attribute__((noreturn)) void fatal(const char *msg) {
     if (fatal_hook) fatal_hook(msg);
     fflush(stdout);
-    fprintf(stderr, "%s\n", msg);
+    const char *mark = strstr(msg, "runtime error:");
+    if (mark && color_on(2)) {
+        // "file:line: runtime error: what" -> the place in bold, the words in red, then the line of code itself
+        fprintf(stderr, "%s%.*s%s%sruntime error:%s%s%s%s\n", PAINT(2, "1"), (int)(mark - msg), msg, PLAIN(2),
+                PAINT(2, "1;31"), PLAIN(2), PAINT(2, "1"), mark + 14, PLAIN(2));
+        if (stop_file) show_source_line(stop_file, stop_line);
+    } else {
+        fprintf(stderr, "%s\n", msg);
+    }
     print_trace();
     exit(1);
 }
@@ -94,6 +152,8 @@ __attribute__((noreturn, cold)) void finch_panic(const char *file, int64_t line,
     char full[1024];
     snprintf(full, sizeof full, "%s:%lld: runtime error: %s", file, (long long)line, msg);
     fflush(stdout);
+    stop_file = file;
+    stop_line = line;
     fatal(full);
 }
 
@@ -113,6 +173,86 @@ static void *must(void *p) {
 
 void *finch_alloc(int64_t n) { return must(malloc(n ? (size_t)n : 1)); }
 void *finch_zalloc(int64_t n) { return must(calloc(1, n ? (size_t)n : 1)); }
+
+// ---------- functions as values ----------
+// A function value is { function, environment }. An environment (the copies a function written in the code took of
+// the variables around it) starts with two helpers made by the compiler: how to drop it and how to copy it.
+
+typedef struct {
+    void (*drop)(void *env);
+    void *(*copy)(void *env);
+} FEnvHead;
+
+typedef struct {
+    void *fn;
+    void *env;
+} FFn;
+
+void finch_fn_copy(FFn *dst, const FFn *src) {
+    void *env = src->env ? ((FEnvHead *)src->env)->copy(src->env) : NULL;
+    dst->fn = src->fn;
+    dst->env = env;
+}
+
+void finch_fn_drop(FFn *f) {
+    if (f->env) ((FEnvHead *)f->env)->drop(f->env);
+    f->env = NULL;
+}
+
+// A C++ function Finch called through its wrapper threw: a runtime error that says what it was.
+__attribute__((noreturn)) void finch_cpp_failed(const char *what) {
+    char msg[600];
+    snprintf(msg, sizeof msg, "runtime error: a C++ exception: %s", what ? what : "");
+    fflush(stdout);
+    fatal(msg);
+}
+
+// An interface value is { box, table }: the table starts with how to drop, copy and format what is in the box.
+typedef struct {
+    void *data;
+    void **table;
+} FIface;
+
+void finch_iface_copy(FIface *dst, const FIface *src) {
+    void *data = src->data ? ((void *(*)(void *))src->table[1])(src->data) : NULL;
+    dst->data = data;
+    dst->table = src->table;
+}
+
+void finch_iface_drop(FIface *v) {
+    if (v->data) ((void (*)(void *))v->table[0])(v->data);
+    v->data = NULL;
+}
+
+// list.sort_by(less): a stable merge sort; less(ctx, a, b) says whether the element at a goes before the one at b.
+// Elements are moved as bytes (nothing is copied or dropped), so it works for every element type.
+void finch_sort_by(void *data, int64_t n, int64_t size, int (*less)(void *, const void *, const void *), void *ctx) {
+    if (n < 2) return;
+    char *a = data;
+    char *tmp = finch_alloc(n * size);
+    for (int64_t width = 1; width < n; width *= 2) {
+        for (int64_t lo = 0; lo < n; lo += 2 * width) {
+            int64_t mid = lo + width < n ? lo + width : n;
+            int64_t hi = lo + 2 * width < n ? lo + 2 * width : n;
+            int64_t i = lo, j = mid, k = lo;
+            while (i < mid && j < hi) {
+                if (less(ctx, a + j * size, a + i * size)) {        // the right one only if it is strictly less: stable
+                    memcpy(tmp + k * size, a + j * size, size);
+                    j++;
+                } else {
+                    memcpy(tmp + k * size, a + i * size, size);
+                    i++;
+                }
+                k++;
+            }
+            memcpy(tmp + k * size, a + i * size, (mid - i) * size);
+            k += mid - i;
+            memcpy(tmp + k * size, a + j * size, (hi - j) * size);
+        }
+        memcpy(a, tmp, n * size);
+    }
+    free(tmp);
+}
 
 // ---------- assert and finch test ----------
 
@@ -145,16 +285,18 @@ void finch_test_run(const char *name, void (*fn)(void)) {
     fflush(stdout);
     if (failed) {
         tests_failed++;
-        printf("FAIL %s\n     %s\n", name, test_message);
+        printf("%sFAIL%s %s\n     %s%s%s\n", PAINT(1, "1;31"), PLAIN(1), name, PAINT(1, "2"), test_message, PLAIN(1));
     } else {
         tests_passed++;
-        printf("ok   %s\n", name);
+        printf("%sok%s   %s\n", PAINT(1, "1;32"), PLAIN(1), name);
     }
     fflush(stdout);
 }
 
 int finch_test_summary(void) {
-    printf("\n%lld passed, %lld failed\n", (long long)tests_passed, (long long)tests_failed);
+    printf("\n%s%lld passed%s, %s%lld failed%s\n", (tests_passed ? PAINT(1, "1;32") : PAINT(1, "1")), (long long)tests_passed, PLAIN(1),
+           (tests_failed ? PAINT(1, "1;31") : PAINT(1, "1")), (long long)tests_failed, PLAIN(1));
+    if (color_on(1) && tests_failed == 0 && tests_passed > 0) printf("%sAll green. The finch approves.%s\n", PAINT(1, "2"), PLAIN(1));
     return tests_failed ? 1 : 0;
 }
 
@@ -363,7 +505,7 @@ static void file_error(FStr *err, const char *what, const FStr *path) {
 // when `fn main() -> !` fails
 void finch_report_error(const FStr *msg) {
     fflush(stdout);
-    fprintf(stderr, "error: %.*s\n", (int)msg->len, msg->ptr ? msg->ptr : "");
+    fprintf(stderr, "%serror:%s %.*s\n", PAINT(2, "1;31"), PLAIN(2), (int)msg->len, msg->ptr ? msg->ptr : "");
     finch_str_drop((FStr *)msg);
 }
 

@@ -1,0 +1,5 @@
+// expect: asm works with numbers, char, pointers and vectors
+fn main() {
+    s := "hi"
+    asm("nop {s}", s)
+}
