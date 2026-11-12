@@ -1,0 +1,6 @@
+// expect: is a constant
+const LIMIT = 3
+fn bump(mut int n) { n += 1 }
+fn main() {
+    bump(mut LIMIT)
+}

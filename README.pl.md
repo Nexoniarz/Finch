@@ -45,10 +45,13 @@ fn main() {
   na instrukcje SSE, AVX2, AVX-512 albo NEON, więc ten sam kod jest szybki na komputerze stacjonarnym, laptopie i ARM-ie.
 - **Komunikaty, które da się zrozumieć:**
   ```
-  gra.fch:3:13: error: 'y' must be i32, but this is int (use i32(...) to convert)
-      3 |     i32 y = x
-        |             ^
+  gra.fch:3:13: error: 'y' must be i32, but this is int
+     |
+   3 |     i32 y = x
+     |             ^
+     = help: use i32(...) to convert
   ```
+  W terminalu są kolorowe, a `finch build` mówi, ile trwało budowanie.
 - **Biblioteki C bez pośredników.** Wystarczy `import "raylib.h"` i `link "raylib"`, żeby z niej korzystać, łącznie
   ze strukturami przekazywanymi przez wartość i funkcjami zwrotnymi. Nagłówki czyta libclang, więc niczego nie trzeba
   deklarować ręcznie.
@@ -99,12 +102,14 @@ Wybierz przewodnik dla siebie:
 |---|---|
 | Zmienne | `x := 5` (typ wynika z wartości) albo `int x = 5`; `const W = 640` |
 | Typy | `int` `float` `bool` `char` `str`, o podanym rozmiarze: `i8`…`i64` `u8`…`u64` `f32` `f64`, tablice `[]T`, mapy `map[K]V`, wskaźniki `ptr[T]`, wektory `f32x8` `i8x32`… |
-| Funkcje | `fn dodaj(int a, int b) -> int { return a + b }` |
+| Funkcje | `fn dodaj(int a, int b) -> int { return a + b }`; `fn powieksz(mut []int lista)` zmienia zmienną wywołującego: `powieksz(mut liczby)` |
 | Struktury | `struct Punkt { … }`, jedno pole w linii (`int x`, `int y = 0`); tworzy się je przez `Punkt(1, 2)` albo `Punkt(x: 1)` |
 | Metody | `fn Punkt.przesun(int dx) { self.x += dx }` → `p.przesun(3)` |
-| Tablice | `liczby := [1, 2, 3]`, `liczby.push(4)`, `liczby[0]`, `liczby.len`, `for i, n in liczby { }` |
+| Tablice | `liczby := [1, 2, 3]`, `liczby.push(4)`, `liczby[0]`, `liczby.len`, `for i, n in liczby { }`, `ludzie.sort_by(fn(a, b) { return a.wiek < b.wiek })`, `filter`, `map`, `any`, `all` |
+| Funkcje jako wartości | `fn(int) -> int f = podwoj`, `f := fn(int x) -> int { return x + n }` (bierze kopie tego, czego używa), także w polach struktur i listach |
 | Mapy | `wiek := ["ania": 31]`, `wiek["bob"] = 25`, `wiek.has("cyryl")`, `ile[slowo] += 1`, `for k, v in wiek { }` |
 | Błędy | `fn parsuj(str s) -> int! { … return error("zła liczba") }` → `parsuj(s) or 0`, `parsuj(s) or { … }`, `try parsuj(s)` |
+| Asembler | `asm("add {x}, {y}", mut x, y)`, `asm("cpuid", eax: mut a)`: składnia Intela na x86, rozmiary dobierane same na ARM64 |
 | Wektory (SIMD) | `v := f32x8(lista, i)`, `v * 2.0 + w`, `v.sum()`, `select(v > 0.0, v, 0.0)`, `t.lookup(idx)`, `acc.dot_add(a, b)`, `v.store(lista, i)` |
 | Procesory | `--cpu native`; `@cpu("avx2") fn …` razem z `if cpu_has("avx2")`; liczby zmiennoprzecinkowe liczone tak, jak zapisane (`fma`/`muladd` do łączenia) |
 | Tekst | `"hp: \(hp)"`, `"a" + "b"`, `str(42)`, `int("42")`, `s.split(",")`, `s.upper()`, `s[0]` |
@@ -165,6 +170,10 @@ Wybierz przewodnik dla siebie:
 - [x] Kompilator na każdym systemie, na który buduje: Linux, macOS (Apple Silicon i Intel), Windows; wydania robi CI
 - [x] Typy wektorowe (`f32x8`, `i8x32`, …) dla SIMD i `--cpu native`
 - [x] Maski, przestawianie, tabele bajtów i `dot_add` dla jąder obliczeniowych; `@cpu` i `cpu_has`; `fma`/`muladd`, bity liczb, f16 i bf16
+- [x] Parametry `mut` (zmiana zmiennej wywołującego bez wskaźników); wstawki asemblera `asm(...)` na x86-64 i ARM64
+- [x] Funkcje jako wartości: typy `fn(int) -> bool`, funkcje pisane na miejscu, które trzymają kopie tego, czego używają, `sort_by`, `filter`, `map`, `any`, `all`
+- [ ] Interfejsy, wartości opcjonalne `T?`
+- [ ] Nagłówki C++ importowane wprost (klasy, metody, wyjątki jako błędy); biblioteki Rusta przez `Cargo.toml`
 
 ## Co gdzie leży
 

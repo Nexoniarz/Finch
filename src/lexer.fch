@@ -1,6 +1,7 @@
 // The Finch lexer, written in Finch.
 // A token's kind is a word: "ident", "int", "float", "string", "char", "eof",
 // or the keyword / operator itself ("fn", "{", "+=", ...).
+import diag
 
 struct Token {
     str kind
@@ -24,7 +25,7 @@ fn isHex(char c) -> bool {
 
 fn isKeyword(str w) -> bool {
     keywords := ["fn", "return", "if", "else", "while", "for", "in", "break", "continue", "true", "false",
-                 "null", "import", "link", "struct", "defer", "or", "try", "enum", "match", "export", "const"]
+                 "null", "import", "link", "struct", "defer", "or", "try", "enum", "match", "export", "const", "mut"]
     return keywords.contains(w)
 }
 
@@ -35,10 +36,15 @@ struct Lexer {
     int line
     int col
     bool nl
+    bool plain      // finch index: the error as one line, for the language server
 }
 
 fn fail(ptr[Lexer] lx, int line, int col, str msg) {
-    print(lx.path + ":" + str(line) + ":" + str(col) + ": error: " + msg)
+    if lx.plain {
+        print(lx.path + ":" + str(line) + ":" + str(col) + ": error: " + msg)
+    } else {
+        diag.errorAt(lx.path, line, col, msg, "")
+    }
     exit(1)
 }
 
@@ -238,7 +244,7 @@ fn cook(ptr[Lexer] lx, str raw, Token t) -> []Token {
             toks.push(punct("+", t))
             toks.push(Token(kind: "ident", text: "str", line: t.line, col: t.col, nl: false))
             toks.push(punct("(", t))
-            inner := lexFrom(code, lx.path, t.line, t.col + 3 + i)
+            inner := lexFrom(code, lx.path, t.line, t.col + 3 + i, lx.plain)
             for k in 0..inner.len - 1 {
                 tk := inner[k]
                 tk.nl = false
@@ -308,13 +314,13 @@ fn escape(ptr[Lexer] lx, char e) -> char {
     return e
 }
 
-fn lex(str src, str path) -> []Token {
-    return lexFrom(src, path, 1, 1)
+fn lex(str src, str path, bool plain) -> []Token {
+    return lexFrom(src, path, 1, 1, plain)
 }
 
 // `src` starts at this line and column of the file (the code inside a "\(...)")
-fn lexFrom(str src, str path, int firstLine, int firstCol) -> []Token {
-    lexer := Lexer(src: src, path: path, i: 0, line: firstLine, col: firstCol, nl: true)
+fn lexFrom(str src, str path, int firstLine, int firstCol, bool plain) -> []Token {
+    lexer := Lexer(src: src, path: path, i: 0, line: firstLine, col: firstCol, nl: true, plain: plain)
     lx := addr(lexer)
     []Token out
     while lx.i < lx.src.len {

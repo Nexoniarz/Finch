@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.7.0
+
+- Functions as values: `fn(int) -> bool` types and `fn(a, b) { ... }` highlighted; hover shows a function value's type.
+- Completion and hover for the new list methods `sort_by`, `filter`, `map`, `any`, `all`.
+- `mut` (parameters that change the caller's variable) highlighted and completed; `asm(...)` highlighted and described.
+- Snippets: `fnv` (a function value), `sortby`, `fnm` (a function with a mut parameter), `asm`.
+- Errors in the terminal come with the line of code, a `^` under the spot and a `help:` line (the Problems panel is unchanged).
+
 ## 2.6.0
 
 - Vector types (`f32x8`, `i8x32`, `f64x4`, …) and masks (`boolx8`) highlighted as types; completion of their methods (`sum`, `dot_add`, `shuffle`, `lookup`, `store`, …).

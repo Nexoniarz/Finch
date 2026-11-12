@@ -68,6 +68,7 @@ Decyzje, od których zależy cała reszta:
 
 | Plik | Linie | Za co odpowiada |
 |---|---|---|
+| `src/diag.fch` | 260 | Jak wyglądają błędy i ostrzeżenia: linia kodu, zakres `^` (z UTF-8 i tabulatorami), `help:`/`note:`, kolory tylko w terminalu, linia stanu po budowaniu. `finch index` zostawia jedną zwykłą linię na błąd dla serwera języka |
 | `src/lexer.fch` | 470 | Tokeny, pozycje, tekst `"""`, zamiana `"\(x)"` na tokeny `("…" + str(x) + "…")` |
 | `src/ast.fch` | 170 | Jedna struktura `Node` z rodzajem (`kind`) jako tekstem, dziećmi, nazwami typów i pozycją (`line`, `endLine`); rozpoznawanie typów wektorowych |
 | `src/parser.fch` | 910 | Zejście rekurencyjne: deklaracje, instrukcje, wyrażenia, typy generyczne (`[T]`), `enum`, `match`, `export`, `link`, `const`, `test "…" { }` |
@@ -373,6 +374,8 @@ gdy sam znika. Nie ma liczenia referencji ani garbage collectora; wszystkie decy
 | `a.pop()`, `a.remove(i)` | element jest przenoszony na zewnątrz (świeży) |
 | `for x in lista` | `x` pożycza kolejne elementy; jeśli ciało pętli może zmienić `lista`, elementy są kopiowane |
 | wywołanie metody `v.m()` | `self` **to jest** `v` (przekazywany jest adres): bez kopii, zmiany widzi wywołujący |
+| `fn(A, B) -> R` | `{ ptr, ptr }`: funkcja i jej otoczenie. Każdą wartość-funkcję wywołuje się `f(ptr env, A, B)`; nazwana funkcja idzie przez opakowanie `@finch.val.*`, które pomija `env`. Lambda staje się własnym `FnSig` (`lambda`, `cnames`, `ctypes`, `envTy`), definiowanym później przez zwykłą pętlę; jej otoczenie to `{ ptr drop, ptr copy, przechwycone... }` na stercie, więc `finch_fn_copy` / `finch_fn_drop` (runtime) kopiują i zwalniają każdą wartość-funkcję bez wiedzy o jej zawartości. Przechwycone zmienne to kopie zrobione w chwili obliczenia lambdy (`lambdaExpr`, `envHelpers`), w niej tylko do odczytu (`Var.captured`) |
+| parametr `mut T x` | miejsce wywołującego (przekazywany jest adres, `mutArg()` / `mutPlace()`): bez kopii i bez zwalniania; `checkMutArgs()` odrzuca tę samą zmienną w innym argumencie posiadającym albo `mut` i jako odbiorcę |
 | mapy | są właścicielami kluczy i wartości tak jak tablice elementów; `m[k] = v` przenosi albo kopiuje `v` i zwalnia starą wartość |
 
 Literał tekstowy to świeża wartość z `cap = 0`: przeniesienie go nic nie kosztuje, zwalnianie jest pomijane

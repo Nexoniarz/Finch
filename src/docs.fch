@@ -26,6 +26,7 @@ fn builtins() -> []Doc {
         doc("max", "max(a, b, ...) -> number", "The biggest of the numbers, in the type they all fit."),
         doc("abs", "abs(x) -> number", "x without its minus sign (any number type)."),
         doc("clamp", "clamp(x, lo, hi) -> number", "x, but at least lo and at most hi."),
+        doc("asm", "asm(str code, values...)", "Processor instructions written in the code (Intel syntax on x86). {x} in the text is the variable x in a register; mut x means the instructions change it; reg: x puts x in that exact register: asm(\"cpuid\", eax: mut a)."),
         doc("cpu_has", "cpu_has(str feature) -> bool", "Does the processor running the program have this feature (\"avx2\", \"avx512f\", \"avxvnni\", \"dotprod\", \"i8mm\" ...)? Check before calling a @cpu(...) function."),
         doc("concat", "concat(V a, V b) -> V2", "One vector with a's lanes, then b's (twice as many)."),
         doc("select", "select(mask, a, b) -> V", "Lane by lane: a where the mask is true, b where it is false. The mask comes from comparing vectors (v > 0.0)."),
@@ -71,6 +72,11 @@ fn arrayMethods() -> []Doc {
         doc("find", "find(T x) -> int", "The index of x, or -1."),
         doc("contains", "contains(T x) -> bool", "Is x in the array?"),
         doc("sort", "sort()", "Sorts in place (numbers, chars, str)."),
+        doc("sort_by", "sort_by(fn(T a, T b) -> bool before)", "Sorts in place by your rule: before(a, b) says whether a goes first. Equal ones keep their order: people.sort_by(fn(a, b) { return a.age < b.age })."),
+        doc("filter", "filter(fn(T x) -> bool keep) -> []T", "A new array with the elements keep(x) says yes to: nums.filter(fn(n) { return n > 0 })."),
+        doc("map", "map(fn(T x) -> U change) -> []U", "A new array with change(x) of every element: names.map(fn(str s) -> int { return s.len })."),
+        doc("any", "any(fn(T x) -> bool test) -> bool", "Is test(x) true for at least one element? Stops at the first."),
+        doc("all", "all(fn(T x) -> bool test) -> bool", "Is test(x) true for every element? Stops at the first that isn't."),
         doc("reverse", "reverse()", "Reverses in place."),
         doc("slice", "slice(int start, int end) -> []T", "A new array with the elements start to end-1."),
         doc("join", "join(str sep) -> str", "For []str: one text with sep between the parts.")
@@ -137,7 +143,7 @@ fn vecMethods() -> []Doc {
 
 fn keywords() -> []str {
     return ["fn", "return", "if", "else", "while", "for", "in", "break", "continue", "true", "false", "null", "import",
-            "link", "struct", "enum", "match", "export", "defer", "or", "try", "self", "const"]
+            "link", "struct", "enum", "match", "export", "defer", "or", "try", "self", "const", "mut"]
 }
 
 fn typeNames() -> []str {

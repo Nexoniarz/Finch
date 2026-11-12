@@ -1,0 +1,6 @@
+// expect: is mut int, so it needs a variable of exactly that type, but this is i32
+fn bump(mut int n) { n += 1 }
+fn main() {
+    i32 x = 1
+    bump(mut x)
+}

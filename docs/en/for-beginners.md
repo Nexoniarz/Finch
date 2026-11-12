@@ -491,6 +491,25 @@ fn main() {
 }
 ```
 
+### Your own order
+
+`sort()` puts numbers from small to big. To choose the order yourself, give `sort_by` a small function that answers
+one question: *does `a` go before `b`?*
+
+```c
+fn main() {
+    scores := [10, 25, 7]
+    scores.sort_by(fn(a, b) { return a > b })      // big ones first
+    print(scores)                                  // [25, 10, 7]
+
+    big := scores.filter(fn(s) { return s >= 10 }) // keep only some
+    print(big)                                     // [25, 10]
+}
+```
+
+`fn(a, b) { ... }` is a function without a name, written right where it is needed. You will meet more of them later;
+for now, think of it as a little rule you hand over.
+
 ### Going through a list
 
 `for ... in` visits every value, one by one:

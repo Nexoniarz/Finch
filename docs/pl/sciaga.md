@@ -149,6 +149,19 @@ fn przywitaj(str imie) {      // bez wyniku
 
 Parametry zachowują się jak kopie. Kolejność funkcji w pliku nie ma znaczenia. Po ostatnim argumencie może stać przecinek.
 
+```c
+fn powieksz(mut []int lista) {  // mut: zmienia zmienną wywołującego
+    lista.push(1)
+}
+powieksz(mut liczby)            // mut także przy wywołaniu (zmienna, pole albo element)
+```
+
+```c
+fn(int) -> int f = podwoj       // funkcja jako wartość (jej typ: fn(parametry) -> wynik)
+f = fn(int x) -> int { return x + n }    // napisana na miejscu; bierze kopie n i reszty, tylko do odczytu
+f(3)                            // wywołanie; także jako argument, w liście, w polu struktury
+```
+
 ---
 
 ## Metody
@@ -219,6 +232,9 @@ Wbudowane funkcje, które mogą się nie udać: `int(s)`, `float(s)`, `read_file
 | `a.find(x)` | indeks albo -1 |
 | `a.contains(x)` | bool |
 | `a.sort()` | sortuje (liczby, znaki, teksty) |
+| `a.sort_by(fn(x, y) { return x.wiek < y.wiek })` | sortuje według twojej zasady (stabilnie) |
+| `a.filter(f)`, `a.map(f)` | nowa tablica: elementy, które f zostawia / wyniki f |
+| `a.any(f)`, `a.all(f)` | czy f jest prawdą dla któregoś / każdego elementu |
 | `a.reverse()` | odwraca kolejność |
 | `a.slice(p, k)` | nowa tablica z elementów p … k-1 |
 | `a.join(sep)` | `[]str` → jeden tekst |
@@ -336,6 +352,7 @@ Automatycznie tylko wtedy, gdy nic nie ginie: mniejsza liczba → większa, licz
 | `f16_to_f32(h)`, `f32_to_f16(x)`, `bf16_to_f32(b)`, `f32_to_bf16(x)` | liczby połówkowej precyzji i bfloat16 (w `u16`) ↔ `f32`; także na wektorach |
 | `error(komunikat)` | `return error("…")` w funkcji `-> T!` |
 | `addr(x)` | wskaźnik na x; `addr(fn)` = funkcja zwrotna dla C |
+| `asm("add {x}, {y}", mut x, y)` | instrukcje procesora (składnia Intela na x86); `eax: mut v` = ten rejestr, `scratch: "rcx"` |
 | `assert(warunek)`, `assert(warunek, "dlaczego")` | zatrzymuje program, gdy warunek jest fałszywy (w bloku `test`: ten test nie przechodzi) |
 | `atomic_add(p, n)`, `atomic_sub`, `atomic_load(p)`, `atomic_store(p, n)`, `atomic_swap(p, n)`, `atomic_cas(p, stara, nowa)` | liczba całkowita, którą zmieniają też inne wątki, przez jej `ptr` (`addr(licznik)`) |
 | `new(wartosc)` | wartość na stercie → `ptr[T]` |
@@ -496,6 +513,6 @@ s := Stos[int]()     Stos[int] t     Para[str, int]("wiek", 31)          //   ni
 
 ## Słowa kluczowe
 
-`fn return if else while for in break continue true false null import link struct enum match defer or try const export`
+`fn return if else while for in break continue true false null import link struct enum match defer or try const export mut`
 (`test` i `as` tylko tam, gdzie coś znaczą: `test "nazwa" { }`, `import x as y`)
 (oraz `self` wewnątrz metod)

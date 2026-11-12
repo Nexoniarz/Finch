@@ -42,6 +42,7 @@ i rozwiązywanie typowych problemów. Nie opisuje, jak kompilator działa od śr
 29. [Wątki](#29-wątki)
 30. [C++, Rust i Android](#30-c-rust-i-android)
 31. [Wektory (SIMD)](#31-wektory-simd)
+32. [Asembler w kodzie Fincha: asm](#32-asembler-w-kodzie-fincha-asm)
 
 ---
 
@@ -490,12 +491,89 @@ fn bez_wyniku(str komunikat) {    // bez "->": niczego nie zwraca
 
 - Argumenty zachowują się jak kopie: zmiana parametru nigdy nie zmienia zmiennej wywołującego.
   (Finch kopiuje naprawdę tylko wtedy, gdy trzeba: funkcja, która nie zmienia tablicy, dostaje ją za darmo.)
-  Żeby zmienić zmienną wywołującego, przekaż wskaźnik: zob. [Wskaźniki](#14-wskaźniki).
+  Żeby zmienić zmienną wywołującego, oznacz parametr jako `mut` (niżej).
 - Funkcja z `-> typ` musi zwracać wartość na każdej ścieżce. Finch to sprawdza.
 - Nie można zdefiniować funkcji wewnątrz innej funkcji.
 - Funkcję, która może się nie udać, zapisuje się `-> int!` (albo `-> !` bez wyniku); zob.
   [Błędy jako wartości](#błędy-jako-wartości).
 - Długie wywołania można rozbić na kilka linii w nawiasach; przecinek po ostatnim argumencie jest dozwolony.
+
+### Zmiana zmiennej wywołującego: `mut`
+
+```c
+fn dodaj_wroga(mut []str wrogowie, str imie) {
+    wrogowie.push(imie)           // zmienia listę wywołującego
+}
+
+fn ulecz(mut Gracz g, int ile) {
+    g.hp += ile
+}
+
+lista := ["nietoperz"]
+dodaj_wroga(mut lista, "szczur")  // lista to teraz ["nietoperz", "szczur"]
+ulecz(mut bohater, 5)             // także pole albo element: mut bohater.hp, mut druzyna[2]
+```
+
+`mut` pisze się w obu miejscach: w funkcji, żeby było widać, co zmienia, i przy wywołaniu, żeby czytający wiedział,
+że zmienna się zmieni. Nic nie jest kopiowane: funkcja działa bezpośrednio na zmiennej wywołującego.
+
+- Argument musi być zmienną, polem albo elementem (nie `mut 5` ani `mut f()`), dokładnie typu parametru.
+- Zmiennej podanej jako `mut` nie może używać inny argument tego samego wywołania (`polacz(mut a, a)`), więc funkcja
+  nigdy nie widzi wartości zmienionej w połowie.
+- Zmiennych pętli (`for x in lista`) i stałych nie można podać jako `mut`.
+
+### Funkcje jako wartości
+
+Funkcję można zapisać w zmiennej, przekazać innej funkcji, trzymać w liście albo w strukturze i wywołać później.
+Jej typ zapisuje się `fn(typy parametrów) -> wynik`:
+
+```c
+fn podwoj(int x) -> int {
+    return x * 2
+}
+
+fn zastosuj(fn(int) -> int f, int x) -> int {
+    return f(x)
+}
+
+zastosuj(podwoj, 5)                                // 10: nazwana funkcja jako wartość
+zastosuj(fn(int x) -> int { return x * x }, 7)     // 49: funkcja napisana tam, gdzie jest potrzebna
+
+krzyk := fn(str s) -> str { return s.upper() + "!" }
+print(krzyk("hej"))                                // HEJ!
+```
+
+Funkcja napisana w kodzie może używać zmiennych wokół niej. Gdy powstaje, bierze **kopię** każdej z nich, więc nie
+widzi późniejszych zmian i nigdy nie wskazuje na coś, czego już nie ma:
+
+```c
+fn dodawacz(int n) -> fn(int) -> int {
+    return fn(int x) -> int { return x + n }       // ma własne n
+}
+
+dodaj10 := dodawacz(10)
+print(dodaj10(1))                                  // 11
+```
+
+- Kopie są w niej tylko do odczytu (`licznik += 1` w środku to błąd, który to wyjaśnia). Żeby oddać wynik, użyj
+  `return`.
+- Tam, gdzie typ jest już znany, typy parametrów i wynik można pominąć:
+  `ludzie.sort_by(fn(a, b) { return a.wiek < b.wiek })`.
+- Typy funkcji mogą się nie udać jak każda funkcja: `fn(str) -> int!`, wywoływana z `or` / `try`.
+- Pole struktury może trzymać funkcję: `Przycisk(klik: fn() { ... })`, wywołanie `p.klik()`.
+- Zmienna typu funkcji, której nic nie przypisano, jeszcze nic nie trzyma; jej wywołanie zatrzymuje program
+  z jasnym komunikatem.
+- Funkcje generyczne też je przyjmują: `fn dwa_razy[T](fn(T) -> T f, T x) -> T`. Sama funkcja generyczna nie może być
+  wartością (dla każdego typu jest inną funkcją); opakuj ją: `fn(int a, int b) -> int { return max(a, b) }`.
+
+Listy mają metody, które przyjmują funkcję:
+
+| Metoda | Daje |
+|---|---|
+| `lista.sort_by(fn(a, b) { return a.wiek < b.wiek })` | sortuje w miejscu według twojej zasady (stabilnie: równe zostają w swojej kolejności) |
+| `lista.filter(fn(x) { return x > 0 })` | nową listę elementów, na które funkcja mówi tak |
+| `lista.map(fn(int x) -> str { return str(x) })` | nową listę wyników funkcji (napisz typ wyniku) |
+| `lista.any(fn(x) { ... })`, `lista.all(fn(x) { ... })` | `bool`; kończą, gdy tylko odpowiedź jest znana |
 
 ---
 
@@ -521,6 +599,8 @@ siatka := [[1, 2], [3, 4]] // tablice tablic
 | `a.resize(n)` | zmiana długości na `n` (nowe elementy to zera) |
 | `a.contains(x)`, `a.find(x)` | czy `x` tam jest? jego indeks albo -1 (liczby, znaki, bool, str) |
 | `a.sort()`, `a.reverse()` | w miejscu (liczby, znaki, str) |
+| `a.sort_by(fn(x, y) { return … })` | w miejscu, według twojej zasady (zob. [Funkcje jako wartości](#funkcje-jako-wartości)) |
+| `a.filter(f)`, `a.map(f)`, `a.any(f)`, `a.all(f)` | z funkcją: elementy, które zostawia, jej wyniki, czy prawda dla któregoś / wszystkich |
 | `a.slice(p, k)` | nowa tablica z elementami `p` … `k-1` |
 | `a.join(sep)` | dla `[]str`: jeden tekst z `sep` między częściami |
 | `a.ptr` | adres pierwszego elementu (dla C) |
@@ -933,12 +1013,20 @@ nie ma odwijania stosu, a niepowodzenie kosztuje tyle, co zbudowanie komunikatu.
 ### Błędy kompilacji
 
 ```
-gra.fch:12:9: error: 'wynik' must be int, but this is str
-   12 |     wynik = "wysoki"
-      |             ^
+gra.fch:12:13: error: 'y' must be i32, but this is int
+    |
+ 12 |     i32 y = x
+    |             ^
+    = help: use i32(...) to convert
 ```
 
-Format: `plik:linia:kolumna: error: wyjaśnienie`, a pod spodem linia z `^` pod miejscem błędu.
+Format: `plik:linia:kolumna: error: wyjaśnienie` (terminal i edytor potrafią do niego skoczyć), pod spodem linia z `^`
+pod miejscem błędu, a wskazówka w linii `help:`. W funkcji generycznej `note:` mówi, która jej wersja była budowana.
+Ostrzeżenia wyglądają tak samo, na żółto, a program i tak się buduje.
+
+W terminalu komunikaty są kolorowe; w potoku, pliku czy edytorze zwykłe. `NO_COLOR=1` albo `FINCH_COLOR=never`
+wyłącza kolory, `FINCH_COLOR=always` zostawia je nawet w potoku. Tak samo działają błędy w trakcie działania (które
+wtedy pokazują też linię kodu, na której program stanął) i `finch test`.
 
 ### Błędy w trakcie działania
 
@@ -1564,3 +1652,44 @@ się różnić od dodawania ich po kolei.
 
 Na NixOS nakładka Niksa na clanga usuwa `-march=native` w `nix-shell`. Finch mówi jej, żeby to zostawiła, więc
 `--cpu native` działa i tam; gdyby kiedyś nie miało żadnego skutku, Finch ostrzeże.
+
+---
+
+## 32. Asembler w kodzie Fincha: asm
+
+`asm(...)` wstawia instrukcje procesora prosto do kodu. Tak można wypróbować jedną instrukcję i zobaczyć, co robi,
+albo użyć takiej, na którą Finch nie ma słowa.
+
+```c
+fn dodaj_asm(int a, int b) -> int {
+    suma := a
+    asm("add {suma}, {b}", mut suma, b)        // {suma}: ta zmienna, w rejestrze wybranym przez kompilator
+    return suma
+}
+
+i32 lisc = 0
+i32 b = 0
+i32 c = 0
+i32 d = 0
+asm("cpuid", eax: mut lisc, ebx: mut b, ecx: mut c, edx: mut d)    // eax: dokładnie ten rejestr
+
+asm("mov rcx, 4\n imul {m}, rcx", mut m, scratch: "rcx")         // rcx jest używany, więc jego wartość przepada
+```
+
+| Zapis | Znaczenie |
+|---|---|
+| `{x}` w tekście, `x` jako argument | `x` trafia do rejestru wybranego przez kompilator, wpisanego w to miejsce |
+| `mut x` | instrukcje zmieniają `x`: najpierw jest czytany, potem zapisywany z powrotem |
+| `n: 7` z `{n}` w tekście | wartość, która nie jest zmienną, pod nazwą |
+| `eax: mut x` (bez `{eax}` w tekście) | `x` dokładnie w tym rejestrze |
+| `scratch: "rcx, rdx"` | rejestry, których instrukcje używają na własne potrzeby |
+| `{x:w}` | jak zapisać rejestr (jak w C: `w`, `x`, `s`, `d` na ARM64) |
+| `{{`, `}}` | sam nawias klamrowy (`{k1}` z AVX-512 to `{{k1}}`) |
+
+- Na x86-64 obowiązuje **składnia Intela** (`add cel, źródło`), ta z podręczników Intela i AMD.
+- Na ARM64 nazwa rejestru zależy od rozmiaru, a Finch dobiera ją do zmiennej: `w0` dla `i32`, `x0` dla `int`, `s0`
+  dla `f32`, `d0` dla `float`.
+- Wartości muszą mieścić się w rejestrze: liczby, `char`, wskaźniki, wektory (`f32x4` itd. idą do rejestrów wektorowych).
+- Kompilator zakłada, że instrukcje mogą czytać i zapisywać pamięć oraz flagi, więc nigdy nie przestawia kodu wokół
+  nich. Instrukcje dla innego procesora nie zbudują się, więc trzymaj je za `--target` albo w dwóch wersjach funkcji;
+  `cpu_has(...)` mówi, jakie możliwości ma procesor, na którym działa program.

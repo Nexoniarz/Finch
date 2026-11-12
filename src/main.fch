@@ -14,7 +14,13 @@ import host
 import embedded
 import manifest
 import fmt
+import diag
+import time
 import "stdlib.h"
+
+fn version() -> str {
+    return "2.7.0"
+}
 
 fn dirOf(str path) -> str {
     i := path.len - 1
@@ -51,6 +57,7 @@ struct Loader {
     []ast.Program progs
     []str files
     []str loaded
+    bool plain          // finch index: errors as one line each, for the language server
     str os              // "windows", "macos" or "linux": a module may have a version for each (time_windows.fch)
     str std             // the standard library's folder, or ""
     []str paths         // FINCH_PATH: more folders to look for modules in
@@ -121,16 +128,16 @@ fn moduleKey(ptr[Loader] l, str file, str name) -> str {
 fn load(ptr[Loader] l, str path, str module) {
     if !file_exists(path) && !l.overlayPaths.contains(path) {
         if module.len > 0 {
-            print("error: can't find the module '" + module + "' (looked for " + path + ")")
+            diag.problem("can't find the module '" + module + "' (looked for " + path + ")")
         } else {
-            print("error: can't open '" + path + "'")
+            diag.problem("can't open '" + path + "'")
         }
         exit(1)
     }
     src := textOfFile(l, path)
     file := l.files.len
     l.files.push(path)
-    prog := parser.parse(lexer.lex(src, path), file, path)
+    prog := parser.parse(lexer.lex(src, path, l.plain), file, path, l.plain)
     prog.module = module
     prog.path = path
     if module.len == 0 {
@@ -152,29 +159,69 @@ fn load(ptr[Loader] l, str path, str module) {
     }
 }
 
-fn usage() {
-    print("Finch -- the compiler is written in Finch")
-    print("usage:")
-    print("  finch run <file.fch> [args...]     build and run a program")
-    print("  finch build <file.fch> [-o name]   build a program")
-    print("  finch test <file.fch>              run its test \"...\" { } blocks (and those of the modules it imports)")
-    print("  finch ir <file.fch>                print the LLVM IR")
-    print("  finch fmt [--check] [files/dirs]   indent .fch files by { }, 4 spaces (--check: only list those it would change)")
-    print("  (with a finch.toml, run, build and test can leave out the file: its entry is used)")
-    print("  finch version                      show the version")
-    print("  finch lsp                          the language server, for editors (VS Code, Kate, ...)")
-    print("options:")
-    print("  -O0               no optimization (faster to build)")
-    print("  -l <lib>          link a library (the same as  link \"lib\"  in the program)")
-    print("  -I <dir>          look for imported C headers there too")
-    print("  -g                debug info (for gdb and lldb; use -O0 with it)")
-    print("  --trace           runtime errors show the chain of calls (finch run, finch test, -g and -O0 do it anyway)")
-    print("  --no-trace        they don't (finch build without -g or -O0 doesn't, it costs speed)")
-    print("  --target <name>   build for another system: windows, linux, arm64 (Linux), macos, or an LLVM triple")
-    print("  --cpu <name>      use all of this processor's instructions (AVX2, AVX-512, NEON...): native is the one")
-    print("                    building it; or x86-64-v3 (AVX2), x86-64-v4 (AVX-512), apple-m1, ... The program then")
-    print("                    needs such a processor. Default: any processor of the target system")
-    exit(1)
+fn usage(int code) {
+    on := diag.colors()
+    head := fn_head(on)
+    print(head)
+    print("")
+    print(diag.paint(on, "1", "Usage:") + " finch <command> [file.fch] [options]")
+    print("")
+    print(diag.paint(on, "1", "Commands:"))
+    line(on, "run <file> [args...]", "build and run a program")
+    line(on, "build <file> [-o name]", "build a program you can share")
+    line(on, "test <file>", "run its  test \"...\" { }  blocks (and those of the modules it imports)")
+    line(on, "fmt [--check] [files]", "tidy the indentation of .fch files (--check: only list what it would change)")
+    line(on, "ir <file>", "show the LLVM IR the program turns into")
+    line(on, "lsp", "the language server, for editors (VS Code, Kate, ...)")
+    line(on, "version", "show the version")
+    line(on, "help", "this list")
+    print("  " + diag.paint(on, "2", "With a finch.toml, run, build and test can leave out the file: its entry is used."))
+    print("")
+    print(diag.paint(on, "1", "Options:"))
+    line(on, "-O0", "no optimization (faster to build)")
+    line(on, "-g", "debug info, for gdb and lldb (use -O0 with it)")
+    line(on, "-l <lib>", "link a library (the same as  link \"lib\"  in the program)")
+    line(on, "-I <dir>", "look for imported C headers there too")
+    line(on, "--trace / --no-trace", "runtime errors show the chain of calls, or don't (on for run, test, -g, -O0)")
+    line(on, "--target <name>", "build for another system: windows, linux, arm64, macos, android, or an LLVM triple")
+    line(on, "--cpu <name>", "use all of a processor's instructions: native (this one), x86-64-v3, apple-m1, ...")
+    line(on, "--shared", "build a library a C program can load (its  export fn  are the C functions)")
+    print("")
+    print(diag.paint(on, "1", "Environment:"))
+    line(on, "FINCH_COLOR=never", "no colours (or NO_COLOR=1); =always keeps them in pipes too")
+    line(on, "FINCH_CC, FINCH_PATH", "the C compiler that links; more folders to find modules in")
+    print("")
+    print(diag.paint(on, "2", "Start with:  finch run hello.fch      Guides: docs/en (English), docs/pl (polski)"))
+    exit(code)
+}
+
+fn systemName(platform.Target tg) -> str {
+    cpu := "x86-64"
+    if tg.arm64 {
+        cpu = "ARM64"
+    }
+    if tg.windows {
+        return cpu + " Windows"
+    }
+    if tg.darwin {
+        return cpu + " macOS"
+    }
+    if tg.android {
+        return cpu + " Android"
+    }
+    return cpu + " Linux"
+}
+
+fn fn_head(bool on) -> str {
+    return diag.paint(on, "1;33", "Finch " + version()) + "  " + diag.paint(on, "2", "small, quick, sharp -- a compiler written in Finch")
+}
+
+fn line(bool on, str what, str says) {
+    pad := 24 - what.len
+    if pad < 2 {
+        pad = 2
+    }
+    print("  " + diag.paint(on, "1;32", what) + " ".repeat(pad) + says)
 }
 
 // The runtime and the standard library are carried inside the compiler (embedded.fch). When they aren't found as
@@ -221,7 +268,7 @@ fn format([]str args) -> int {
     changed := 0
     for f in files {
         text := read_file(f) or {
-            print("error: can't read " + f)
+            diag.problem("can't read " + f)
             return 1
         }
         neat := fmt.format(text)
@@ -242,9 +289,13 @@ fn format([]str args) -> int {
 }
 
 fn main([]str args) -> int {
+    started := time.millis()
     if args.len == 2 && (args[1] == "version" || args[1] == "--version") {
-        print("Finch 2.6.0 (the compiler is written in Finch)")
+        print(fn_head(diag.colors()))
         return 0
+    }
+    if args.len == 2 && (args[1] == "help" || args[1] == "--help" || args[1] == "-h") {
+        usage(0)
     }
     if args.len >= 2 && args[1] == "fmt" {
         return format(args)
@@ -253,11 +304,12 @@ fn main([]str args) -> int {
         return lsp.run(args[0])             // the language server, for editors
     }
     if args.len < 2 {
-        usage()
+        usage(1)
     }
     cmd := args[1]
     if cmd != "build" && cmd != "run" && cmd != "ir" && cmd != "index" && cmd != "test" {
-        usage()
+        diag.problem("'" + cmd + "' is not a command of finch (try: finch help)")
+        exit(1)
     }
     file := ""
     ai := 2
@@ -271,14 +323,14 @@ fn main([]str args) -> int {
         from = dirOf(absolute(file))
     }
     man := manifest.find(from) or {
-        print(err)
+        diag.passOn(err)
         return 1
     }
     isEntry := file.len == 0
     if isEntry {
         entry := man.value("entry", "")
         if !man.found || entry.len == 0 {
-            print("error: which file? (finch " + cmd + " <file.fch>, or a finch.toml with  entry = \"main.fch\")")
+            diag.problem("which file? (finch " + cmd + " <file.fch>, or a finch.toml with  entry = \"main.fch\")")
             return 1
         }
         file = man.resolve(entry)
@@ -342,7 +394,8 @@ fn main([]str args) -> int {
         } else if cmd == "run" {
             progArgs.push(a)
         } else {
-            usage()
+            diag.problem("'" + a + "' is not an option of finch " + cmd + " (try: finch help)")
+            exit(1)
         }
         ai += 1
     }
@@ -364,7 +417,7 @@ fn main([]str args) -> int {
         out = out + tg.exe
     }
 
-    loader := Loader()
+    loader := Loader(plain: cmd == "index")
     loader.os = "linux"
     if tg.windows {
         loader.os = "windows"
@@ -462,7 +515,7 @@ fn main([]str args) -> int {
         triple = tg.triple          // on Windows libclang.dll would otherwise assume MSVC, while clang may be MinGW
     }
     ci := cimport.importHeaders(headers, dirs, triple, tg.windows, tg.cc) or {
-        print(err)
+        diag.passOn(err)
         return 1
     }
     []str testModules
@@ -476,7 +529,7 @@ fn main([]str args) -> int {
     if cmd != "index" {
         features = linker.cpuFeatures(tg, cpu)
         if cpu == "native" && !tg.arm64 && !features.contains("sse4.2") {
-            print("warning: --cpu native made no difference to clang (a clang wrapper may remove -march=native; try --cpu with a name, like x86-64-v3)")
+            diag.notice("--cpu native made no difference to clang (a clang wrapper may remove -march=native; try --cpu with a name, like x86-64-v3)")
         }
     }
     ir := gen.generate(loader.progs, loader.files, ci, gen.Options(shared: shared, debug: debug, index: cmd == "index", cwd: host.cwd(), target: tg, test: cmd == "test", testModules: testModules, trace: trace, features: features))
@@ -517,6 +570,21 @@ fn main([]str args) -> int {
     cflagList.push(cflags)
     if linker.build(linker.Build(out: out, ir: ir, rt: rt, opt: opt, extra: extra, shared: shared, links: links, name: absolute(file), cflags: cflagList.join(""), ldflags: ldflags), tg, ci) != 0 {
         return 1
+    }
+    took := diag.seconds(time.millis() - started)
+    if cmd == "build" {
+        how := "optimized"
+        if opt == "-O0" {
+            how = "not optimized"
+        }
+        if debug {
+            how += ", with debug info"
+        }
+        diag.status("Built", out, "in " + took, how + ", " + systemName(tg))
+    } else if cmd == "run" {
+        diag.status("Running", stem(file), "", "built in " + took)
+    } else {
+        diag.status("Testing", stem(file), "", "built in " + took)
     }
     if cmd == "run" || cmd == "test" {
         []str quoted

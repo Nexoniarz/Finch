@@ -1,0 +1,5 @@
+// expect: 'f' holds no function yet
+fn main() {
+    fn(int) -> int f
+    print(f(1))
+}

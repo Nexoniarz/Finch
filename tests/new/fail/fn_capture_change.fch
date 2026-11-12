@@ -1,0 +1,6 @@
+// expect: 'count' is a copy this function value took when it was made, so it can't be changed in it
+fn main() {
+    count := 0
+    bump := fn() { count += 1 }
+    bump()
+}

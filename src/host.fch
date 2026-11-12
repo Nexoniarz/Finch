@@ -39,6 +39,11 @@ fn pathSeparator() -> str {
     return ":"
 }
 
+// is this stream (0 in, 1 out, 2 errors) a terminal a person is looking at, not a pipe or a file?
+fn isTerminal(int fd) -> bool {
+    return isatty(i32(fd)) == 1
+}
+
 fn pid() -> int {
     return int(getpid())
 }

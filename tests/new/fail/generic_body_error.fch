@@ -1,4 +1,5 @@
-// expect: (while building bigger[Point])
+// expect: can't use '>' on Point
+// expect: note: while building bigger[Point]
 struct Point {
     int x
 }

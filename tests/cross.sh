@@ -27,6 +27,7 @@ run_exe() {  # program, stdin -> output without Windows' \r
 
 for f in run/*.fch new/*.fch; do
     grep -q "^fn main" "$f" || continue
+    case "$target-$f" in arm64-*.x86_64.fch|windows-*.arm64.fch) continue ;; esac     # inline asm for another processor
     input="${f%.fch}.in"
     [ -f "$input" ] || input=/dev/null
     exe="$tmp/$(basename "${f%.fch}")$ext"
@@ -42,15 +43,24 @@ for f in run/*.fch new/*.fch; do
     fi
 done
 
+expects_met() {  # file, output -> true if all its "// expect:" lines are there
+    local line
+    while IFS= read -r line; do
+        case "$line" in "// expect: "*) ;; *) break ;; esac
+        expect=${line#// expect: }
+        [[ "$2" == *"$expect"* ]] || return 1
+    done < "$1"
+    return 0
+}
+
 for f in fail/*.fch new/fail/*.fch; do
-    expect=$(head -1 "$f" | sed -n 's|^// expect: ||p')
     exe="$tmp/$(basename "${f%.fch}")$ext"
     if "$FINCH" build "$f" --target "$target" -o "$exe" > "$tmp/out" 2>&1; then
         got=$(run_exe "$exe" /dev/null)
     else
         got=$(cat "$tmp/out")
     fi
-    if [[ "$got" == *"$expect"* ]]; then
+    if expects_met "$f" "$got"; then
         pass=$((pass + 1))
     else
         failed=$((failed + 1)); echo "FAIL $f (wanted: $expect)"; echo "$got" | head -5

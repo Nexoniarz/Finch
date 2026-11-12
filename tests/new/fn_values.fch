@@ -1,0 +1,93 @@
+// functions as values: fn types, functions written in the code, captures, and the list methods that take them
+struct Person {
+    str name
+    int age
+}
+
+struct Button {
+    str label
+    fn() -> str on_click
+}
+
+fn double(int x) -> int {
+    return x * 2
+}
+
+fn apply(fn(int) -> int f, int x) -> int {
+    return f(x)
+}
+
+fn twice[T](fn(T) -> T f, T x) -> T {
+    return f(f(x))
+}
+
+fn make_adder(int n) -> fn(int) -> int {
+    return fn(int x) -> int { return x + n }
+}
+
+fn parse_age(str s) -> int! {
+    n := int(s) or {
+        return error("'" + s + "' is not an age")
+    }
+    return n
+}
+
+fn main() {
+    print(apply(double, 5))
+    print(apply(fn(int x) -> int { return x * x }, 7))
+
+    add10 := make_adder(10)
+    print(add10(1), apply(add10, 5))
+
+    greeting := "Hello"
+    names := ["Ann", "Bob"]
+    greet := fn(str who) -> str {
+        return greeting + ", " + who + " (one of " + str(names.len) + ")"
+    }
+    greeting = "Bye"                  // the function kept its own copy
+    print(greet("Cy"))
+
+    copy := greet                     // a copy of the function and what it captured
+    print(copy("Dee"))
+
+    print(twice(double, 3), twice(fn(str s) -> str { return s + "!" }, "hey"))
+
+    people := [Person("Ann", 31), Person("Bob", 25), Person("Cy", 40), Person("Dee", 25)]
+    people.sort_by(fn(a, b) { return a.age < b.age })
+    for p in people {
+        print(p.name, p.age)
+    }
+    limit := 30
+    older := people.filter(fn(p) { return p.age > limit })
+    print(older.len, older[0].name)
+    labels := people.map(fn(Person p) -> str { return p.name + ":" + str(p.age) })
+    print(labels)
+    print(people.any(fn(p) { return p.age == 40 }), people.all(fn(p) { return p.age > 30 }))
+
+    nums := [5, 3, 9, 1]
+    nums.sort_by(fn(a, b) { return a > b })
+    print(nums, nums.map(double), nums.filter(fn(n) { return n % 3 == 0 }))
+
+    clicks := 0
+    b := Button(label: "OK", on_click: fn() -> str { return "clicked " + str(clicks) })
+    print(b.on_click())
+
+    []fn(int) -> int steps = [double, make_adder(1), fn(int x) -> int { return x - 3 }]
+    v := 4
+    for step in steps {
+        v = step(v)
+    }
+    print(v, steps.len)
+
+    fn(str) -> int! checked = parse_age
+    print(checked("42") or 0, checked("old") or -1)
+
+    i := 1
+    print(make_adder(100)(1), steps[0](21), steps[i](1), steps[i + 1](4))
+    []fn(str) -> int! parsers = [parse_age]
+    print(parsers[0]("7") or 0, parsers[0]("x") or -2)
+
+    fn() -> str empty
+    print(empty)
+    print(str(add10))
+}

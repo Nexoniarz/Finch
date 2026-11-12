@@ -1,0 +1,4 @@
+// expect: write the type of 'x'
+fn main() {
+    f := fn(x) { print(x) }
+}

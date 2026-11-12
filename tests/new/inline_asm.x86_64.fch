@@ -1,0 +1,49 @@
+// asm: processor instructions inside Finch code (x86-64 here; tests/cross.sh builds the ARM64 side)
+fn add_asm(int a, int b) -> int {
+    total := a
+    asm("add {total}, {b}", mut total, b)
+    return total
+}
+
+fn main() {
+    print(add_asm(40, 2))
+
+    // a fixed register: cpuid with eax = 0 gives the highest leaf in eax
+    i32 leaf = 0
+    i32 b = 0
+    i32 c = 0
+    i32 d = 0
+    asm("cpuid", eax: mut leaf, ebx: mut b, ecx: mut c, edx: mut d)
+    print(leaf > 0)
+
+    // several outputs, a 32-bit value, a field
+    struct_test()
+
+    // floats go in vector registers
+    float x = 1.5
+    float y = 2.25
+    asm("addsd {x}, {y}", mut x, y)
+    print(x)
+
+    // a named value that isn't a variable, and a literal brace-free text with $
+    n := 10
+    asm("imul {n}, {k}", mut n, k: 7)
+    print(n)
+    asm("nop")
+
+    // registers the instructions use for themselves
+    m := 6
+    asm("mov rcx, 4\n imul {m}, rcx", mut m, scratch: "rcx")
+    print(m)
+}
+
+struct Counter {
+    int hits
+}
+
+fn struct_test() {
+    cnt := Counter(hits: 1)
+    i32 small = 5
+    asm("inc {cnt.hits}\n shl {small}, 2", mut cnt.hits, mut small)
+    print(cnt.hits, small)
+}

@@ -149,6 +149,19 @@ fn greet(str name) {          // no result
 
 Parameters behave like copies. Order in the file doesn't matter. A comma after the last argument is allowed.
 
+```c
+fn grow(mut []int list) {     // mut: changes the caller's variable itself
+    list.push(1)
+}
+grow(mut nums)                // mut again at the call (a variable, field or element)
+```
+
+```c
+fn(int) -> int f = double     // a function as a value (its type: fn(params) -> result)
+f = fn(int x) -> int { return x + n }    // written in place; takes read-only copies of n and the rest
+f(3)                          // call it; also as an argument, in a list, in a struct field
+```
+
 ---
 
 ## Methods
@@ -219,6 +232,9 @@ Fallible built-ins: `int(s)`, `float(s)`, `read_file`, `write_file`, `delete_fil
 | `a.find(x)` | index or -1 |
 | `a.contains(x)` | bool |
 | `a.sort()` | sort (numbers, chars, str) |
+| `a.sort_by(fn(x, y) { return x.age < y.age })` | sort by your rule (stable) |
+| `a.filter(f)`, `a.map(f)` | new array: elements f keeps / f's results |
+| `a.any(f)`, `a.all(f)` | is f true for any / every element |
 | `a.reverse()` | reverse |
 | `a.slice(s, e)` | new array of s … e-1 |
 | `a.join(sep)` | `[]str` → one str |
@@ -336,6 +352,7 @@ Automatic only when nothing is lost: smaller → bigger number, any int → floa
 | `f16_to_f32(h)`, `f32_to_f16(x)`, `bf16_to_f32(b)`, `f32_to_bf16(x)` | half and bfloat16 numbers (in a `u16`) ↔ `f32`; also on vectors |
 | `error(message)` | `return error("…")` in a `-> T!` function |
 | `addr(x)` | pointer to x; `addr(fn)` = C callback |
+| `asm("add {x}, {y}", mut x, y)` | processor instructions (Intel syntax on x86); `eax: mut v` = that register, `scratch: "rcx"` |
 | `assert(cond)`, `assert(cond, "why")` | stop with a runtime error when cond is false (in a `test` block: that test fails) |
 | `atomic_add(p, n)`, `atomic_sub`, `atomic_load(p)`, `atomic_store(p, n)`, `atomic_swap(p, n)`, `atomic_cas(p, old, new)` | a whole number other threads change too, through its `ptr` (`addr(count)`) |
 | `new(value)` | value on the heap → `ptr[T]` |
@@ -496,6 +513,6 @@ s := Stack[int]()     Stack[int] t     Pair[str, int]("age", 31)         //   ne
 
 ## Keywords
 
-`fn return if else while for in break continue true false null import link struct enum match defer or try const export`
+`fn return if else while for in break continue true false null import link struct enum match defer or try const export mut`
 (`test` and `as` only where they mean something: `test "name" { }`, `import x as y`)
 (and `self` inside methods)

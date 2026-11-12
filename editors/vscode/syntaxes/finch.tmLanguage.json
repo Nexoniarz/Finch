@@ -136,7 +136,7 @@
         },
         {
           "name": "storage.modifier.finch",
-          "match": "\\bexport\\b"
+          "match": "\\b(export|mut)\\b"
         },
         {
           "name": "constant.language.finch",
@@ -155,7 +155,7 @@
           "match": "\\b(int|float|bool|char|str|ptr|map|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|(?:[iuf](?:8|16|32|64)|bool)x(?:2|4|8|16|32|64))\\b"
         },
         {
-          "match": "\\b(print|input|read_file|write_file|file_exists|delete_file|shell|exit|addr|new|free|error|min|max|abs|clamp|assert|atomic_add|atomic_sub|atomic_load|atomic_store|atomic_swap|atomic_cas|select|concat|fma|muladd|cpu_has|f32_bits|f32_from_bits|f64_bits|f64_from_bits|f16_to_f32|f32_to_f16|bf16_to_f32|f32_to_bf16)\\s*(?=\\()",
+          "match": "\\b(print|input|read_file|write_file|file_exists|delete_file|shell|exit|addr|new|free|error|min|max|abs|clamp|assert|atomic_add|atomic_sub|atomic_load|atomic_store|atomic_swap|atomic_cas|select|concat|fma|muladd|cpu_has|asm|f32_bits|f32_from_bits|f64_bits|f64_from_bits|f16_to_f32|f32_to_f16|bf16_to_f32|f32_to_bf16)\\s*(?=\\()",
           "captures": {
             "1": {
               "name": "support.function.builtin.finch"

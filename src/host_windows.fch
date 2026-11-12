@@ -5,6 +5,7 @@ import "stdio.h"
 import "process.h"
 import "direct.h"
 import "io.h"
+import "host_win.h"
 import "clang-c/Index.h"
 
 // a Windows argument: in double quotes, with the quotes inside doubled up the way CreateProcess reads them
@@ -65,6 +66,20 @@ fn cacheDir() -> str {
         return x.replace("\\", "/") + "/finch"
     }
     return tempDir() + "/finch-cache"
+}
+
+// is this stream (0 in, 1 out, 2 errors) a console a person is looking at? Then it is also told to understand colours
+// (Windows 10 and newer; the older console just shows them as they are, and FINCH_COLOR=never turns them off).
+fn isTerminal(int fd) -> bool {
+    if _isatty(i32(fd)) == 0 {
+        return false
+    }
+    h := GetStdHandle(u32(4294967286 - fd))       // STD_INPUT_HANDLE is (DWORD)-10, output -11, errors -12
+    u32 mode = 0
+    if GetConsoleMode(h, addr(mode)) != 0 {
+        SetConsoleMode(h, mode | u32(4))           // ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    }
+    return true
 }
 
 // the editor protocol is bytes, not text lines: no \r\n translation on stdin and stdout

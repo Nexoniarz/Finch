@@ -3,6 +3,7 @@
 import platform
 import cimport
 import host
+import diag
 
 // 32-bit FNV-1a, as hex: names the cached runtime object after what it was built from
 fn fingerprint(str text) -> str {
@@ -277,11 +278,11 @@ fn linkFailed(str output, cimport.CImports ci, platform.Target tg) -> int {
         }
     }
     if missing.items.len == 0 && libs.items.len == 0 {
-        print(output + "error: linking failed")
+        diag.passOn(output + "error: linking failed")
         return 1
     }
     for lib in libs.items {
-        print("error: the library '" + lib + "' wasn't found. Is it installed? (on Nix: add it to shell.nix)")
+        diag.passOn("error: the library '" + lib + "' wasn't found. Is it installed? (on Nix: add it to shell.nix)")
     }
     // the missing functions, grouped by the header they came from
     []str headers
@@ -312,19 +313,19 @@ fn linkFailed(str output, cimport.CImports ci, platform.Target tg) -> int {
             list = list + " and " + str(names.len - 3) + " more"
         }
         if headers[k].len == 0 {
-            print("error: no code found for " + list)
+            diag.passOn("error: no code found for " + list)
             continue
         }
         verb := "come"
         if names.len == 1 {
             verb = "comes"
         }
-        print("error: " + list + " " + verb + " from \"" + headers[k] + "\", but its library isn't linked")
-        print("  the header only says the functions exist; their code lives in a library.")
-        print("  add this at the top of your file (with the library's real name):")
-        print("")
-        print("      link \"" + guessLib(headers[k]) + "\"")
-        print("")
+        diag.passOn("error: " + list + " " + verb + " from \"" + headers[k] + "\", but its library isn't linked")
+        diag.say("  the header only says the functions exist; their code lives in a library.")
+        diag.say("  add this at the top of your file (with the library's real name):")
+        diag.say("")
+        diag.say("      link \"" + guessLib(headers[k]) + "\"")
+        diag.say("")
     }
     return 1
 }
@@ -380,7 +381,7 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
         cc = getenv("FINCH_CC")
     }
     rtobj := runtimeObject(b.rt, tg, cc) or {
-        print(err)
+        diag.passOn(err)
         return 1
     }
     target := ""
@@ -390,7 +391,7 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
     log := b.out + ".log"
     // -ffp-contract=on: only what asks to be fused is (muladd); a * b + c stays two roundings, whatever clang's default
     obj := irObject(clang, target + " " + b.opt + " -ffp-contract=on" + b.extra, b.ir, b.name + "\n" + tg.triple, log) or {
-        print(err)
+        diag.passOn(err)
         host.remove(log)
         return 1
     }
@@ -410,7 +411,7 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
             pic = ""
         }
         o := cObject(inl, cc, " -O2" + pic + b.cflags, tg, log) or {
-            print(err)
+            diag.passOn(err)
             host.remove(log)
             return 1
         }
@@ -449,7 +450,7 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
                 compiler = cxxFor(cc)
             }
             o := cObject(l, compiler, " -O2" + pic + b.cflags, tg, log) or {
-                print(err)
+                diag.passOn(err)
                 host.remove(log)
                 return 1
             }
@@ -464,7 +465,7 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
     output := read_file(log) or ""
     host.remove(log)
     if status == 127 {
-        print("error: no C compiler found to link with ('" + cc + "'; install one, or set FINCH_CC)")
+        diag.passOn("error: no C compiler found to link with ('" + cc + "'; install one, or set FINCH_CC)")
         return 1
     }
     if status != 0 {

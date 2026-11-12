@@ -1,0 +1,5 @@
+// expect: 'banana' is neither in the text as {banana} nor a register
+fn main() {
+    x := 1
+    asm("nop", banana: mut x)
+}

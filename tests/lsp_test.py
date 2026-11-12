@@ -220,6 +220,43 @@ if not ok3:  # show what the compiler's index says about the module, to see wher
     labels = [l for l in idx.splitlines() if l.startswith("@I") or (l.startswith("@F") and "base" in l)][:6]
 check("completion: a module under another name", ok3, labels)
 
+# mut parameters and functions as values
+src5 = """fn grow(mut []int list, int n) {
+    list.push(n)
+}
+
+fn main() {
+    nums := [3, 1, 2]
+    grow(mut nums, 4)
+    double := fn(int x) -> int { return x * 2 }
+    nums.sort_by(fn(a, b) { return a < b })
+    print(nums.map(double), double(5))
+}
+"""
+lines5 = src5.split("\n")
+path5 = os.path.join(d, "fnvalues.fch")
+open(path5, "w").write(src5)
+uri5 = pathlib.Path(path5).resolve().as_uri()
+td5 = {"uri": uri5}
+c.notify("textDocument/didOpen", {"textDocument": {"uri": uri5, "languageId": "finch", "version": 1, "text": src5}})
+check("mut and function values compile", c.diagnostics(uri5) == [])
+h = c.request("textDocument/hover", {"textDocument": td5, "position": {"line": 9, "character": lines5[9].index("double(5)")}})
+check("hover: a variable holding a function", h and "fn(int) -> int double" in h["contents"]["value"], h)
+h = c.request("textDocument/hover", {"textDocument": td5, "position": {"line": 6, "character": lines5[6].index("grow")}})
+check("hover: mut in a signature", h and "fn grow(mut []int list, int n)" in h["contents"]["value"], h)
+syms = c.request("textDocument/documentSymbol", {"textDocument": td5})
+names5 = [x["name"] for x in syms]
+check("document symbols leave out function values", names5 == ["grow", "main"], names5)
+e5 = src5.replace("    print(nums.map(double), double(5))\n", "    print(nums.map(double), double(5))\n    nums.\n")
+c.notify("textDocument/didChange", {"textDocument": {"uri": uri5, "version": 2}, "contentChanges": [{"text": e5}]})
+comp = c.request("textDocument/completion", {"textDocument": td5, "position": {"line": 10, "character": 9}})
+labels = [i["label"] for i in comp["items"]]
+check("completion: sort_by, filter, map, any, all", all(x in labels for x in ["sort_by", "filter", "map", "any", "all"]), labels)
+e5 = src5.replace("{ return x * 2 }", "{ nums.push(x)\n return x * 2 }")
+c.notify("textDocument/didChange", {"textDocument": {"uri": uri5, "version": 3}, "contentChanges": [{"text": e5}]})
+diags = c.diagnostics(uri5)
+check("error: a captured copy can't be changed", diags and "is a copy this function value took" in diags[0]["message"], diags)
+
 c.request("shutdown", None)
 c.notify("exit", None)
 c.p.wait(timeout=5)

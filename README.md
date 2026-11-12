@@ -44,10 +44,13 @@ fn main() {
   into SSE, AVX2, AVX-512 or NEON instructions, so one piece of code is fast on a desktop, a laptop and ARM.
 - **Errors that talk like a person:**
   ```
-  game.fch:3:13: error: 'y' must be i32, but this is int (use i32(...) to convert)
-      3 |     i32 y = x
-        |             ^
+  game.fch:3:13: error: 'y' must be i32, but this is int
+     |
+   3 |     i32 y = x
+     |             ^
+     = help: use i32(...) to convert
   ```
+  In a terminal they come in colour, and `finch build` says how long it took.
 - **Any C library, directly.** `import "raylib.h"` + `link "raylib"`, and you can call it, structs by value
   and callbacks included. Headers are read by libclang, so there is nothing to declare by hand.
 - **Written in itself.** The compiler is Finch code, and nothing else: `src/*.fch`, about 12k lines. It is built from a
@@ -97,12 +100,14 @@ Pick the guide that fits you:
 |---|---|
 | Variables | `x := 5` (inferred) or `int x = 5`; `const W = 640` |
 | Types | `int` `float` `bool` `char` `str`, sized `i8`…`i64` `u8`…`u64` `f32` `f64`, arrays `[]T`, maps `map[K]V`, pointers `ptr[T]`, vectors `f32x8` `i8x32`… |
-| Functions | `fn add(int a, int b) -> int { return a + b }` |
+| Functions | `fn add(int a, int b) -> int { return a + b }`; `fn grow(mut []int list)` changes the caller's variable: `grow(mut nums)` |
 | Structs | `struct Point { … }` with one field per line (`int x`, `int y = 0`); create with `Point(1, 2)` or `Point(x: 1)` |
 | Methods | `fn Point.move(int dx) { self.x += dx }` → `p.move(3)` |
-| Arrays | `nums := [1, 2, 3]`, `nums.push(4)`, `nums[0]`, `nums.len`, `for i, n in nums { }` |
+| Arrays | `nums := [1, 2, 3]`, `nums.push(4)`, `nums[0]`, `nums.len`, `for i, n in nums { }`, `people.sort_by(fn(a, b) { return a.age < b.age })`, `filter`, `map`, `any`, `all` |
+| Functions as values | `fn(int) -> int f = double`, `f := fn(int x) -> int { return x + n }` (takes copies of what it uses), struct fields and lists of them |
 | Maps | `ages := ["ann": 31]`, `ages["bob"] = 25`, `ages.has("cy")`, `counts[w] += 1`, `for k, v in ages { }` |
 | Errors | `fn parse(str s) -> int! { … return error("bad") }` → `parse(s) or 0`, `parse(s) or { … }`, `try parse(s)` |
+| Assembly | `asm("add {x}, {y}", mut x, y)`, `asm("cpuid", eax: mut a)`: Intel syntax on x86, sizes picked for you on ARM64 |
 | Vectors (SIMD) | `v := f32x8(list, i)`, `v * 2.0 + w`, `v.sum()`, `select(v > 0.0, v, 0.0)`, `t.lookup(idx)`, `acc.dot_add(a, b)`, `v.store(list, i)` |
 | Processors | `--cpu native`; `@cpu("avx2") fn …` with `if cpu_has("avx2")`; floats computed as written (`fma`/`muladd` to fuse) |
 | Text | `"hp \(hp)"`, `"a" + "b"`, `str(42)`, `int("42")`, `s.split(",")`, `s.upper()`, `s[0]` |
@@ -163,6 +168,10 @@ Pick the guide that fits you:
 - [x] The compiler on every system it builds for: Linux, macOS (Apple Silicon and Intel), Windows; releases made by CI
 - [x] Vector types (`f32x8`, `i8x32`, …) for SIMD, and `--cpu native`
 - [x] Masks, shuffles, byte lookup and `dot_add` for kernels; `@cpu` and `cpu_has`; `fma`/`muladd`, float bits, f16 and bf16
+- [x] `mut` parameters (change the caller's variable without pointers); inline assembly with `asm(...)` on x86-64 and ARM64
+- [x] Functions as values: `fn(int) -> bool` types, functions written in place that keep copies of what they use, `sort_by`, `filter`, `map`, `any`, `all`
+- [ ] Interfaces, optional values `T?`
+- [ ] C++ headers imported directly (classes, methods, exceptions as errors); Rust crates through `Cargo.toml`
 
 ## Layout
 

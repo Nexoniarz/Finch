@@ -6,6 +6,7 @@ import ast
 import docs
 import cimport
 import platform
+import diag
 import "stdio.h"
 
 struct Var {
@@ -13,6 +14,7 @@ struct Var {
     ast.Type ty
     str slot
     bool readonly
+    bool captured   // a copy a function value took of a variable around it (read-only inside it)
     int order       // how many variables were declared before this one (for defer)
     bool owned      // it holds memory that is dropped when its scope ends
     bool moved      // `return x` moved it out: its cleanup is skipped
@@ -121,6 +123,11 @@ struct FnSig {
     ast.Type ret
     []ast.Type params
     []str pnames
+    []bool muts     // mut parameters: the caller's variable itself, passed by its address
+    bool lambda     // a function written as a value: its first parameter is its environment (the captured copies)
+    []str cnames    // what it captured, and their types, in the environment after its two helper pointers
+    []ast.Type ctypes
+    str envTy
     []bool borrow
     int prog
     int index
@@ -221,6 +228,7 @@ struct Gen {
     int inDefer
     []str features      // the processor features of the whole program (--cpu)
     []str curFeatures   // and of the function being built: those and its @cpu(...)
+    int nlambda         // function values written in the code so far
 }
 
 // ---------- basics ----------
@@ -248,11 +256,18 @@ fn noteRef(ptr[Gen] g, ast.Node at, int col, int len, str hover, str defPath, in
     g.idx.push("@R\t" + g.files[at.file] + "\t" + str(at.line) + "\t" + str(col) + "\t" + str(len) + "\t" + defPath + "\t" + str(defLine) + "\t" + str(defCol) + "\t" + esc(hover))
 }
 
+fn mutWord(FnSig sig, int k) -> str {
+    if k < sig.muts.len && sig.muts[k] {
+        return "mut "
+    }
+    return ""
+}
+
 // fn add(int a, int b) -> int      fn Counter.add(int n)      fn parse(str s) -> int!
 fn sigText(FnSig sig) -> str {
     []str ps
     for k in 0..sig.params.len {
-        ps.push(ast.show(sig.params[k]) + " " + sig.pnames[k])
+        ps.push(mutWord(sig, k) + ast.show(sig.params[k]) + " " + sig.pnames[k])
     }
     name := sig.name
     if sig.recv.len > 0 {
@@ -295,12 +310,12 @@ fn indexAll(ptr[Gen] g, []str mainImports) {
     }
     for sg in g.sigs {
         f := g.progs[sg.prog].fns[sg.index]
-        if sg.targs.len > 0 {
-            continue
+        if sg.targs.len > 0 || sg.lambda {
+            continue                // a generic's versions and function values aren't names to complete or outline
         }
         []str ps
         for k in 0..sg.params.len {
-            ps.push(ast.show(sg.params[k]) + " " + sg.pnames[k])
+            ps.push(mutWord(sg, k) + ast.show(sg.params[k]) + " " + sg.pnames[k])
         }
         g.idx.push("@F\t" + sg.module + "\t" + sg.name + "\t" + sg.recv + "\t" + g.files[f.file] + "\t" + str(f.line) + "\t" + str(f.col) + "\t" + str(f.endLine) + "\t" + esc(sigText(sg)) + "\t" + ps.join("|"))
     }
@@ -338,7 +353,15 @@ fn fail(ptr[Gen] g, ast.Node n, str msg) {
     if g.index && g.idx.len > 0 {
         print(g.idx.join("\n"))        // what was learned before the error
     }
-    print(g.files[n.file] + ":" + str(n.line) + ":" + str(n.col) + ": error: " + msg + g.instNote)
+    if g.index {
+        print(g.files[n.file] + ":" + str(n.line) + ":" + str(n.col) + ": error: " + msg + g.instNote)
+    } else {
+        note := g.instNote.trim()
+        if note.starts_with("(") && note.ends_with(")") {
+            note = note.sub(1, note.len - 1)
+        }
+        diag.errorAt(g.files[n.file], n.line, n.col, msg, note)
+    }
     exit(1)
 }
 
@@ -353,7 +376,7 @@ fn warn(ptr[Gen] g, ast.Node n, str msg) {
         g.idx.push("@W\t" + g.files[n.file] + "\t" + str(n.line) + "\t" + str(n.col) + "\t" + msg)
         return
     }
-    fputs(where + ": warning: " + msg + "\n", stderr)
+    diag.warningAt(g.files[n.file], n.line, n.col, msg)
 }
 
 // About how many bytes of plain data (numbers, structs of them, C's [N]T) a value has, for the copy warnings
@@ -373,7 +396,7 @@ fn byteSize(ptr[Gen] g, ast.Type t) -> int {
     if (k == "fixed" || k == "vec") && t.elem.len > 0 {
         return t.count * byteSize(g, t.elem[0])
     }
-    if k == "str" || k == "array" || k == "map" {
+    if k == "str" || k == "array" || k == "map" || k == "fn" {
         return 0                    // only its { ptr, len, cap } is copied when it is passed: not counted
     }
     if k == "ptr" || k == "enum" || k == "int" || k == "float" {
@@ -608,6 +631,17 @@ fn modFor(ptr[Gen] g, str name) -> str {
 }
 
 fn resolve(ptr[Gen] g, ast.Type t, ast.Node at) -> ast.Type {
+    if t.kind == "fn" {
+        out := ast.Type(kind: "fn", name: t.name)
+        for i in 0..t.elem.len {
+            e := resolve(g, t.elem[i], at)
+            if i > 0 && e.kind == "void" {
+                fail(g, at, "a parameter can't have the type 'nothing'")
+            }
+            out.elem.push(e)
+        }
+        return out
+    }
     if t.kind == "array" {
         return ast.arrayOf(resolve(g, t.elem[0], at))
     }
@@ -695,6 +729,9 @@ fn modName(str m) -> str {
 
 fn llty(ptr[Gen] g, ast.Type t) -> str {
     k := t.kind
+    if k == "fn" {
+        return "{ ptr, ptr }"           // the function, and its environment (null if it captured nothing)
+    }
     if k == "bool" {
         return "i1"
     }
@@ -775,7 +812,7 @@ fn sizeOf(ptr[Gen] g, ast.Type t) -> str {
 }
 
 fn owning(ptr[Gen] g, ast.Type t) -> bool {
-    if t.kind == "str" || t.kind == "array" || t.kind == "map" {
+    if t.kind == "str" || t.kind == "array" || t.kind == "map" || t.kind == "fn" {
         return true
     }
     if t.kind == "struct" {
@@ -922,7 +959,9 @@ fn loopEnd(ptr[Gen] g, []str l) {
 }
 
 fn copyAt(ptr[Gen] g, str dst, str src, ast.Type t) {
-    if t.kind == "str" {
+    if t.kind == "fn" {
+        emit(g, "call void @finch_fn_copy(ptr " + dst + ", ptr " + src + ")")
+    } else if t.kind == "str" {
         emit(g, "call void @finch_str_copy(ptr " + dst + ", ptr " + src + ")")
     } else if t.kind == "array" || t.kind == "map" || (t.kind == "struct" && owning(g, t)) {
         emit(g, "call void " + copyFn(g, t) + "(ptr " + dst + ", ptr " + src + ")")
@@ -1004,6 +1043,8 @@ fn dropAt(ptr[Gen] g, str slot, ast.Type t) {
     }
     if t.kind == "str" {
         emit(g, "call void @finch_str_drop(ptr " + slot + ")")
+    } else if t.kind == "fn" {
+        emit(g, "call void @finch_fn_drop(ptr " + slot + ")")
     } else {
         emit(g, "call void " + dropFn(g, t) + "(ptr " + slot + ")")
     }
@@ -1155,7 +1196,9 @@ fn cstr(ptr[Gen] g, str v) -> str {
 
 fn emitPrint(ptr[Gen] g, str v, ast.Type t, bool quoted) {
     k := t.kind
-    if isSigned(t) {
+    if k == "fn" {
+        printf(g, ast.show(t).replace("%", "%%"), "")      // a function prints as its type
+    } else if isSigned(t) {
         printf(g, "%lld", "i64 " + intCast(g, v, t, T("int")))
     } else if isUnsigned(t) {
         printf(g, "%llu", "i64 " + intCast(g, v, t, T("u64")))
@@ -1217,7 +1260,9 @@ fn emitFormat(ptr[Gen] g, str buf, str v, ast.Type t, bool quoted) {
     if quoted {
         q = "1"
     }
-    if isSigned(t) {
+    if k == "fn" {
+        bufText(g, buf, ast.show(t))
+    } else if isSigned(t) {
         emit(g, "call void @finch_buf_int(ptr " + buf + ", i64 " + intCast(g, v, t, T("int")) + ")")
     } else if isUnsigned(t) {
         emit(g, "call void @finch_buf_uint(ptr " + buf + ", i64 " + intCast(g, v, t, T("u64")) + ")")
@@ -1551,6 +1596,28 @@ fn addVar(ptr[Gen] g, ast.Node at, str name, ast.Type t, str init, bool readonly
     return slot
 }
 
+// A name for a variable that lives somewhere else (a mut parameter): `slot` is its address.
+fn refVar(ptr[Gen] g, ast.Node at, str name, ast.Type t, str slot) {
+    if lookup(g, name) >= 0 {
+        fail(g, at, "a variable named '" + name + "' already exists here")
+    }
+    if findFn(g, g.module, name) >= 0 {
+        fail(g, at, "'" + name + "' is already the name of a function")
+    }
+    if isBuiltin(name) {
+        fail(g, at, "'" + name + "' is a built-in name, pick another one")
+    }
+    sc := g.scopes.len - 1
+    g.scopes[sc].vars.push(Var(name: name, ty: t, slot: slot, order: g.nvars, dpath: g.files[at.file], dline: at.line, dcol: at.col))
+    g.nvars += 1
+    dbgVariable(g, at, name, t, slot)
+    if g.index {
+        fnode := g.progs[g.cur.prog].fns[g.cur.index]
+        g.idx.push("@V\t" + name + "\t" + ast.show(t) + "\t" + g.files[at.file] + "\t" + str(at.line) + "\t" + str(at.col) + "\t" + g.files[fnode.file] + "\t" + str(fnode.line) + "\t" + str(fnode.endLine))
+        noteRef(g, at, at.col, name.len, "```finch\nmut " + ast.show(t) + " " + name + "\n```", "", 0, 0)
+    }
+}
+
 fn pushScope(ptr[Gen] g) {
     g.scopes.push(Scope())
 }
@@ -1616,8 +1683,15 @@ fn rootVar(ast.Node e) -> str {
     return ""
 }
 
+fn readonlyWhy(Var v, str name) -> str {
+    if v.captured {
+        return "'" + name + "' is a copy this function value took when it was made, so it can't be changed in it (give the result back with return instead)"
+    }
+    return "the loop variable '" + name + "' can't be changed"
+}
+
 fn mutates(ptr[Gen] g, str name, ast.Node n) -> bool {
-    changing := ["push", "pop", "insert", "remove", "clear", "resize", "sort", "reverse"]
+    changing := ["push", "pop", "insert", "remove", "clear", "resize", "sort", "reverse", "sort_by"]
     if n.kind == "assign" && rootVar(n.kids[0]) == name {
         return true
     }
@@ -1629,6 +1703,9 @@ fn mutates(ptr[Gen] g, str name, ast.Node n) -> bool {
     }
     if n.kind == "call" && n.name == "addr" && n.kids.len == 1 && rootVar(n.kids[0]) == name {
         return true
+    }
+    if n.kind == "mut" && rootVar(n.kids[0]) == name {
+        return true                 // f(mut x): f changes x
     }
     for k in n.kids {
         if mutates(g, name, k) {
@@ -1763,6 +1840,7 @@ fn declare(ptr[Gen] g) {
                 }
                 sig.params.push(resolve(g, f.kids[k].ty, f.kids[k]))
                 sig.pnames.push(f.kids[k].name)
+                sig.muts.push(f.kids[k].mutable)
             }
             if f.exported {
                 checkExport(g, f, sig)
@@ -1882,6 +1960,7 @@ fn instFn(ptr[Gen] g, int ti, []ast.Type args, ast.Type recvType, ast.Node at) -
         pt := resolve(g, f.kids[k].ty, f.kids[k])
         sig.params.push(pt)
         sig.pnames.push(f.kids[k].name)
+        sig.muts.push(f.kids[k].mutable)
         sig.borrow.push(owning(g, pt) && !mutates(g, f.kids[k].name, body))
     }
     g.tnames = savedN
@@ -1909,6 +1988,12 @@ fn bindType(ptr[Gen] g, ast.Type pat, ast.Type actual, []str tparams, ptr[Binds]
     if pat.kind == "map" && actual.kind == "map" {
         bindType(g, pat.elem[0], actual.elem[0], tparams, b)
         bindType(g, pat.elem[1], actual.elem[1], tparams, b)
+        return
+    }
+    if pat.kind == "fn" && actual.kind == "fn" && pat.elem.len == actual.elem.len {
+        for i in 0..pat.elem.len {
+            bindType(g, pat.elem[i], actual.elem[i], tparams, b)
+        }
         return
     }
     if pat.kind == "named" && pat.elem.len > 0 && actual.kind == "struct" {
@@ -1945,6 +2030,19 @@ fn genericCall(ptr[Gen] g, ast.Node c, int ti, int first, str shown) -> Val {
     []Val vals
     mark := g.pending.len
     for k in 0..nparams {
+        if f.kids[k].mutable {
+            a := c.kids[first + k]
+            if a.kind != "mut" {
+                fail(g, a, shown + " changes '" + f.kids[k].name + "', so say so at the call:  mut " + argText(a) + "  (it must be a variable, a field or an element)")
+            }
+            pl := mutPlace(g, a.kids[0])
+            vals.push(Val(v: pl.addr, ty: pl.ty))
+            bindType(g, f.kids[k].ty, pl.ty, tpl.tparams, addr(b))
+            continue
+        }
+        if c.kids[first + k].kind == "mut" {
+            fail(g, c.kids[first + k], "'" + f.kids[k].name + "' is not a mut parameter of " + shown + ", so leave out the mut (" + shown + " gets its own copy)")
+        }
         v := expr(g, c.kids[first + k])
         if v.ty.kind == "void" || v.ty.kind == "null" {
             fail(g, c.kids[first + k], "this has no type to work out " + tpl.tparams.join(", ") + " from")
@@ -1961,8 +2059,16 @@ fn genericCall(ptr[Gen] g, ast.Node c, int ti, int first, str shown) -> Val {
     si := instFn(g, ti, b.types, T("void"), c)
     sig := g.sigs[si]
     noteCall(g, c, sig)
+    checkMutArgs(g, sig, c, first, shown, "")
     []str out
     for k in 0..nparams {
+        if sig.muts[k] {
+            if !ast.same(vals[k].ty, sig.params[k]) {
+                fail(g, c.kids[first + k].kids[0], "argument '" + sig.pnames[k] + "' of " + shown + " is mut " + ast.show(sig.params[k]) + ", so it needs a variable of exactly that type, but this is " + ast.show(vals[k].ty))
+            }
+            out.push("ptr " + vals[k].v)
+            continue
+        }
         v := coerce(g, vals[k], sig.params[k], c.kids[first + k], "argument '" + sig.pnames[k] + "'")
         out.push(llty(g, sig.params[k]) + " " + v.v)
     }
@@ -2208,7 +2314,7 @@ fn basicType(ptr[Gen] g, str name, int bits, str enc) -> int {
 // the debug type of a Finch type; -1 where there is none (nothing, null)
 fn diType(ptr[Gen] g, ast.Type t) -> int {
     k := t.kind
-    if k == "void" || k == "null" {
+    if k == "void" || k == "null" || k == "fn" {
         return -1
     }
     key := "T:" + ast.show(t)
@@ -2409,6 +2515,15 @@ fn define(ptr[Gen] g, int si) {
         emit(g, "store ptr " + g.frame + ", ptr @finch_trace")
     }
     []str params
+    if g.cur.lambda {
+        // a function value: its environment first, the copies it took when it was made (read-only here)
+        params.push("ptr %env")
+        for k in 0..g.cur.cnames.len {
+            slot := op(g, "getelementptr inbounds " + g.cur.envTy + ", ptr %env, i32 0, i32 " + str(k + 2))
+            g.scopes[0].vars.push(Var(name: g.cur.cnames[k], ty: g.cur.ctypes[k], slot: slot, readonly: true, captured: true, order: g.nvars, dpath: g.files[f.file], dline: f.line, dcol: f.col))
+            g.nvars += 1
+        }
+    }
     if g.cur.recv.len > 0 {
         // self is the caller's struct itself, reached through its address
         params.push("ptr %self")
@@ -2425,6 +2540,12 @@ fn define(ptr[Gen] g, int si) {
     }
     for k in 0..g.cur.params.len {
         pt := g.cur.params[k]
+        if g.cur.muts[k] {
+            // mut: the caller's variable itself, reached through its address (like self); never copied or dropped here
+            params.push("ptr %p" + str(k))
+            refVar(g, f.kids[k], g.cur.pnames[k], pt, "%p" + str(k))
+            continue
+        }
         big := bigCopy(g, pt)
         if big > 0 {
             warn(g, f.kids[k], "'" + g.cur.pnames[k] + "' is a " + ast.show(pt) + " (" + str(big) + " bytes), copied on every call to " + f.name + "; take ptr[" + ast.show(pt) + "] to share it instead (callers can still pass the variable as it is)")
@@ -2609,7 +2730,7 @@ fn assignStmt(ptr[Gen] g, ast.Node s) {
             fail(g, s, "there is no variable named '" + root + "' (create it with " + root + " := ...)")
         }
         if id >= 0 && varAt(g, id).readonly {
-            fail(g, s, "the loop variable '" + root + "' can't be changed")
+            fail(g, s, readonlyWhy(varAt(g, id), root))
         }
     }
     what := "the value"
@@ -3507,7 +3628,7 @@ struct Fallible {
 
 // Emit a call that may fail; `failed` and `msg` tell how it went.
 fn fallibleCall(ptr[Gen] g, ast.Node site) -> Fallible {
-    if site.kind != "call" && site.kind != "method" {
+    if site.kind != "call" && site.kind != "method" && site.kind != "callv" {
         fail(g, site, "only a function call can fail; 'or' and 'try' go after one, like  int(text) or 0")
     }
     savedT := g.ftarget
@@ -3615,6 +3736,9 @@ fn argWant(ptr[Gen] g, ast.Node a, ast.Type want) -> Val {
 }
 
 fn exprWant(ptr[Gen] g, ast.Node e, ast.Type want) -> Val {
+    if e.kind == "lambda" {
+        return lambdaExpr(g, e, want)
+    }
     if e.kind == "array" {
         return arrayLit(g, e, want)
     }
@@ -3629,6 +3753,19 @@ fn exprWant(ptr[Gen] g, ast.Node e, ast.Type want) -> Val {
 
 fn expr(ptr[Gen] g, ast.Node e) -> Val {
     k := e.kind
+    if k == "mut" {
+        fail(g, e, "mut goes only before an argument of a Finch function that takes it as mut, like  fn grow(mut []int list)")
+    }
+    if k == "lambda" {
+        return lambdaExpr(g, e, T("void"))
+    }
+    if k == "callv" {
+        fv := expr(g, e.kids[0])
+        if fv.ty.kind != "fn" {
+            fail(g, e.kids[0], "this is " + ast.show(fv.ty) + ", not a function, so it can't be called")
+        }
+        return callValue(g, fv, e, 1, "this function")
+    }
     if k == "int" {
         if e.text.starts_with("0x") || e.text.starts_with("0X") {
             n := 0
@@ -4120,6 +4257,16 @@ fn ref(ptr[Gen] g, ast.Node e, bool write) -> Ref {
             return Ref(isPlace: false, val: constValue(g, g.module, e.name, e))
         }
         if id < 0 {
+            fi := findFn(g, g.module, e.name)
+            if fi >= 0 {
+                if write {
+                    fail(g, e, "'" + e.name + "' is a function; it can't be changed (a variable can hold one:  f := " + e.name + ")")
+                }
+                return Ref(isPlace: false, val: fnValueOf(g, fi, e))
+            }
+            if findTemplate(g, g.module, e.name, "", false) >= 0 {
+                fail(g, e, "'" + e.name + "' is generic, so it is a different function for each type; wrap it in one:  fn(int a, int b) -> int { return " + e.name + "(a, b) }")
+            }
             if imports(g, e.name) {
                 fail(g, e, "'" + e.name + "' is a module; use something from it, like " + e.name + ".name(...)")
             }
@@ -4952,6 +5099,11 @@ fn checkExport(ptr[Gen] g, ast.Node f, FnSig sig) {
     if f.tparams.len > 0 {
         fail(g, f, "an export fn can't be generic")
     }
+    for k in 0..sig.muts.len {
+        if sig.muts[k] {
+            fail(g, f.kids[k], "an export fn can't take mut parameters (C passes a ptr[...] instead)")
+        }
+    }
     for k in 0..sig.params.len {
         if !cPlain(sig.params[k]) {
             fail(g, f.kids[k], "an export fn takes numbers, bool, char and pointers only (this is " + ast.show(sig.params[k]) + "; pass text as ptr[char] and make it a str inside)")
@@ -5037,8 +5189,8 @@ fn cThunk(ptr[Gen] g, int fi, ast.Node at) -> str {
         return name
     }
     g.cdone.push("t:" + name)
-    if sig.recv.len > 0 || sig.fallible {
-        fail(g, at, "addr(" + sig.name + ") gives C a function pointer, so it can't be a method or a function that can fail")
+    if sig.recv.len > 0 || sig.fallible || sig.muts.contains(true) {
+        fail(g, at, "addr(" + sig.name + ") gives C a function pointer, so it can't be a method, a function that can fail, or one with mut parameters")
     }
     for t in sig.params {
         if !(isNumber(t) || t.kind == "bool" || t.kind == "char" || t.kind == "ptr" || (t.kind == "struct" && g.structs[findStruct(g, t.module, t.name)].isC)) {
@@ -5350,6 +5502,26 @@ fn headerHint(str name) -> str {
 
 fn call(ptr[Gen] g, ast.Node c) -> Val {
     n := c.name
+    vid := lookup(g, n)
+    if vid >= 0 && c.ty.kind == "targs" && c.ty.elem.len == 1 && c.ty.elem[0].kind == "named" && c.ty.elem[0].module.len == 0 && c.ty.elem[0].elem.len == 0 && lookup(g, c.ty.elem[0].name) >= 0 {
+        // steps[i](x) looked like max[T](x) to the parser: it is element i of steps, called
+        ix := ast.Node(kind: "index", line: c.line, col: c.col, file: c.file)
+        ix.kids.push(ast.Node(kind: "var", name: n, line: c.line, col: c.col, file: c.file))
+        ix.kids.push(ast.Node(kind: "var", name: c.ty.elem[0].name, line: c.line, col: c.col + n.len + 1, file: c.file))
+        cv := ast.Node(kind: "callv", line: c.line, col: c.col, file: c.file)
+        cv.kids.push(ix)
+        cv.names.push("")
+        for k in 0..c.kids.len {
+            cv.kids.push(c.kids[k])
+            cv.names.push(c.names[k])
+        }
+        return expr(g, cv)
+    }
+    if vid >= 0 && varAt(g, vid).ty.kind == "fn" {
+        v := varAt(g, vid)
+        noteRef(g, c, c.col, n.len, "```finch\n" + ast.show(v.ty) + " " + n + "\n```", v.dpath, v.dline, v.dcol)
+        return callValue(g, Val(v: load(g, "{ ptr, ptr }", v.slot), ty: v.ty), c, 0, n)
+    }
     if g.index && isBuiltin(n) {
         d := docs.find(docs.builtins(), n)
         if d.name.len > 0 {
@@ -5431,7 +5603,7 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
             store(g, "{ ptr, i64, i64 }", "zeroinitializer", out)
             emit(g, "call void @finch_str_from_bytes(ptr " + out + ", ptr " + spill(g, v) + ")")
             release(g, v)
-        } else if k == "bool" || k == "char" || k == "array" || k == "map" || k == "struct" || k == "enum" || k == "vec" {
+        } else if k == "bool" || k == "char" || k == "array" || k == "map" || k == "struct" || k == "enum" || k == "vec" || k == "fn" {
             store(g, "{ ptr, i64, i64 }", "zeroinitializer", out)
             emitFormat(g, out, v.v, v.ty, false)
             release(g, v)
@@ -5614,6 +5786,9 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     }
     if n == "cpu_has" && lookup(g, n) < 0 && findFn(g, g.module, n) < 0 {
         return cpuHasCall(g, c)
+    }
+    if n == "asm" && lookup(g, n) < 0 && findFn(g, g.module, n) < 0 && !g.ci.fns.has(n) {
+        return asmCall(g, c)
     }
     if n == "concat" && lookup(g, n) < 0 && findFn(g, g.module, n) < 0 && !g.ci.fns.has(n) {
         return concatCall(g, c)
@@ -5826,6 +6001,93 @@ fn pick(ptr[Gen] g, str o, Val a, Val b, ast.Node at) -> Val {
     return Val(v: op(g, "select i1 " + first.v + ", " + t + " " + l.v + ", " + t + " " + r.v), ty: l.ty)
 }
 
+// f(mut x): the place x is, which f changes. It must be exactly the parameter's type and something that can change.
+fn mutArg(ptr[Gen] g, FnSig sig, int k, ast.Node a, str shown) -> Place {
+    if a.kind != "mut" {
+        fail(g, a, shown + " changes '" + sig.pnames[k] + "', so say so at the call:  mut " + argText(a) + "  (it must be a variable, a field or an element)")
+    }
+    pl := mutPlace(g, a.kids[0])
+    if !ast.same(pl.ty, sig.params[k]) {
+        fail(g, a.kids[0], "argument '" + sig.pnames[k] + "' of " + shown + " is mut " + ast.show(sig.params[k]) + ", so it needs a variable of exactly that type, but this is " + ast.show(pl.ty))
+    }
+    return pl
+}
+
+fn mutPlace(ptr[Gen] g, ast.Node e) -> Place {
+    if e.kind != "var" && e.kind != "member" && e.kind != "index" {
+        fail(g, e, "mut needs a variable, a field or an element to change, like  mut list  or  mut player.hp")
+    }
+    root := rootVar(e)
+    if root.len > 0 {
+        id := lookup(g, root)
+        if id >= 0 && varAt(g, id).readonly {
+            fail(g, e, readonlyWhy(varAt(g, id), root))
+        }
+        if id < 0 && findConst(g, g.module, root) >= 0 {
+            fail(g, e, "'" + root + "' is a constant; it can't be changed")
+        }
+    }
+    return place(g, e, true)
+}
+
+fn argText(ast.Node a) -> str {
+    if a.kind == "var" {
+        return a.name
+    }
+    if a.kind == "member" {
+        return argText(a.kids[0]) + "." + a.name
+    }
+    return "x"
+}
+
+// What a mut argument changes can't be anything else in the same call: f(mut a, a) would see a half-changed a.
+fn checkMutArgs(ptr[Gen] g, FnSig sig, ast.Node c, int first, str shown, str selfRoot) {
+    for k in 0..sig.params.len {
+        a := c.kids[first + k]
+        if !sig.muts[k] {
+            if a.kind == "mut" {
+                fail(g, a, "'" + sig.pnames[k] + "' is not a mut parameter of " + shown + ", so leave out the mut (" + shown + " gets its own copy)")
+            }
+            continue
+        }
+        if a.kind != "mut" {
+            continue                // mutArg says what to write
+        }
+        root := rootVar(a.kids[0])
+        if root.len == 0 {
+            continue
+        }
+        if root == selfRoot {
+            fail(g, a, "'" + root + "' is what " + shown + " is called on, so it can't also be given as mut")
+        }
+        for j in 0..sig.params.len {
+            if j == k {
+                continue
+            }
+            b := c.kids[first + j]
+            inner := b
+            if b.kind == "mut" {
+                inner = b.kids[0]
+            }
+            if (sig.muts[j] || owning(g, sig.params[j])) && usesVar(inner, root) {
+                fail(g, b, "'" + root + "' is given as mut to " + shown + ", so it can't be used by another argument of the same call (make a copy first:  copy := " + root + ")")
+            }
+        }
+    }
+}
+
+fn usesVar(ast.Node e, str name) -> bool {
+    if e.kind == "var" && e.name == name {
+        return true
+    }
+    for k in e.kids {
+        if usesVar(k, name) {
+            return true
+        }
+    }
+    return false
+}
+
 fn callFn(ptr[Gen] g, int fi, ast.Node c, int first, str shown, str selfAddr, str selfRoot) -> Val {
     sig := g.sigs[fi]
     if sig.module.len == 0 && sig.name == "main" {
@@ -5839,8 +6101,13 @@ fn callFn(ptr[Gen] g, int fi, ast.Node c, int first, str shown, str selfAddr, st
     }
     []Val fresh
     mark := g.pending.len
+    checkMutArgs(g, sig, c, first, shown, selfRoot)
     for k in 0..sig.params.len {
         a := c.kids[first + k]
+        if sig.muts[k] {
+            args.push("ptr " + mutArg(g, sig, k, a, shown).addr)
+            continue
+        }
         v := coerce(g, argWant(g, a, sig.params[k]), sig.params[k], a, "argument '" + sig.pnames[k] + "'")
         // the argument lives inside the receiver (c.merge(c)): the method gets its own copy
         if owning(g, sig.params[k]) && !v.fresh && selfRoot.len > 0 && rootVar(a) == selfRoot {
@@ -5858,6 +6125,523 @@ fn callFn(ptr[Gen] g, int fi, ast.Node c, int first, str shown, str selfAddr, st
     }
     heldEnd(g, mark)
     return r
+}
+
+// ---------- functions as values ----------
+//   fn(int) -> int        a type: { ptr function, ptr environment }
+//   fn(int x) -> int { return x * 2 }      a function written where it is used; it takes copies of the variables
+//                                           around it that it uses (its environment), read-only inside it
+//   double                a named function as a value (through a small wrapper that skips the environment)
+// Every function value is called the same way: function(environment, arguments...).
+// An environment starts with two helpers, { drop, copy }, so copying and dropping a function value works without
+// knowing what it captured (finch_fn_copy / finch_fn_drop in the runtime).
+
+fn fnTypeOf(FnSig sig) -> ast.Type {
+    out := ast.Type(kind: "fn")
+    if sig.fallible {
+        out.name = "!"
+    }
+    out.elem.push(sig.ret)
+    for p in sig.params {
+        out.elem.push(p)
+    }
+    return out
+}
+
+// the names a function value's body uses, and the ones it declares itself
+fn lambdaNames(ast.Node n, ptr[[]str] used, ptr[[]str] declared) {
+    if n.kind == "patterns" {
+        for k in n.kids {
+            lambdaPatternNames(k, declared)
+        }
+        return
+    }
+    if n.kind == "var" || n.kind == "call" {
+        if !used.value.contains(n.name) {
+            used.value.push(n.name)
+        }
+    }
+    if n.kind == "param" || n.kind == "decl" || n.kind == "for" || n.kind == "each" {
+        declared.value.push(n.name)
+        if n.text.len > 0 && (n.kind == "for" || n.kind == "each") {
+            declared.value.push(n.text)
+        }
+    }
+    for k in n.kids {
+        lambdaNames(k, used, declared)
+    }
+}
+
+fn lambdaPatternNames(ast.Node n, ptr[[]str] declared) {
+    if n.kind == "var" {
+        declared.value.push(n.name)
+    }
+    for k in n.kids {
+        lambdaPatternNames(k, declared)
+    }
+}
+
+fn lambdaExpr(ptr[Gen] g, ast.Node e, ast.Type want) -> Val {
+    np := e.kids.len - 1
+    wantFn := want.kind == "fn" && want.elem.len - 1 == np
+    g.nlambda += 1
+    sig := FnSig(module: g.module, recvmod: g.module, prog: g.cur.prog, tnames: g.tnames, targs: g.targs, lambda: true)
+    sig.name = "fn (line " + str(e.line) + ")"
+    sig.shown = sig.name
+    sig.ll = "@finch.lambda." + str(g.nlambda)
+    for k in 0..np {
+        prm := e.kids[k]
+        pt := T("void")
+        if prm.ty.kind.len > 0 {
+            pt = resolve(g, prm.ty, prm)
+        } else if wantFn {
+            pt = want.elem[k + 1]
+        } else {
+            fail(g, prm, "write the type of '" + prm.name + "', like  fn(int " + prm.name + ") { ... }  (it can be left out where the type is known, like in list.sort_by(fn(a, b) { ... }))")
+        }
+        if sig.pnames.contains(prm.name) {
+            fail(g, prm, "two parameters are named '" + prm.name + "'")
+        }
+        sig.params.push(pt)
+        sig.pnames.push(prm.name)
+        sig.muts.push(false)
+    }
+    if e.flag {
+        sig.ret = resolve(g, e.ty, e)
+        sig.fallible = e.fallible
+    } else if wantFn {
+        sig.ret = want.elem[0]
+        sig.fallible = want.name == "!"
+    } else {
+        sig.ret = T("void")
+    }
+    body := e.kids[np]
+    for k in 0..np {
+        sig.borrow.push(owning(g, sig.params[k]) && !mutates(g, sig.pnames[k], body))
+    }
+    // what it captures: the variables around it that its body uses and doesn't declare itself
+    []str used
+    []str declared
+    lambdaNames(e, addr(used), addr(declared))
+    for name in used {
+        if declared.contains(name) || sig.cnames.contains(name) || name.starts_with("$") {
+            continue
+        }
+        id := lookup(g, name)
+        if id >= 0 {
+            sig.cnames.push(name)
+            sig.ctypes.push(varAt(g, id).ty)
+        }
+    }
+    []str fields = ["ptr", "ptr"]
+    for t in sig.ctypes {
+        fields.push(llty(g, t))
+    }
+    sig.envTy = "{ " + fields.join(", ") + " }"
+    // the function itself is built later, like any other; its node goes with its file's functions
+    fnode := e
+    fnode.name = sig.name
+    g.progs[g.cur.prog].fns.push(fnode)
+    sig.index = g.progs[g.cur.prog].fns.len - 1
+    g.sigs.push(sig)
+    envV := "null"
+    if sig.cnames.len > 0 {
+        helpers := envHelpers(g, sig)
+        env := op(g, "call ptr @finch_alloc(i64 ptrtoint (ptr getelementptr (" + sig.envTy + ", ptr null, i32 1) to i64))")
+        store(g, "ptr", helpers[0], op(g, "getelementptr inbounds " + sig.envTy + ", ptr " + env + ", i32 0, i32 0"))
+        store(g, "ptr", helpers[1], op(g, "getelementptr inbounds " + sig.envTy + ", ptr " + env + ", i32 0, i32 1"))
+        for k in 0..sig.cnames.len {
+            v := varAt(g, lookup(g, sig.cnames[k]))
+            copyAt(g, op(g, "getelementptr inbounds " + sig.envTy + ", ptr " + env + ", i32 0, i32 " + str(k + 2)), v.slot, v.ty)
+        }
+        envV = env
+    }
+    if g.index {
+        noteRef(g, e, e.col, 2, "```finch\n" + ast.show(fnTypeOf(sig)) + "\n```", "", 0, 0)
+    }
+    out := op(g, "insertvalue { ptr, ptr } { ptr " + sig.ll + ", ptr null }, ptr " + envV + ", 1")
+    return Val(v: out, ty: fnTypeOf(sig), fresh: true)
+}
+
+// the drop and copy helpers of one function value's environment
+fn envHelpers(ptr[Gen] g, FnSig sig) -> []str {
+    id := sig.ll.sub(14, sig.ll.len)            // @finch.lambda.N -> N
+    drop := "@finch.envdrop." + id
+    copy := "@finch.envcopy." + id
+    size := "ptrtoint (ptr getelementptr (" + sig.envTy + ", ptr null, i32 1) to i64)"
+    s := beginHelper(g)
+    for k in 0..sig.ctypes.len {
+        dropAt(g, op(g, "getelementptr inbounds " + sig.envTy + ", ptr %e, i32 0, i32 " + str(k + 2)), sig.ctypes[k])
+    }
+    emit(g, "call void @free(ptr %e)")
+    emit(g, "ret void")
+    endHelper(g, s, "define internal void " + drop + "(ptr %e)")
+    s2 := beginHelper(g)
+    n := op(g, "call ptr @finch_alloc(i64 " + size + ")")
+    store(g, "ptr", drop, op(g, "getelementptr inbounds " + sig.envTy + ", ptr " + n + ", i32 0, i32 0"))
+    store(g, "ptr", copy, op(g, "getelementptr inbounds " + sig.envTy + ", ptr " + n + ", i32 0, i32 1"))
+    for k in 0..sig.ctypes.len {
+        copyAt(g, op(g, "getelementptr inbounds " + sig.envTy + ", ptr " + n + ", i32 0, i32 " + str(k + 2)), op(g, "getelementptr inbounds " + sig.envTy + ", ptr %e, i32 0, i32 " + str(k + 2)), sig.ctypes[k])
+    }
+    emit(g, "ret ptr " + n)
+    endHelper(g, s2, "define internal ptr " + copy + "(ptr %e)")
+    return [drop, copy]
+}
+
+// a named function as a value: a wrapper that takes (and skips) the environment
+fn fnValueOf(ptr[Gen] g, int fi, ast.Node at) -> Val {
+    sig := g.sigs[fi]
+    if sig.module.len == 0 && sig.name == "main" {
+        fail(g, at, "main can't be used as a value, it is where the program starts")
+    }
+    if sig.muts.contains(true) {
+        fail(g, at, "'" + sig.name + "' has mut parameters, so it can't be used as a value (a function value gets copies)")
+    }
+    noteCall(g, at, sig)
+    name := "@finch.val." + sig.ll.sub(1, sig.ll.len)
+    if !g.cdone.contains("v:" + name) {
+        g.cdone.push("v:" + name)
+        s := beginHelper(g)
+        []str hdr = ["ptr %env"]
+        []str args
+        for k in 0..sig.params.len {
+            hdr.push(llty(g, sig.params[k]) + " %a" + str(k))
+            args.push(llty(g, sig.params[k]) + " %a" + str(k))
+        }
+        text := "call " + retTy(g, sig) + " " + sig.ll + "(" + args.join(", ") + ")"
+        if retTy(g, sig) == "void" {
+            emit(g, text)
+            emit(g, "ret void")
+        } else {
+            emit(g, "ret " + retTy(g, sig) + " " + op(g, text))
+        }
+        endHelper(g, s, "define internal " + retTy(g, sig) + " " + name + "(" + hdr.join(", ") + ")")
+    }
+    return Val(v: "{ ptr " + name + ", ptr null }", ty: fnTypeOf(sig), fresh: true)
+}
+
+// f(x): a call through a function value
+fn callValue(ptr[Gen] g, Val fv, ast.Node c, int first, str shown) -> Val {
+    t := fv.ty
+    np := t.elem.len - 1
+    checkArgs(g, c, first, np, shown)
+    mark := g.pending.len
+    hold(g, fv)
+    fnp := op(g, "extractvalue { ptr, ptr } " + fv.v + ", 0")
+    env := op(g, "extractvalue { ptr, ptr } " + fv.v + ", 1")
+    []str args = ["ptr " + env]
+    []Val fresh
+    for k in 0..np {
+        a := c.kids[first + k]
+        pt := t.elem[k + 1]
+        v := coerce(g, argWant(g, a, pt), pt, a, "argument " + str(k + 1) + " of " + shown)
+        args.push(llty(g, pt) + " " + v.v)
+        if v.fresh {
+            fresh.push(v)
+        }
+        hold(g, v)
+    }
+    panicIf(g, op(g, "icmp eq ptr " + fnp + ", null"), "'" + shown + "' holds no function yet (give it one first:  " + shown + " = fn(...) { ... })", c)
+    sig := FnSig(name: shown, shown: shown, ll: fnp, ret: t.elem[0], fallible: t.name == "!", prog: -1)
+    r := emitCall(g, sig, c, args, shown)
+    for v in fresh {
+        release(g, v)
+    }
+    release(g, fv)
+    heldEnd(g, mark)
+    return r
+}
+
+// ---------- inline assembly ----------
+//   asm("add {total}, {step}", mut total, step)     {name}: that variable, in a register the compiler picks
+//   asm("cpuid", eax: mut a, ecx: mut c)             name: that exact register (written in the text as it is)
+//   asm("mov x9, #1 ...", scratch: "x9")            registers the instructions use for themselves (their values are lost)
+// mut: the instructions change it (it is read first, then written back). x86 uses Intel syntax.
+
+struct AsmOp {
+    str name            // what {name} in the text stands for ("" for a fixed register)
+    str reg             // a fixed register, or ""
+    bool out            // mut: read, changed, written back
+    str v               // the value going in
+    str addr            // where it goes back (out only)
+    ast.Type ty
+}
+
+fn asmRegister(ptr[Gen] g, str r) -> bool {
+    if r.len == 0 {
+        return false
+    }
+    if g.tg.arm64 {
+        if r == "sp" || r == "fp" || r == "lr" || r == "xzr" || r == "wzr" {
+            return true
+        }
+        return "xwvqdsh".contains(str(r[0])) && r.len > 1 && r.len <= 3 && isDigits(r.sub(1, r.len)) && (int(r.sub(1, r.len)) or 99) <= 31
+    }
+    x86 := ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp",
+            "ax", "bx", "cx", "dx", "si", "di", "al", "bl", "cl", "dl", "ah", "bh", "ch", "dh"]
+    if x86.contains(r) {
+        return true
+    }
+    for pre in ["xmm", "ymm", "zmm"] {
+        if r.starts_with(pre) && r.len > 3 && isDigits(r.sub(3, r.len)) && (int(r.sub(3, r.len)) or 99) <= 31 {
+            return true
+        }
+    }
+    if r.starts_with("k") && r.len == 2 && isDigits(r.sub(1, 2)) && (int(r.sub(1, 2)) or 9) <= 7 {
+        return true
+    }
+    if r.starts_with("r") && r.len >= 2 {
+        digits := r.sub(1, r.len)
+        if r.ends_with("d") || r.ends_with("w") || r.ends_with("b") {
+            digits = r.sub(1, r.len - 1)
+        }
+        return isDigits(digits) && (int(digits) or 0) >= 8 && (int(digits) or 0) <= 15
+    }
+    return false
+}
+
+fn isDigits(str s) -> bool {
+    if s.len == 0 {
+        return false
+    }
+    for ch in s {
+        if ch < '0' || ch > '9' {
+            return false
+        }
+    }
+    return true
+}
+
+fn asmCall(ptr[Gen] g, ast.Node c) -> Val {
+    if c.kids.len == 0 || c.kids[0].kind != "str" || c.names[0].len > 0 {
+        fail(g, c, "asm(...) starts with the instructions as text, like  asm(\"nop\")  or  asm(\"add {x}, {y}\", mut x, y)")
+    }
+    text := c.kids[0].text
+    []AsmOp ops
+    []str scratch
+    for i in 1..c.kids.len {
+        a := c.kids[i]
+        if c.names[i] == "scratch" {
+            if a.kind != "str" {
+                fail(g, a, "scratch: is the registers the instructions use for themselves, as text: scratch: \"rcx, rdx\"")
+            }
+            for part in a.text.split(",") {
+                r := part.trim()
+                if !asmRegister(g, r) {
+                    fail(g, a, "'" + r + "' in scratch: is not a register of this processor")
+                }
+                scratch.push(r)
+            }
+            continue
+        }
+        o := AsmOp(name: c.names[i])
+        inner := a
+        if a.kind == "mut" {
+            o.out = true
+            inner = a.kids[0]
+        }
+        if o.name.len == 0 {
+            if inner.kind != "var" && inner.kind != "member" {
+                fail(g, inner, "give this a name to use in the text, like  n: " + "5" + "  with {n} in the text (a variable needs none: {x})")
+            }
+            o.name = argText(inner)
+        } else if !text.contains("{" + o.name + "}") {
+            if !asmRegister(g, o.name) {
+                where := "x86-64"
+                if g.tg.arm64 {
+                    where = "ARM64"
+                }
+                fail(g, a, "'" + o.name + "' is neither in the text as {" + o.name + "} nor a register of " + where)
+            }
+            o.reg = o.name
+            o.name = ""
+        }
+        if o.out {
+            pl := mutPlace(g, inner)
+            o.ty = pl.ty
+            o.addr = pl.addr
+            o.v = load(g, llty(g, pl.ty), pl.addr)
+        } else {
+            v := expr(g, inner)
+            o.ty = v.ty
+            o.v = v.v
+        }
+        k := o.ty.kind
+        if !(isNumber(o.ty) || k == "ptr" || k == "char" || k == "vec") {
+            fail(g, inner, "asm works with numbers, char, pointers and vectors (they fit in a register), not " + ast.show(o.ty))
+        }
+        for p in ops {
+            if (o.name.len > 0 && p.name == o.name) || (o.reg.len > 0 && p.reg == o.reg) {
+                fail(g, a, "'" + o.name + o.reg + "' is given twice")
+            }
+        }
+        ops.push(o)
+    }
+    // the operands: outputs first ($0, $1, ...), then the inputs; a mut operand is an output and an input tied to it
+    []int number
+    for i in 0..ops.len {
+        number.push(-1)
+    }
+    []str cons
+    []str outTys
+    n := 0
+    for i in 0..ops.len {
+        if ops[i].out {
+            number[i] = n
+            cons.push("=" + asmClass(g, ops[i]))
+            outTys.push(llty(g, ops[i].ty))
+            n += 1
+        }
+    }
+    []str inArgs
+    for i in 0..ops.len {
+        o := ops[i]
+        if o.out {
+            cons.push(str(number[i]))
+        } else {
+            number[i] = n + inArgs.len
+            cons.push(asmClass(g, o))
+        }
+        inArgs.push(llty(g, o.ty) + " " + o.v)
+    }
+    for r in scratch {
+        for o in ops {
+            if o.reg == r {
+                fail(g, c, "'" + r + "' is both a value's register and in scratch:")
+            }
+        }
+        cons.push("~{" + r + "}")
+    }
+    if g.tg.arm64 {
+        cons.push("~{cc}")
+        cons.push("~{memory}")
+    } else {
+        cons.push("~{dirflag}")
+        cons.push("~{fpsr}")
+        cons.push("~{flags}")
+        cons.push("~{memory}")
+    }
+    // {name} -> $N,  {{ and }} -> { and },  $ -> $$
+    out := ""
+    i := 0
+    while i < text.len {
+        ch := text[i]
+        if ch == '{' && i + 1 < text.len && text[i + 1] == '{' {
+            out += "{"
+            i += 2
+            continue
+        }
+        if ch == '}' && i + 1 < text.len && text[i + 1] == '}' {
+            out += "}"
+            i += 2
+            continue
+        }
+        if ch == '{' {
+            end := i + 1
+            while end < text.len && text[end] != '}' {
+                end += 1
+            }
+            name := text.sub(i + 1, end)
+            modifier := ""
+            colon := name.find(":")
+            if colon >= 0 {
+                modifier = name.sub(colon + 1, name.len)      // {x:w}: how the register is written, as in C
+                name = name.sub(0, colon)
+            }
+            found := -1
+            for k in 0..ops.len {
+                if ops[k].name == name && name.len > 0 {
+                    found = k
+                }
+            }
+            if found < 0 || end >= text.len {
+                fail(g, c.kids[0], "{" + name + "} in the asm text is not one of its values (give it as an argument: asm(\"...\", " + name + "); a brace itself is written {{ or }})")
+            }
+            if modifier.len == 0 && g.tg.arm64 && ops[found].reg.len == 0 {
+                // ARM64 names a register by its size: w0 for 32 bits, s0 / d0 for a float
+                t := ops[found].ty
+                if isFloat(t) {
+                    modifier = "d"
+                    if t.kind == "f32" {
+                        modifier = "s"
+                    }
+                } else if t.kind != "vec" && t.kind != "ptr" && bitsOf(t) <= 32 {
+                    modifier = "w"
+                }
+            }
+            if modifier.len > 0 {
+                out += "${" + str(number[found]) + ":" + modifier + "}"
+            } else {
+                out += "${" + str(number[found]) + "}"
+            }
+            i = end + 1
+            continue
+        }
+        if ch == '$' {
+            out += "$$"
+        } else {
+            out += str(ch)
+        }
+        i += 1
+    }
+    dialect := " inteldialect"
+    if g.tg.arm64 {
+        dialect = ""
+    }
+    retT := "void"
+    if outTys.len == 1 {
+        retT = outTys[0]
+    } else if outTys.len > 1 {
+        retT = "{ " + outTys.join(", ") + " }"
+    }
+    callText := "call " + retT + " asm sideeffect" + dialect + " \"" + asmEscape(out) + "\", \"" + cons.join(",") + "\"(" + inArgs.join(", ") + ")"
+    if outTys.len == 0 {
+        emit(g, callText)
+        return Val(ty: T("void"))
+    }
+    r := op(g, callText)
+    for k in 0..ops.len {
+        if !ops[k].out {
+            continue
+        }
+        v := r
+        if outTys.len > 1 {
+            v = op(g, "extractvalue " + retT + " " + r + ", " + str(number[k]))
+        }
+        store(g, llty(g, ops[k].ty), v, ops[k].addr)
+    }
+    return Val(ty: T("void"))
+}
+
+// the register class a value goes in: "r" for whole numbers and pointers, a vector register for floats and vectors
+fn asmClass(ptr[Gen] g, AsmOp o) -> str {
+    if o.reg.len > 0 {
+        return "{" + o.reg + "}"
+    }
+    if isFloat(o.ty) || o.ty.kind == "vec" {
+        if g.tg.arm64 {
+            return "w"
+        }
+        return "x"
+    }
+    return "r"
+}
+
+fn asmEscape(str s) -> str {
+    out := ""
+    digits := "0123456789ABCDEF"
+    for ch in s {
+        n := int(ch)
+        if n < 0 {
+            n += 256
+        }
+        if ch == '"' || ch == '\\' || n < 32 || n > 126 {
+            out += "\\" + str(digits[n / 16]) + str(digits[n % 16])
+        } else {
+            out += str(ch)
+        }
+    }
+    return out
 }
 
 // The call itself, once the arguments are values ("i64 5"); the receiver's address, if any, is already first.
@@ -6045,7 +6829,14 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
         }
         fail(g, m, "the module '" + shown + "' has no function or struct named '" + m.name + "'")
     }
-    changing := ["push", "pop", "insert", "remove", "clear", "resize", "sort", "reverse"]
+    changing := ["push", "pop", "insert", "remove", "clear", "resize", "sort", "reverse", "sort_by"]
+    if changing.contains(m.name) {
+        root := rootVar(objNode)
+        id := lookup(g, root)
+        if root.len > 0 && id >= 0 && varAt(g, id).captured {
+            fail(g, m, readonlyWhy(varAt(g, id), root))
+        }
+    }
     r := ref(g, objNode, changing.contains(m.name))
     mark := g.pending.len
     t := r.val.ty
@@ -6150,6 +6941,20 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
                 }
             }
         }
+        if fi < 0 && st.kind == "struct" {
+            // a field that holds a function: button.on_click()
+            sd := g.structs[findStruct(g, st.module, st.name)]
+            fk := sd.fnames.find(m.name)
+            if fk >= 0 && sd.ftypes[fk].kind == "fn" {
+                fv := Val(v: load(g, "{ ptr, ptr }", op(g, "getelementptr inbounds " + llty(g, st) + ", ptr " + selfAddr + ", i32 0, i32 " + str(sd.lidx[fk]))), ty: sd.ftypes[fk])
+                out := callValue(g, fv, m, 1, ast.show(st) + "." + m.name)
+                if temp && r.val.fresh && owning(g, st) {
+                    dropAt(g, selfAddr, st)
+                }
+                heldEnd(g, mark)
+                return out
+            }
+        }
         if fi < 0 {
             []str have
             for sg in g.sigs {
@@ -6171,7 +6976,7 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
             if root.len > 0 {
                 id := lookup(g, root)
                 if id >= 0 && varAt(g, id).readonly {
-                    fail(g, m, "the loop variable '" + root + "' can't be changed")
+                    fail(g, m, readonlyWhy(varAt(g, id), root))
                 }
             }
         }
@@ -6349,8 +7154,153 @@ fn arrayMethod(ptr[Gen] g, ast.Node m, str a, ast.Type at) -> Val {
         emit(g, "call void @qsort(ptr " + data + ", i64 " + l + ", i64 " + sizeOf(g, et) + ", ptr " + cmp + ")")
         return Val(ty: T("void"))
     }
-    fail(g, m, "an array has no method '" + n + "' (it has: push, pop, insert, remove, clear, resize, find, contains, join, slice, reverse, sort)")
+    if ["sort_by", "filter", "map", "any", "all"].contains(n) {
+        return arrayFnMethod(g, m, a, at)
+    }
+    fail(g, m, "an array has no method '" + n + "' (it has: push, pop, insert, remove, clear, resize, find, contains, join, slice, reverse, sort, sort_by, filter, map, any, all)")
     return Val()
+}
+
+// list.sort_by(less), list.filter(keep), list.map(change), list.any(test), list.all(test): with a function value.
+// The function gets each element lent (no copy). It can't change the list: it only has copies of what is around it.
+fn arrayFnMethod(ptr[Gen] g, ast.Node m, str a, ast.Type at) -> Val {
+    n := m.name
+    et := at.elem[0]
+    ET := llty(g, et)
+    need(g, m, 1)
+    arg := m.kids[1]
+    want := ast.Type(kind: "fn")
+    want.elem.push(T("bool"))
+    want.elem.push(et)
+    what := "the function that tests each element"
+    if n == "sort_by" {
+        want.elem.push(et)
+        what = "the function that says whether a goes before b"
+    }
+    fv := Val()
+    if n == "map" {
+        if arg.kind == "lambda" && !arg.flag {
+            fail(g, arg, "write what the function gives back, like  list.map(fn(x) -> str { return str(x) })")
+        }
+        want.elem[0] = T("void")
+        fv = exprWant(g, arg, want)
+        if fv.ty.kind != "fn" || fv.ty.elem.len != 2 || !ast.same(fv.ty.elem[1], et) || fv.ty.name == "!" || fv.ty.elem[0].kind == "void" {
+            fail(g, arg, "map(...) needs a function that takes one " + ast.show(et) + " and gives back a value, like  fn(" + ast.show(et) + " x) -> str { ... }, but this is " + ast.show(fv.ty))
+        }
+    } else {
+        fv = coerce(g, exprWant(g, arg, want), want, arg, what)
+    }
+    mark := g.pending.len
+    hold(g, fv)
+    lenAddr := op(g, "getelementptr inbounds { ptr, i64, i64 }, ptr " + a + ", i32 0, i32 1")
+    if n == "sort_by" {
+        panicIf(g, op(g, "icmp eq ptr " + op(g, "extractvalue { ptr, ptr } " + fv.v + ", 0") + ", null"), "this function value holds no function yet", m)
+        ctx := spill(g, fv)
+        saved := traceSave(g)
+        emit(g, "call void @finch_sort_by(ptr " + load(g, "ptr", a) + ", i64 " + load(g, "i64", lenAddr) + ", i64 " + sizeOf(g, et) + ", ptr " + lessFn(g, et) + ", ptr " + ctx + ")")
+        if saved.len > 0 {
+            emit(g, "store ptr " + saved + ", ptr @finch_trace")
+        }
+        release(g, fv)
+        heldEnd(g, mark)
+        return Val(ty: T("void"))
+    }
+    l := load(g, "i64", lenAddr)
+    if n == "any" || n == "all" {
+        res := alloca(g, "i1")
+        store(g, "i1", str(n == "all"), res)
+        lp := loopStart(g, l)
+        ev := load(g, ET, op(g, "getelementptr inbounds " + ET + ", ptr " + load(g, "ptr", a) + ", i64 " + lp[3]))
+        r := callValueRaw(g, fv, [ET + " " + ev], m)
+        decided := newLabel(g, "decided")
+        more := newLabel(g, "more")
+        if n == "any" {
+            condBr(g, r, decided, more)
+        } else {
+            condBr(g, r, more, decided)
+        }
+        label(g, decided)
+        store(g, "i1", str(n == "any"), res)
+        br(g, lp[2])
+        label(g, more)
+        loopEnd(g, lp)
+        release(g, fv)
+        heldEnd(g, mark)
+        return Val(v: load(g, "i1", res), ty: T("bool"))
+    }
+    ot := at
+    if n == "map" {
+        ot = ast.arrayOf(fv.ty.elem[0])
+    }
+    OT := llty(g, ot.elem[0])
+    out := alloca(g, "{ ptr, i64, i64 }")
+    store(g, "{ ptr, i64, i64 }", "zeroinitializer", out)
+    holdAddr(g, out, ot)            // a runtime error in the function leaves nothing behind
+    if n == "map" {
+        emit(g, "call void @finch_arr_reserve(ptr " + out + ", i64 " + l + ", i64 " + sizeOf(g, ot.elem[0]) + ")")
+    }
+    lp := loopStart(g, l)
+    ev := load(g, ET, op(g, "getelementptr inbounds " + ET + ", ptr " + load(g, "ptr", a) + ", i64 " + lp[3]))
+    r := callValueRaw(g, fv, [ET + " " + ev], m)
+    keep := newLabel(g, "keep")
+    next := newLabel(g, "next")
+    item := r
+    if n == "filter" {
+        condBr(g, r, keep, next)
+        label(g, keep)
+        item = copyValue(g, ev, et)
+    } else {
+        br(g, keep)
+        label(g, keep)                  // map: the result is new, so it moves in as it is
+    }
+    ol := load(g, "i64", op(g, "getelementptr inbounds { ptr, i64, i64 }, ptr " + out + ", i32 0, i32 1"))
+    ol1 := op(g, "add i64 " + ol + ", 1")
+    emit(g, "call void @finch_arr_reserve(ptr " + out + ", i64 " + ol1 + ", i64 " + sizeOf(g, ot.elem[0]) + ")")
+    store(g, OT, item, op(g, "getelementptr inbounds " + OT + ", ptr " + load(g, "ptr", out) + ", i64 " + ol))
+    store(g, "i64", ol1, op(g, "getelementptr inbounds { ptr, i64, i64 }, ptr " + out + ", i32 0, i32 1"))
+    br(g, next)
+    label(g, next)
+    loopEnd(g, lp)
+    release(g, fv)
+    heldEnd(g, mark)
+    return Val(v: load(g, "{ ptr, i64, i64 }", out), ty: ot, fresh: true)
+}
+
+// a call through a function value whose arguments are ready ("i64 %t3"); its result
+fn callValueRaw(ptr[Gen] g, Val fv, []str args, ast.Node at) -> str {
+    fnp := op(g, "extractvalue { ptr, ptr } " + fv.v + ", 0")
+    env := op(g, "extractvalue { ptr, ptr } " + fv.v + ", 1")
+    panicIf(g, op(g, "icmp eq ptr " + fnp + ", null"), "this function value holds no function yet", at)
+    []str all = ["ptr " + env]
+    for x in args {
+        all.push(x)
+    }
+    saved := traceSave(g)
+    return tracedCall(g, "call " + llty(g, fv.ty.elem[0]) + " " + fnp + "(" + all.join(", ") + ")", saved)
+}
+
+// for finch_sort_by: does the element at %a go before the one at %b? %ctx holds the function value
+fn lessFn(ptr[Gen] g, ast.Type et) -> str {
+    name := "@finch.less." + typeKey(et)
+    if has(g.done, name) {
+        return name
+    }
+    g.done.push(name)
+    s := beginHelper(g)
+    ET := llty(g, et)
+    t := ast.Type(kind: "fn")
+    t.elem.push(T("bool"))
+    t.elem.push(et)
+    t.elem.push(et)
+    fv := Val(v: load(g, "{ ptr, ptr }", "%ctx"), ty: t)
+    at := ast.Node()
+    fnp := op(g, "extractvalue { ptr, ptr } " + fv.v + ", 0")
+    env := op(g, "extractvalue { ptr, ptr } " + fv.v + ", 1")
+    saved := traceSave(g)
+    r := tracedCall(g, "call i1 " + fnp + "(ptr " + env + ", " + ET + " " + load(g, ET, "%a") + ", " + ET + " " + load(g, ET, "%b") + ")", saved)
+    emit(g, "ret i32 " + op(g, "zext i1 " + r + " to i32"))
+    endHelper(g, s, "define internal i32 " + name + "(ptr %ctx, ptr %a, ptr %b)")
+    return name
 }
 
 // resize/clear: the elements from `from` on go away, so they are dropped
@@ -6493,6 +7443,9 @@ fn runtimeDecls() -> str {
         "declare void @finch_str_drop(ptr)",
         "declare void @finch_arr_free(ptr)",
         "declare void @finch_map_free(ptr)",
+        "declare void @finch_fn_copy(ptr, ptr)",
+        "declare void @finch_fn_drop(ptr)",
+        "declare void @finch_sort_by(ptr, i64, i64, ptr, ptr)",
         "declare void @finch_str_own(ptr)",
         "declare void @finch_str_concat(ptr, ptr, ptr)",
         "declare i32 @finch_str_eq(ptr, ptr)",

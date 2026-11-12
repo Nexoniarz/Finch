@@ -1,0 +1,4 @@
+// expect: write what the function gives back
+fn main() {
+    print([1, 2].map(fn(x) { return x * 2 }))
+}

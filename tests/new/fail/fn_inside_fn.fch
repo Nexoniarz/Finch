@@ -1,0 +1,5 @@
+// expect: a function can't be made inside another one
+fn main() {
+    fn helper() {
+    }
+}

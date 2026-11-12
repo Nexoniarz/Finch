@@ -1,0 +1,17 @@
+// asm on ARM64: register sizes (w / x, s / d) are picked from the variable's type
+fn main() {
+    a := 40
+    b := 2
+    asm("add {a}, {a}, {b}", mut a, b)
+    i32 w = 3
+    asm("add {w}, {w}, #4", mut w)
+    f32 x = 1.5
+    asm("fadd {x}, {x}, {x}", mut x)
+    float y = 1.25
+    asm("fadd {y}, {y}, {y}", mut y)
+    n := 0
+    asm("mov x9, #5\n add {n}, x9, #1", mut n, scratch: "x9")
+    i64 r = 0
+    asm("mov x0, #9", x0: mut r)
+    print(a, w, x, y, n, r)
+}
