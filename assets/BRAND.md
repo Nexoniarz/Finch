@@ -6,34 +6,34 @@
 
 | File | Use |
 |---|---|
-| `logo.svg` / `logo.png` | the mark + wordmark, for light backgrounds |
+| `logo.svg` / `logo.png` | the icon + wordmark, for light backgrounds |
 | `logo-dark.svg` / `logo-dark.png` | the same for dark backgrounds |
-| `logo-mark.svg`, `logo-mark-dark.svg` | the mark alone (it works on light and dark) |
+| `logo-mark.svg` / `logo-mark-dark.svg` | the mark alone, no background: for light / for dark backgrounds |
 | `icon.svg`, `icon.png`, `icon-256.png`, `favicon-64.png` | app icon / avatar / favicon |
 | `social-preview.svg` / `social-preview.png` | GitHub social preview (1280×640) |
 
-**The mark** is a hexagon in three shades of orange, lit from the upper left, with a white finch flying through it
-towards the upper right: wings swept back, a short seed-cracker beak, a forked tail. Small, quick, sharp. It is made by
-`make_logo.py`, which also puts it into the logos and the social preview; the PNGs are rendered from the SVGs
-(`rsvg-convert -w 512 -h 512 icon.svg -o icon.png`, and 256, 64, the logos at 1000×300, the preview at 1280×640, the
-VS Code icon at 128).
+**The mark** is the **f** of the wordmark with a dot in its top-right corner: the same rounded strokes, and a dot the
+size of the one over the **i**, half a stroke after the f's curl with their tops lined up. It stands on its own
+(Ink f and orange dot on light backgrounds, Cloud f on dark), and as the app icon on a Finch Orange hexagon (white f,
+Seed dot), the shape of the classic systems languages. `make_logo.py` draws it and writes every file above:
+`python3 assets/make_logo.py --png` (the PNGs are rendered with `rsvg-convert` or Inkscape).
 
 The wordmark is drawn with strokes (no font needed), lowercase, with an orange dot over the **i**.
 Keep clear space around the logo of at least the height of the letter **n**. Don't recolor the mark, rotate it,
-stretch it, or put it on busy backgrounds; the bird stays white.
+stretch it, add shading or outlines, or put it on busy backgrounds; the dot stays in the f's top-right corner.
 
 ## Colors
 
 | Name | Hex | Use |
 |---|---|---|
-| Finch Orange | `#FF7A1A` | the mark's right face, accents, the dot over the i |
-| Glow | `#FFA24D` | the mark's lit face, light orange highlights |
-| Ember | `#D9570B` | the mark's lower face, the bird's eye |
-| Seed | `#FFC145` | the beak, numbers in code |
-| Ink | `#1B1F2A` | text, the wing, dark backgrounds |
+| Finch Orange | `#FF7A1A` | the mark, accents, the dot over the i |
+| Glow | `#FFA24D` | light orange highlights |
+| Ember | `#D9570B` | dark orange, pressed states |
+| Seed | `#FFC145` | the dot of the app icon, numbers in code |
+| Ink | `#1B1F2A` | text, dark backgrounds |
 | Slate | `#2E3445` | secondary dark |
 | Cloud | `#F5F3EF` | text on dark, light backgrounds |
-| Shell | `#FFF3E6` | the icon background |
+| Shell | `#FFF3E6` | warm light backgrounds |
 
 ## Type
 
@@ -48,16 +48,18 @@ Tagline: **Small, quick, sharp.**
 
 ## Marka Finch (po polsku)
 
-**Logo:** pliki jak w tabeli wyżej. Znak to sześciokąt w trzech odcieniach pomarańczu, oświetlony z lewej góry,
-z białym gilem (finch) lecącym przez niego w prawo w górę: skrzydła odgięte do tyłu, krótki dziób do łuskania ziaren,
-rozwidlony ogon. Rysuje go `make_logo.py`. `logo.svg` jest na jasne tło, `logo-dark.svg` na ciemne,
-`logo-mark*.svg` to sam znak, `icon*` to ikona i awatar, a `social-preview.png` to podgląd linku na GitHubie.
+**Logo:** pliki jak w tabeli wyżej. Znak to **f** z napisu z kropką w prawym górnym rogu: te same zaokrąglone
+linie i kropka wielkości tej nad **i**, pół grubości linii za zawinięciem f, z wyrównanymi górami. Działa sam
+(f w kolorze Ink i pomarańczowa kropka na jasnym tle, f w kolorze Cloud na ciemnym) i jako ikona aplikacji na
+sześciokącie Finch Orange (białe f, kropka Seed), kształcie klasycznych języków systemowych. Rysuje go
+`make_logo.py` (`python3 assets/make_logo.py --png` zapisuje wszystkie pliki). `logo.svg` jest na jasne tło, `logo-dark.svg` na ciemne,
+`logo-mark.svg` / `logo-mark-dark.svg` to sam znak bez tła (na jasne / na ciemne tło), `icon*` to ikona i awatar, a `social-preview.png` to podgląd linku na GitHubie.
 Napis jest rysowany liniami (nie potrzebuje czcionki), małymi literami, z pomarańczową kropką nad **i**.
 Zostaw wokół logo wolne miejsce co najmniej wysokości litery **n**. Nie zmieniaj kolorów znaku, nie obracaj
-go, nie rozciągaj i nie kładź na pstrokatym tle; ptak zostaje biały.
+go, nie rozciągaj, nie dodawaj cieni ani obrysów i nie kładź go na pstrokatym tle; kropka zostaje w prawym górnym rogu f.
 
-**Kolory:** Finch Orange `#FF7A1A` (prawa ściana znaku, akcenty), Glow `#FFA24D` (oświetlona ściana), Ember `#D9570B` (dolna ściana, oko ptaka), Seed `#FFC145` (dziób),
-Ink `#1B1F2A` (tekst, skrzydło, ciemne tło), Slate `#2E3445`, Cloud `#F5F3EF` (tekst na ciemnym), Shell `#FFF3E6` (tło ikony).
+**Kolory:** Finch Orange `#FF7A1A` (znak, akcenty), Glow `#FFA24D` (jasne akcenty), Ember `#D9570B` (ciemny pomarańcz), Seed `#FFC145` (kropka ikony, liczby w kodzie),
+Ink `#1B1F2A` (tekst, ciemne tło), Slate `#2E3445`, Cloud `#F5F3EF` (tekst na ciemnym), Shell `#FFF3E6` (ciepłe jasne tło).
 
 **Czcionki:** Inter do tekstu, JetBrains Mono do kodu.
 
