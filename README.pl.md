@@ -52,6 +52,8 @@ fn main() {
      = help: use i32(...) to convert
   ```
   W terminalu są kolorowe, a `finch build` mówi, ile trwało budowanie.
+- **Biblioteki C++ też.** `import "imgui.h"`, potem `ImGui.Button("OK")`: przestrzenie nazw, klasy, przeciążenia,
+  argumenty domyślne i wyjątki działają, bez pisania nakładki w C.
 - **Biblioteki C bez pośredników.** Wystarczy `import "raylib.h"` i `link "raylib"`, żeby z niej korzystać, łącznie
   ze strukturami przekazywanymi przez wartość i funkcjami zwrotnymi. Nagłówki czyta libclang, więc niczego nie trzeba
   deklarować ręcznie.
@@ -117,6 +119,8 @@ Wybierz przewodnik dla siebie:
 | Pamięć | tablice, teksty i struktury zwalniają się same; `new(...)` / `free(...)` dla własnych struktur na stercie |
 | Enumy i `match` | `enum Kolor { Czerwony, Zielony }`, `match k { Czerwony -> ... else -> ... }` (również jako wartość) |
 | Typy generyczne | `fn max[T](T a, T b) -> T`, `struct Stos[T]`, `Stos[int]()` |
+| Wartości opcjonalne | `fn znajdz(str n) -> Osoba?`, `return null`, `znajdz(n) or gosc`, `if o := znajdz(n) { }`, `x == null` |
+| Interfejsy | `interface Ksztalt { fn pole() -> float }`: każda struktura z tymi metodami nim jest; `[]Ksztalt k = [Kolo(1.0), Prostokat(2.0, 3.0)]` |
 | Moduły | `import ksztalty` → `ksztalty.pole(p)`, `import ui/button as btn`; biblioteka standardowa: `json`, `path`, `time`, `proc`, `fs`, `thread` |
 | Wątki | `thread.spawn(addr(praca), addr(dane))`, `t.join()`, `thread.mutex()`, `atomic_add(addr(n), 1)` |
 | Testy | `test "nazwa" { assert(x == 3) }` tuż obok kodu, uruchamiane przez `finch test` |
@@ -172,8 +176,9 @@ Wybierz przewodnik dla siebie:
 - [x] Maski, przestawianie, tabele bajtów i `dot_add` dla jąder obliczeniowych; `@cpu` i `cpu_has`; `fma`/`muladd`, bity liczb, f16 i bf16
 - [x] Parametry `mut` (zmiana zmiennej wywołującego bez wskaźników); wstawki asemblera `asm(...)` na x86-64 i ARM64
 - [x] Funkcje jako wartości: typy `fn(int) -> bool`, funkcje pisane na miejscu, które trzymają kopie tego, czego używają, `sort_by`, `filter`, `map`, `any`, `all`
-- [ ] Interfejsy, wartości opcjonalne `T?`
-- [ ] Nagłówki C++ importowane wprost (klasy, metody, wyjątki jako błędy); biblioteki Rusta przez `Cargo.toml`
+- [x] Wartości opcjonalne `T?` (`or`, `if v := x`) i interfejsy (każdy typ z tymi metodami nim jest)
+- [x] Nagłówki C++ importowane wprost: przestrzenie nazw, klasy, przeciążenia, argumenty domyślne, wyjątki jako błędy
+- [ ] Biblioteki Rusta przez `Cargo.toml`
 
 ## Co gdzie leży
 

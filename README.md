@@ -51,6 +51,8 @@ fn main() {
      = help: use i32(...) to convert
   ```
   In a terminal they come in colour, and `finch build` says how long it took.
+- **C++ libraries too.** `import "imgui.h"`, then `ImGui.Button("OK")`: namespaces, classes, overloads, default
+  arguments and exceptions work, with no C bridge to write.
 - **Any C library, directly.** `import "raylib.h"` + `link "raylib"`, and you can call it, structs by value
   and callbacks included. Headers are read by libclang, so there is nothing to declare by hand.
 - **Written in itself.** The compiler is Finch code, and nothing else: `src/*.fch`, about 12k lines. It is built from a
@@ -115,6 +117,8 @@ Pick the guide that fits you:
 | Memory | automatic for arrays, text and structs; `new(...)` / `free(...)` for your own heap structures |
 | Enums, match | `enum Color { Red, Green }`, `match c { Red -> ... else -> ... }` (also as a value) |
 | Generics | `fn max[T](T a, T b) -> T`, `struct Stack[T]`, `Stack[int]()` |
+| Optional values | `fn find(str n) -> Person?`, `return null`, `find(n) or guest`, `if p := find(n) { }`, `x == null` |
+| Interfaces | `interface Shape { fn area() -> float }`: any struct with those methods is one; `[]Shape shapes = [Circle(1.0), Rect(2.0, 3.0)]` |
 | Modules | `import shapes` → `shapes.area(b)`, `import ui/button as btn`; the standard library: `json`, `path`, `time`, `proc`, `fs`, `thread` |
 | Threads | `thread.spawn(addr(work), addr(data))`, `t.join()`, `thread.mutex()`, `atomic_add(addr(n), 1)` |
 | Tests | `test "name" { assert(x == 3) }` next to the code, run with `finch test` |
@@ -170,8 +174,9 @@ Pick the guide that fits you:
 - [x] Masks, shuffles, byte lookup and `dot_add` for kernels; `@cpu` and `cpu_has`; `fma`/`muladd`, float bits, f16 and bf16
 - [x] `mut` parameters (change the caller's variable without pointers); inline assembly with `asm(...)` on x86-64 and ARM64
 - [x] Functions as values: `fn(int) -> bool` types, functions written in place that keep copies of what they use, `sort_by`, `filter`, `map`, `any`, `all`
-- [ ] Interfaces, optional values `T?`
-- [ ] C++ headers imported directly (classes, methods, exceptions as errors); Rust crates through `Cargo.toml`
+- [x] Optional values `T?` (`or`, `if v := x`) and interfaces (any type with the methods is one)
+- [x] C++ headers imported directly: namespaces, classes, overloads, default arguments, exceptions as runtime errors
+- [ ] Rust crates through `Cargo.toml`
 
 ## Layout
 

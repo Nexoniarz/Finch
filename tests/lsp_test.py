@@ -257,6 +257,43 @@ c.notify("textDocument/didChange", {"textDocument": {"uri": uri5, "version": 3},
 diags = c.diagnostics(uri5)
 check("error: a captured copy can't be changed", diags and "is a copy this function value took" in diags[0]["message"], diags)
 
+# interfaces and optional values
+src6 = """interface Shape {
+    fn area() -> float
+}
+
+struct Sq {
+    float s
+}
+
+fn Sq.area() -> float {
+    return self.s * self.s
+}
+
+fn main() {
+    Shape sh = Sq(2.0)
+    int? maybe = 3
+    print(sh.area(), maybe or 0)
+}
+"""
+lines6 = src6.split("\n")
+path6 = os.path.join(d, "shapes.fch")
+open(path6, "w").write(src6)
+uri6 = pathlib.Path(path6).resolve().as_uri()
+td6 = {"uri": uri6}
+c.notify("textDocument/didOpen", {"textDocument": {"uri": uri6, "languageId": "finch", "version": 1, "text": src6}})
+check("interfaces and optionals compile", c.diagnostics(uri6) == [])
+h = c.request("textDocument/hover", {"textDocument": td6, "position": {"line": 15, "character": lines6[15].index("maybe")}})
+check("hover: an optional variable", h and "int? maybe" in h["contents"]["value"], h)
+syms = c.request("textDocument/documentSymbol", {"textDocument": td6})
+names6 = [x["name"] for x in syms]
+check("document symbols: the interface", "Shape" in names6 and "Sq" in names6, names6)
+e6 = src6.replace("    print(sh.area(), maybe or 0)\n", "    print(sh.area(), maybe or 0)\n    sh.\n")
+c.notify("textDocument/didChange", {"textDocument": {"uri": uri6, "version": 2}, "contentChanges": [{"text": e6}]})
+comp = c.request("textDocument/completion", {"textDocument": td6, "position": {"line": 16, "character": 7}})
+labels = [i["label"] for i in comp["items"]]
+check("completion: an interface's methods", "area" in labels, labels)
+
 c.request("shutdown", None)
 c.notify("exit", None)
 c.p.wait(timeout=5)

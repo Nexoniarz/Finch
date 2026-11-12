@@ -78,6 +78,7 @@ Design decisions that shape the rest:
 | `src/manifest.fch` | 240 | `finch.toml`: a small TOML reader, per-target lists |
 | `src/fmt.fch` | 225 | `finch fmt` and LSP formatting |
 | `src/lsp.fch` | 950 | The language server (§11) |
+| `src/cimport.fch` (C++ part) | | A header that isn't C is read as C++ (`looksLikeC`, `translateCpp`): `extern "C"` wrappers for its functions, methods, constructors and destructors (one per arity where defaults exist) and a C header describing them go to the cache; the C header is imported as usual, the wrappers are linked (`-ffunction-sections` + `--gc-sections` / `-dead_strip` drop the unused). `CImports.cppNames` maps `ns.f`, `Class#method`, `Class.new` to the wrappers; `cppCall()` in gen.fch picks one by arity and literal argument types and calls it through `callC` |
 | `src/diag.fch` | 260 | How errors and warnings are shown: the code line, the `^` span (UTF-8 and tab aware), `help:`/`note:`, colours for a terminal only, the build status line. `finch index` keeps one plain line per error for the language server |
 | `src/docs.fch` | 140 | One description of the built-ins, shared by hover and completion |
 | `std/*.fch` | 1040 | `json`, `path`, `time` (+`_windows`), `proc` (+`_windows`), `fs`, `thread` |
@@ -232,6 +233,8 @@ statement, so their shape (and the `"""` dedent) is kept.
 | `f32x8`, `i8x32`, … | `<8 x float>`, `<32 x i8>` (§7, Vectors) |
 | Finch struct | named struct type, natural layout |
 | a method's `self` | `ptr` (the first parameter) |
+| `T?` | `{ i1 present, T value }`; owning when `T` is. Copy and drop check the flag (`copyFn` / `dropFn`, kind `"opt"`). `T` and `null` coerce in (`coerce`); it comes out only through `orSource()` (`x or ...`), `ifSome()` (`if v := x`) and `== null` |
+| an interface | `{ ptr box, ptr table }`: the value's own heap copy and a constant table `[drop, copy, format, methods...]` per (type, interface) (`ifaceTable`, `boxHelpers`). A method call loads entry k+3 and passes the box as `self` (`ifaceCall`). Satisfaction is structural and checked when a value is converted (`toIface` → `ifaceMethod`); `finch_iface_copy` / `finch_iface_drop` in the runtime |
 | a `mut T x` parameter | `ptr` to the caller's place (`mutArg()` / `mutPlace()`); the callee's variable is that address, never copied or dropped |
 | `fn(A, B) -> R` | `{ ptr, ptr }`: the function and its environment. Every function value is called as `f(ptr env, A, B)`; a named function goes through a wrapper `@finch.val.*` that ignores `env`. A lambda becomes its own `FnSig` (`lambda`, `cnames`, `ctypes`, `envTy`) defined later by the usual loop; its environment is `{ ptr drop, ptr copy, captures... }` on the heap, so `finch_fn_copy` / `finch_fn_drop` (runtime) copy and free any function value without knowing its captures. Captures are copies made when the lambda is evaluated (`lambdaExpr`, `envHelpers`), read-only inside it (`Var.captured`) |
 | the result of `-> T!` | `{ i1 ok, T value, str error }` (`i8` in place of `T` for `-> !`) |

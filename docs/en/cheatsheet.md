@@ -397,6 +397,15 @@ import ui/button as btn  // another name: btn.draw()
 
 ---
 
+## C++
+
+```
+import "imgui.h"     ImGui.Begin("Tools")     ImGui.Button("OK")     // a C++ header, imported as it is
+c := Counter.new(10)     c.add(5)     c.delete()                     // classes: new, methods, delete
+```
+Namespaces as `ns.f(...)`, default arguments left out, overloads picked by the arguments, `T&` as a pointer,
+exceptions as runtime errors.
+
 ## C
 
 | Code | Meaning |
@@ -500,6 +509,21 @@ struct Stack[T] { []T items }        fn Stack[T].push(T x) { ... }       // the 
 s := Stack[int]()     Stack[int] t     Pair[str, int]("age", 31)         //   never just Stack()
 ```
 
+## Optional values `T?`
+
+```
+fn find(str name) -> Person? { ... return null }     // a Person, or nothing
+p := find("ann") or guest          if p := find("ann") { print(p.name) }          find("x") == null
+int? n          str? nickname      []int? slots = [1, null, 3]                    // starts as null
+```
+
+## Interfaces
+
+```
+interface Shape { fn area() -> float }       // any struct or enum with these methods is a Shape
+[]Shape shapes = [Circle(1.0), Rect(2.0, 3.0)]      for s in shapes { print(s.area()) }
+```
+
 ## Standard library (`import name`; your own file of that name wins)
 
 | | |
@@ -514,5 +538,6 @@ s := Stack[int]()     Stack[int] t     Pair[str, int]("age", 31)         //   ne
 ## Keywords
 
 `fn return if else while for in break continue true false null import link struct enum match defer or try const export mut`
+(`interface` only where it starts one: `interface Shape { ... }`)
 (`test` and `as` only where they mean something: `test "name" { }`, `import x as y`)
 (and `self` inside methods)

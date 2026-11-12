@@ -68,6 +68,7 @@ Decyzje, od których zależy cała reszta:
 
 | Plik | Linie | Za co odpowiada |
 |---|---|---|
+| `src/cimport.fch` (część C++) | | Nagłówek, który nie jest C, jest czytany jako C++ (`looksLikeC`, `translateCpp`): nakładki `extern "C"` na jego funkcje, metody, konstruktory i destruktory (po jednej na liczbę argumentów, gdy są domyślne) i opisujący je nagłówek C trafiają do katalogu podręcznego; nagłówek C jest importowany jak zwykle, nakładki są linkowane (`-ffunction-sections` + `--gc-sections` / `-dead_strip` usuwają nieużywane). `CImports.cppNames` mapuje `ns.f`, `Klasa#metoda`, `Klasa.new` na nakładki; `cppCall()` w gen.fch wybiera jedną po liczbie argumentów i typach literałów i woła ją przez `callC` |
 | `src/diag.fch` | 260 | Jak wyglądają błędy i ostrzeżenia: linia kodu, zakres `^` (z UTF-8 i tabulatorami), `help:`/`note:`, kolory tylko w terminalu, linia stanu po budowaniu. `finch index` zostawia jedną zwykłą linię na błąd dla serwera języka |
 | `src/lexer.fch` | 470 | Tokeny, pozycje, tekst `"""`, zamiana `"\(x)"` na tokeny `("…" + str(x) + "…")` |
 | `src/ast.fch` | 170 | Jedna struktura `Node` z rodzajem (`kind`) jako tekstem, dziećmi, nazwami typów i pozycją (`line`, `endLine`); rozpoznawanie typów wektorowych |
@@ -375,6 +376,8 @@ gdy sam znika. Nie ma liczenia referencji ani garbage collectora; wszystkie decy
 | `for x in lista` | `x` pożycza kolejne elementy; jeśli ciało pętli może zmienić `lista`, elementy są kopiowane |
 | wywołanie metody `v.m()` | `self` **to jest** `v` (przekazywany jest adres): bez kopii, zmiany widzi wywołujący |
 | `fn(A, B) -> R` | `{ ptr, ptr }`: funkcja i jej otoczenie. Każdą wartość-funkcję wywołuje się `f(ptr env, A, B)`; nazwana funkcja idzie przez opakowanie `@finch.val.*`, które pomija `env`. Lambda staje się własnym `FnSig` (`lambda`, `cnames`, `ctypes`, `envTy`), definiowanym później przez zwykłą pętlę; jej otoczenie to `{ ptr drop, ptr copy, przechwycone... }` na stercie, więc `finch_fn_copy` / `finch_fn_drop` (runtime) kopiują i zwalniają każdą wartość-funkcję bez wiedzy o jej zawartości. Przechwycone zmienne to kopie zrobione w chwili obliczenia lambdy (`lambdaExpr`, `envHelpers`), w niej tylko do odczytu (`Var.captured`) |
+| `T?` | `{ i1 jest, T wartość }`; posiadające, gdy `T` jest. Kopiowanie i zwalnianie sprawdzają flagę (`copyFn` / `dropFn`, rodzaj `"opt"`). `T` i `null` wchodzą same (`coerce`); wychodzi tylko przez `orSource()` (`x or ...`), `ifSome()` (`if v := x`) i `== null` |
+| interfejs | `{ ptr pudełko, ptr tablica }`: własna kopia wartości na stercie i stała tablica `[drop, copy, format, metody...]` dla każdej pary (typ, interfejs) (`ifaceTable`, `boxHelpers`). Wywołanie metody bierze wpis k+3 i podaje pudełko jako `self` (`ifaceCall`). Spełnianie jest strukturalne i sprawdzane przy zamianie wartości (`toIface` → `ifaceMethod`); `finch_iface_copy` / `finch_iface_drop` w runtime |
 | parametr `mut T x` | miejsce wywołującego (przekazywany jest adres, `mutArg()` / `mutPlace()`): bez kopii i bez zwalniania; `checkMutArgs()` odrzuca tę samą zmienną w innym argumencie posiadającym albo `mut` i jako odbiorcę |
 | mapy | są właścicielami kluczy i wartości tak jak tablice elementów; `m[k] = v` przenosi albo kopiuje `v` i zwalnia starą wartość |
 

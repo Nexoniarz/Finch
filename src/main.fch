@@ -517,6 +517,9 @@ fn main([]str args) -> int {
         diag.passOn(err)
         return 1
     }
+    for f in ci.cppFiles {
+        links.push(f)               // the C wrappers of a C++ header, built with the C++ compiler
+    }
     []str testModules
     for prog in loader.progs {
         if !prog.path.starts_with(loader.std + "/") {

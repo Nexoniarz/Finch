@@ -43,6 +43,8 @@ compiler works inside. For that, see the [guide for engineers](for-engineers.md)
 30. [C++, Rust and Android](#30-c-rust-and-android)
 31. [Vectors (SIMD)](#31-vectors-simd)
 32. [Assembly inside Finch: asm](#32-assembly-inside-finch-asm)
+33. [Optional values: T?](#33-optional-values-t)
+34. [Interfaces](#34-interfaces)
 
 ---
 
@@ -1286,7 +1288,6 @@ write_file(path.join("out", "config.json"), json.pretty(doc))
 
 Not there yet:
 
-- Interfaces.
 - Unicode-aware text: `.len`, `s[i]` and `upper()` work on bytes / ASCII.
 - Checks that stop two threads from changing the same array at once (use a mutex).
 - Windows on ARM64, 32-bit systems, WebAssembly.
@@ -1416,24 +1417,41 @@ is there and says whether it did. `thread.cpus()` says how many threads the mach
 
 ## 30. C++, Rust and Android
 
-Finch talks to other languages through C, the way every language does.
+**C++**: import the header itself. Finch reads it as C++ when it isn't C (namespaces, classes, `.hpp`):
 
-**C++**: put what Finch calls behind a C header, with `extern "C"` on the C++ side:
+```c
+import "imgui.h"                       // Dear ImGui, as it comes
+link "imgui.cpp"                       // and its code, like any library
 
-```cpp
-// glue.h
-#ifdef __cplusplus
-extern "C" {
-#endif
-int physics_step(float dt);
-#ifdef __cplusplus
-}
-#endif
+ImGui.Begin("Tools")                   // a function in a namespace: Namespace.function
+if ImGui.Button("OK") { ... }          // default arguments are filled in by C++
+ImGui.TextWrapped(message)             // printf-style functions print the text as it is
+ImGui.End()
 ```
 
-and `import "glue.h"` with `link "glue.cpp"` (or `links = ["glue.cpp"]` in `finch.toml`). The `.cpp` file is built with
-the C++ compiler (`clang++` or `g++`, or `FINCH_CXX`), which then also links, so the C++ library comes along.
-A C++ library that has a C API (Box2D 3, Jolt's JoltC, PhysX's C wrapper) is imported like any C library.
+| C++ | Finch |
+|---|---|
+| `ns::f(a, b)` | `ns.f(a, b)` (nested namespaces joined with `_`: `outer_inner.f`) |
+| a function in no namespace | `f(a, b)` |
+| `obj->method(x)` | `obj.method(x)`, on a pointer to the class or on a struct |
+| `Class::stat(x)` | `Class.stat(x)` |
+| `new Class(a)`, `delete p` | `Class.new(a)` (a `ptr[Class]`), `p.delete()` |
+| default arguments | leave them out, as in C++ |
+| overloads | the one that fits the arguments |
+| `T &` | a pointer (`addr(x)`), or a copy for `const T &` of a number or a plain struct |
+| a plain struct (public fields, no virtual, plain copy) | a Finch struct: `Vec2(1.0, 2.0)`, by value |
+| any other class | used through a pointer only |
+| `enum class Mode { Fast }` | `Mode_Fast`; plain enums keep their names |
+| an exception | a runtime error: `runtime error: a C++ exception: negative number` |
+
+How it works: Finch writes a small C++ file of `extern "C"` functions, one for each function, method, constructor and
+destructor (one for each number of arguments where some have defaults), and a C header that describes them, into its
+cache folder. It imports that header like any C header and builds the C++ file with your program; the linker then
+leaves out the ones you don't call. Templates, operators and functions that take things like `std::string` by value
+are not available (calling one says why); a C wrapper of your own still works for those.
+
+A C++ library with a C API (Box2D 3, Jolt's JoltC, PhysX's C wrapper) is imported like any C library, and your own
+`.cpp` files can be linked with `link "glue.cpp"` (built with `clang++` or `g++`, or `FINCH_CXX`).
 
 **Rust**: make a `staticlib` and export C functions:
 
@@ -1681,3 +1699,90 @@ asm("mov rcx, 4\n imul {m}, rcx", mut m, scratch: "rcx")         // rcx is used,
 - The compiler assumes the instructions may read and write memory and the flags, so it never moves your code around
   them. Instructions for another processor fail at build time, so keep them behind `--target` or two versions of a
   function; `cpu_has(...)` tells which features the processor running the program has.
+
+---
+
+## 33. Optional values: T?
+
+`T?` is a `T` that may be missing. It is how a function says "I found nothing" without an error and without a
+made-up value like -1:
+
+```c
+fn find(map[str]Person people, str name) -> Person? {
+    if people.has(name) {
+        return people[name]        // a Person goes in as it is
+    }
+    return null                    // or nothing
+}
+```
+
+A `Person?` can't be used as a `Person` until you say what happens when it is missing. There are three ways:
+
+```c
+p := find(people, "ann") or guest          // a fallback
+p := find(people, "ann") or {              // or a block that leaves (return, break, continue, exit)
+    print("no Ann")
+    return
+}
+if p := find(people, "ann") {              // or only when it is there
+    print(p.name)
+} else {
+    print("no Ann")
+}
+if find(people, "zed") == null { ... }     // and the question itself
+```
+
+- Any type can be optional: `int?`, `str?`, `[]int?` (a list of maybe-numbers), struct fields (`str? nickname`).
+  A variable `int? x` with nothing given starts as `null`. `print` shows `null` or the value.
+- A `ptr` can already be `null`, so `ptr[T]?` is not needed (and not allowed).
+- Using one directly is an error that says what to do: `'x' must be int, but this is int?, which may be null`,
+  `this is P?, which may be null, so it has no '.name' until it is checked`.
+
+---
+
+## 34. Interfaces
+
+An interface names what a type can do. **Any** struct or enum that has those methods is one: there is nothing more
+to write.
+
+```c
+interface Shape {
+    fn area() -> float
+    fn name() -> str
+}
+
+struct Circle {
+    float r
+}
+
+fn Circle.area() -> float {
+    return 3.14159 * self.r * self.r
+}
+
+fn Circle.name() -> str {
+    return "circle"
+}
+
+// Rect has area() and name() too, so it is a Shape as well
+
+fn total([]Shape shapes) -> float {
+    sum := 0.0
+    for s in shapes {
+        sum += s.area()            // each one's own area()
+    }
+    return sum
+}
+
+[]Shape shapes = [Circle(1.0), Rect(2.0, 3.0)]
+print(total(shapes), shapes)
+```
+
+- An interface value keeps its own copy of the value (like everything in Finch): changing it through a method that
+  changes `self` changes that copy, and assigning it copies it.
+- They go anywhere a type goes: lists, struct fields, `Shape?`, function parameters and results, `sort_by`.
+- The methods must match exactly (the same parameter types, result, and `!`). If one is missing or different, the
+  error says so: `Sq can't be a Shape: it has no method area() -> float` with `help: add  fn Sq.area() -> float { ... }`.
+- A list of different types needs the interface type written: `[]Shape shapes = [...]`.
+- An interface value can't be turned back into the type inside it; use its methods.
+- `print(shape)` shows the value inside: `Circle(r: 1)`. A `Shape` with nothing in it yet prints `null`, and calling
+  a method on it stops the program with a clear message.

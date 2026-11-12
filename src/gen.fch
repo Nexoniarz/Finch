@@ -348,6 +348,20 @@ fn indexAll(ptr[Gen] g, []str mainImports) {
             g.idx.push("@SF\t" + sd.module + "\t" + sd.name + "\t" + sd.fnames[k] + "\t" + ast.show(sd.ftypes[k]))
         }
     }
+    // interfaces: a type for the outline, and their methods for completion after  shape.
+    for ii in 0..g.ifaces.len {
+        d := ifaceDef(g, ast.Type(kind: "iface", name: g.ifaces[ii].name, module: g.ifaces[ii].module))
+        node := g.progs[d.prog].ifaces[d.index]
+        g.idx.push("@S\t" + d.module + "\t" + d.name + "\t" + g.files[node.file] + "\t" + str(node.line) + "\t" + str(node.col))
+        for k in 0..d.mnames.len {
+            m := node.kids[k]
+            []str ps
+            for prm in m.kids {
+                ps.push(ast.show(d.mtypes[k].elem[ps.len + 1]) + " " + prm.name)
+            }
+            g.idx.push("@F\t" + d.module + "\t" + d.mnames[k] + "\t" + d.name + "\t" + g.files[m.file] + "\t" + str(m.line) + "\t" + str(m.col) + "\t" + str(m.line) + "\t" + esc("fn " + d.name + "." + methodText(d.mnames[k], d.mtypes[k])) + "\t" + ps.join("|"))
+        }
+    }
     for pi in 0..g.progs.len {
         for en in g.progs[pi].enums {
             vs := ""
@@ -5561,6 +5575,10 @@ fn cLL(ptr[Gen] g, ast.Type t) -> str {
 }
 
 fn callC(ptr[Gen] g, ast.Node c, cimport.CFunc f) -> Val {
+    shownName := f.name
+    if f.shown.len > 0 {
+        shownName = f.shown           // a C++ function: its name in the program, not its wrapper's
+    }
     if g.index {
         []str ps
         for p in f.params {
@@ -5572,22 +5590,22 @@ fn callC(ptr[Gen] g, ast.Node c, cimport.CFunc f) -> Val {
         noteRef(g, c, c.col, f.name.len, "C function from `" + f.header + "`\n```c\n" + ast.show(f.ret) + " " + f.name + "(" + ps.join(", ") + ")\n```", "", 0, 0)
     }
     if f.unsupported.len > 0 {
-        fail(g, c, "the C function '" + f.name + "' can't be used from Finch yet: it " + f.unsupported)
+        fail(g, c, "the C function '" + shownName + "' can't be used from Finch yet: it " + f.unsupported)
     }
     have := c.kids.len
     if f.variadic {
         if have < f.params.len {
-            fail(g, c, "'" + f.name + "' takes at least " + str(f.params.len) + " argument(s), but got " + str(have))
+            fail(g, c, "'" + shownName + "' takes at least " + str(f.params.len) + " argument(s), but got " + str(have))
         }
     } else if have != f.params.len {
-        fail(g, c, "'" + f.name + "' takes " + str(f.params.len) + " argument(s), but got " + str(have))
+        fail(g, c, "'" + shownName + "' takes " + str(f.params.len) + " argument(s), but got " + str(have))
     }
     ret := resolve(g, f.ret, c)
-    checkByValue(g, c, f.name, ret, "returns")
+    checkByValue(g, c, shownName, ret, "returns")
     []ast.Type ptypes
     for p in f.params {
         pt := resolve(g, p, c)
-        checkByValue(g, c, f.name, pt, "takes")
+        checkByValue(g, c, shownName, pt, "takes")
         ptypes.push(pt)
     }
     pl := makePlan(g, ret, ptypes)
@@ -5605,7 +5623,7 @@ fn callC(ptr[Gen] g, ast.Node c, cimport.CFunc f) -> Val {
         if i < f.params.len {
             pt := ptypes[i]
             a := pl.params[i]
-            v := coerce(g, argWant(g, c.kids[i], pt), pt, c.kids[i], "argument " + str(i + 1) + " of " + f.name)
+            v := coerce(g, argWant(g, c.kids[i], pt), pt, c.kids[i], "argument " + str(i + 1) + " of " + shownName)
             temps.push(v)
             hold(g, v)
             if a.kind == "memory" {
@@ -6047,6 +6065,13 @@ fn call(ptr[Gen] g, ast.Node c) -> Val {
     }
     if ["f32_bits", "f32_from_bits", "f64_bits", "f64_from_bits", "f16_to_f32", "f32_to_f16", "bf16_to_f32", "f32_to_bf16"].contains(n) && !g.ci.fns.has(n) {
         return bitsCall(g, c)
+    }
+    if g.ci.cppNames.has(n) || g.ci.cppSkipped.has(n) {
+        []ast.Node args
+        for k in c.kids {
+            args.push(k)
+        }
+        return cppCall(g, c, n, n, args, "")
     }
     if g.ci.fns.has(n) && !["min", "max", "abs", "clamp"].contains(n) {
         return callC(g, c, g.ci.fns[n])        // (C's abs only takes an int; Finch's takes any number)
@@ -6578,6 +6603,129 @@ fn ifaceCall(ptr[Gen] g, Val iv, ast.Node m, str shownType) -> Val {
     release(g, iv)
     heldEnd(g, mark)
     return r
+}
+
+// ---------- C++ (see cimport.fch: each function has C wrappers, one per number of arguments and per overload) ----------
+
+fn cppSpace(ptr[Gen] g, str name) -> bool {
+    for k in g.ci.cppNames.keys() {
+        if k.starts_with(name + ".") {
+            return true
+        }
+    }
+    return false
+}
+
+// how well a wrapper fits the arguments, from what the arguments are written as (literals); -1: it can't
+fn cppFit(ptr[Gen] g, cimport.CFunc f, []ast.Node args, int first) -> int {
+    score := 0
+    for i in 0..args.len {
+        pt := f.params[first + i]
+        k := args[i].kind
+        num := isNumber(pt) || pt.kind == "char" || pt.kind == "enum"
+        if k == "str" {
+            if pt.kind == "str" || pt.kind == "ptr" {
+                score += 2
+            } else {
+                return -1
+            }
+        } else if k == "int" {
+            if num {
+                score += 2
+                if isInt(pt) {
+                    score += 1
+                }
+            } else {
+                return -1
+            }
+        } else if k == "float" {
+            if isFloat(pt) {
+                score += 2
+            } else if num {
+                score += 1
+            } else {
+                return -1
+            }
+        } else if k == "bool" {
+            if pt.kind == "bool" {
+                score += 2
+            } else {
+                return -1
+            }
+        } else if k == "null" {
+            if pt.kind == "ptr" {
+                score += 2
+            } else {
+                return -1
+            }
+        } else if k == "var" {
+            id := lookup(g, args[i].name)
+            if id >= 0 {
+                vt := varAt(g, id).ty
+                if ast.same(vt, pt) {
+                    score += 3
+                } else if (isNumber(vt) && (isNumber(pt) || pt.kind == "enum")) || (vt.kind == "ptr" && pt.kind == "ptr") || (vt.kind == "str" && (pt.kind == "str" || pt.kind == "ptr")) {
+                    score += 1
+                } else if vt.kind == "struct" && pt.kind == "struct" {
+                    return -1
+                }
+            }
+        }
+    }
+    return score
+}
+
+// ImGui.Begin("x"), win.SetSize(8, 6), Thing.new(): the wrapper that fits, called like a C function.
+// selfAddr: the object, for a method ("" otherwise)
+fn cppCall(ptr[Gen] g, ast.Node at, str key, str shown, []ast.Node args, str selfAddr) -> Val {
+    if !g.ci.cppNames.has(key) {
+        fail(g, at, shown + " can't be used from Finch yet: it " + g.ci.cppSkipped[key])
+    }
+    first := 0
+    if selfAddr.len > 0 {
+        first = 1
+    }
+    best := ""
+    bestScore := -1
+    []int counts
+    for w in g.ci.cppNames[key] {
+        f := g.ci.fns[w]
+        if f.params.len - first != args.len {
+            if !counts.contains(f.params.len - first) {
+                counts.push(f.params.len - first)
+            }
+            continue
+        }
+        sc := cppFit(g, f, args, first)
+        if sc > bestScore {
+            best = w
+            bestScore = sc
+        }
+    }
+    if best.len == 0 {
+        []str cs
+        for n in counts {
+            cs.push(str(n))
+        }
+        if counts.len == 0 {
+            fail(g, at, shown + " doesn't take " + str(args.len) + " argument(s) with these types")
+        }
+        fail(g, at, shown + " takes " + cs.join(" or ") + " argument(s), but got " + str(args.len))
+    }
+    f := g.ci.fns[best]
+    f.shown = shown
+    c := ast.Node(kind: "call", name: best, line: at.line, col: at.col, file: at.file)
+    if selfAddr.len > 0 {
+        tmp := "$cself" + str(g.nvars)
+        addVar(g, at, tmp, T("ptr"), selfAddr, true, false)
+        c.kids.push(ast.Node(kind: "var", name: tmp, line: at.line, col: at.col, file: at.file))
+        c.names.push("")
+    }
+    for a in args {
+        c.kids.push(a)
+        c.names.push("")
+    }
+    return callC(g, c, f)
 }
 
 // ---------- functions as values ----------
@@ -7255,6 +7403,17 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
     }
     if objNode.kind == "var" && lookup(g, objNode.name) < 0 {
         mn := objNode.name
+        key := mn + "." + m.name
+        if !imports(g, mn) && (g.ci.cppNames.has(key) || g.ci.cppSkipped.has(key)) {
+            []ast.Node args
+            for k in 1..m.kids.len {
+                args.push(m.kids[k])
+            }
+            return cppCall(g, m, key, key, args, "")
+        }
+        if !imports(g, mn) && cppSpace(g, mn) {
+            fail(g, m, "the C++ namespace or class '" + mn + "' has no function '" + m.name + "' that Finch can see (only what its header declares, not templates or operators)")
+        }
         if !imports(g, mn) {
             fail(g, objNode, "there is no variable or module named '" + mn + "' (to use a module, add  import " + mn + "  at the top)")
         }
@@ -7400,6 +7559,15 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
                     fi = instFn(g, mti, g.structs[sdi].targs, st, m)
                 }
             }
+        }
+        if fi < 0 && st.kind == "struct" && st.module == "C" && (g.ci.cppNames.has(st.name + "#" + m.name) || g.ci.cppSkipped.has(st.name + "#" + m.name)) {
+            []ast.Node args
+            for k in 1..m.kids.len {
+                args.push(m.kids[k])
+            }
+            out := cppCall(g, m, st.name + "#" + m.name, st.name + "." + m.name, args, selfAddr)
+            heldEnd(g, mark)
+            return out
         }
         if fi < 0 && st.kind == "struct" {
             // a field that holds a function: button.on_click()

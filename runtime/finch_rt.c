@@ -199,6 +199,14 @@ void finch_fn_drop(FFn *f) {
     f->env = NULL;
 }
 
+// A C++ function Finch called through its wrapper threw: a runtime error that says what it was.
+__attribute__((noreturn)) void finch_cpp_failed(const char *what) {
+    char msg[600];
+    snprintf(msg, sizeof msg, "runtime error: a C++ exception: %s", what ? what : "");
+    fflush(stdout);
+    fatal(msg);
+}
+
 // An interface value is { box, table }: the table starts with how to drop, copy and format what is in the box.
 typedef struct {
     void *data;

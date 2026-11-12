@@ -17,6 +17,7 @@ struct CFunc {
     ast.Type ret
     []ast.Type params
     bool variadic
+    str shown           // the name the program uses, when it isn't the C name (a C++ function's wrapper)
     bool inline         // static inline in the header: called through a pointer a small C file keeps (finch_inl_name)
     str unsupported     // non-empty: why Finch can't call it (yet)
 }
@@ -67,6 +68,10 @@ struct CImports {
     map[str]ast.Type globals
     map[str]CStruct structs
     []str structOrder   // the order they were defined in
+    map[str][]str cppNames      // C++: name in Finch (ImGui.Begin, Window#resize, f) -> its wrappers (C functions)
+    map[str]str cppSkipped      // C++: name in Finch -> why it can't be called
+    []str cppFiles              // C++: the wrapper files to build and link
+    map[str]bool cppOpaque      // C++: classes used only through pointers
 }
 
 // A header to read: the path as written, and where it was written, for error messages.
@@ -117,11 +122,16 @@ fn fixed(ast.Type elem, int count) -> ast.Type {
 
 // Ask the system C compiler where it looks for headers, so we find the same stdio.h it would.
 fn systemIncludeArgs(str cc) -> []str {
+    return systemIncludeArgsFor(cc, "c")
+}
+
+// where the compiler finds <stdio.h> (lang "c") or <vector> (lang "c++")
+fn systemIncludeArgsFor(str cc, str lang) -> []str {
     []str dirs
     tmp := host.tempDir() + "/finch_cc_dirs_" + str(host.pid()) + ".txt"
     empty := host.tempDir() + "/finch_empty_" + str(host.pid()) + ".c"
     write_file(empty, "")
-    host.run(cc + " -E -v -x c " + host.quote(empty) + " 2> " + host.quote(tmp) + " > " + host.nullDevice())
+    host.run(cc + " -E -v -x " + lang + " " + host.quote(empty) + " 2> " + host.quote(tmp) + " > " + host.nullDevice())
     host.remove(empty)
     if !file_exists(tmp) {
         return dirs
@@ -303,6 +313,17 @@ fn mapType(ptr[Importer] imp, CXType type, bool signature, bool param) -> Mapped
         }
         if pointee.kind == CXType_Void || pointee.kind == CXType_FunctionProto || pointee.kind == CXType_FunctionNoProto {
             return ok(ast.simple("ptr"))        // an opaque `ptr` you can pass around
+        }
+        if pointee.kind == CXType_Record && clang_Type_getSizeOf(pointee) < 0 {
+            // a C++ class seen only from outside: a typed pointer, so its methods can be called on it
+            nm := recordName(imp, pointee)
+            if imp.out.cppOpaque.has(nm) {
+                if !imp.out.structs.has(nm) {
+                    imp.out.structs[nm] = CStruct(name: nm, size: 0, align: 1, unsupported: "is a C++ class: Finch uses it through a pointer (" + nm + ".new(...) makes one)")
+                    imp.out.structOrder.push(nm)
+                }
+                return ok(ast.ptrTo(ast.Type(kind: "named", name: nm, module: "C")))
+            }
         }
         inner := mapType(imp, pointee, false, false)
         if !inner.ok || inner.ty.kind == "void" || inner.ty.kind == "fixed" {
@@ -628,7 +649,27 @@ fn importHeaders([]Header headers, []str dirs, str target, bool windows, str ccF
         argv.push(args[i].ptr)
     }
     index := clang_createIndex(0, 0)
-    for h in headers {
+    for hh in headers {
+        h := hh
+        if !looksLikeC(index, h, argv) {
+            res := translateCpp(index, h, args, ccFor)
+            if !res.ok {
+                return error(h.where + ": error: the header '" + h.path + "' " + res.why)
+            }
+            for k in res.names.keys() {
+                imp.out.cppNames[k] = res.names[k]
+            }
+            for k in res.skipped.keys() {
+                if !imp.out.cppNames.has(k) {
+                    imp.out.cppSkipped[k] = res.skipped[k]
+                }
+            }
+            imp.out.cppFiles.push(res.cppfile)
+            for o in res.opaque {
+                imp.out.cppOpaque[o] = true
+            }
+            h = Header(path: res.cheader, where: h.where)
+        }
         src := "#include \"" + h.path + "\"\n"
         file := host.unsavedFile("finch_import.c", src)
         ptr tu = null
@@ -663,6 +704,36 @@ fn importHeaders([]Header headers, []str dirs, str target, bool windows, str ccF
     }
     clang_disposeIndex(index)
     return imp.out
+}
+
+// Does the header read as C? A C++ header (namespaces, classes, references) gives C errors other than a missing file.
+fn looksLikeC(ptr index, Header h, []ptr[char] argv) -> bool {
+    if h.path.ends_with(".hpp") || h.path.ends_with(".hh") || h.path.ends_with(".hxx") || h.path.ends_with(".h++") {
+        return false
+    }
+    src := "#include \"" + h.path + "\"\n"
+    file := host.unsavedFile("finch_probe.c", src)
+    ptr tu = null
+    err := clang_parseTranslationUnit2(index, "finch_probe.c", argv.ptr, i32(argv.len), addr(file), 1, u32(CXTranslationUnit_SkipFunctionBodies), addr(tu))
+    if err != CXError_Success || tu == null {
+        return true                 // the real import says what is wrong
+    }
+    out := true
+    nd := int(clang_getNumDiagnostics(tu))
+    for k in 0..nd {
+        d := clang_getDiagnostic(tu, u32(k))
+        msg := text(clang_getDiagnosticSpelling(d))
+        if clang_getDiagnosticSeverity(d) >= CXDiagnostic_Error {
+            if !msg.contains("file not found") {
+                out = false
+            } else if msg.starts_with("'") && !msg.sub(1, msg.len).sub(0, msg.sub(1, msg.len).find("'")).contains(".") {
+                out = false         // <string>, <vector>: only C++ has headers without an extension
+            }
+        }
+        clang_disposeDiagnostic(d)
+    }
+    clang_disposeTranslationUnit(tu)
+    return out
 }
 
 // #defines that are expressions: each becomes `static const __auto_type __finch_m_NAME = (NAME);`
@@ -789,4 +860,554 @@ fn visitMacroVar(CXCursor c, CXCursor parent, ptr data) -> i32 {
     }
     clang_EvalResult_dispose(r)
     return CXChildVisit_Continue
+}
+
+// ---------- C++ headers ----------
+//
+// A header that isn't C (namespaces, classes, references, default arguments) is read as C++. Finch then writes two
+// files into its cache, both made from the header:
+//   a C++ file of small `extern "C"` functions, one per function, method, constructor and destructor (and one per
+//   number of arguments, where some have defaults: C++ itself fills in the rest);
+//   a C header that says what those functions and the plain structs look like,
+// imports that C header like any other, and links the C++ file. In the program:
+//   ImGui.Button("OK")          a function in a namespace (nested ones joined with _: outer_inner.f)
+//   win.SetSize(800, 600)       a method, on a pointer to the class or on a struct
+//   Thing.new(1, 2)             a constructor: a ptr[Thing];  t.delete()  the destructor
+// A C++ exception becomes a runtime error that says what it was.
+
+struct CppTy {
+    bool ok
+    str why
+    str c           // as the C header writes it
+    str cpp         // as the C++ wrapper writes the parameter or result
+    str pre         // what turns the C value into the C++ argument: pre + name + post
+    str post
+    bool plain      // a C-layout value (numbers, enums, plain structs): a `const T&` can take a copy
+}
+
+struct CppGen {
+    ptr tu
+    str header
+    str prefix
+    int n
+    []str decls                 // the C header: structs and enums, in an order C accepts
+    []str protos                // the C header: the wrappers
+    []str bodies                // the C++ file: the wrappers
+    map[str]str records         // record USR -> its C name
+    map[str]bool layout         // C name -> true if it is a plain struct the C header spells out
+    map[str][]str names         // name in Finch -> the wrappers (one per number of arguments, per overload)
+    map[str]str skipped         // name in Finch -> why it couldn't be wrapped
+    []str spaces                // the namespace path while visiting
+    str owner                   // the class being visited, as C names it ("" outside a class)
+    str ownerCpp                // and as C++ names it
+}
+
+struct CppResult {
+    bool ok
+    str why
+    str cheader
+    str cppfile
+    map[str][]str names
+    map[str]str skipped
+    []str opaque
+}
+
+fn cppHash(str s) -> str {
+    h := 7
+    for c in s {
+        h = (h * 31 + int(c)) % 1000000007
+    }
+    if h < 0 {
+        h = -h
+    }
+    return str(h)
+}
+
+fn cppSpell(CXType t) -> str {
+    return text(clang_getTypeSpelling(t))
+}
+
+fn cppCName(str spelled) -> str {
+    s := spelled.replace("::", "_").replace("<", "_").replace(",", "_").replace("*", "p").replace("&", "r")
+    out := ""
+    for ch in s {
+        if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' {
+            out = out + str(ch)
+        }
+    }
+    while out.starts_with("_") {
+        out = out.sub(1, out.len)
+    }
+    if out.starts_with("struct") {
+        out = out.sub(6, out.len)
+    }
+    if out.starts_with("class") {
+        out = out.sub(5, out.len)
+    }
+    return out
+}
+
+fn cppNo(str why) -> CppTy {
+    return CppTy(ok: false, why: why)
+}
+
+// the names of what can be numbers in both languages
+fn cppBuiltin(CXType t) -> bool {
+    k := t.kind
+    return k == CXType_Bool || k == CXType_Char_U || k == CXType_UChar || k == CXType_UShort || k == CXType_UInt ||
+           k == CXType_ULong || k == CXType_ULongLong || k == CXType_Char_S || k == CXType_SChar || k == CXType_Short ||
+           k == CXType_Int || k == CXType_Long || k == CXType_LongLong || k == CXType_Float || k == CXType_Double
+}
+
+// A C++ type as the two files write it.
+fn cppType(ptr[CppGen] gen, CXType type) -> CppTy {
+    t := clang_getCanonicalType(type)
+    k := t.kind
+    if k == CXType_Void {
+        return CppTy(ok: true, c: "void", cpp: "void")
+    }
+    if cppBuiltin(t) {
+        s := cppSpell(t).replace("const ", "")
+        return CppTy(ok: true, c: s, cpp: s, plain: true)
+    }
+    if k == CXType_Enum {
+        it := cppSpell(clang_getCanonicalType(clang_getEnumDeclIntegerType(clang_getTypeDeclaration(t))))
+        return CppTy(ok: true, c: it, cpp: it, pre: "(" + cppSpell(t).replace("const ", "") + ")(", post: ")", plain: true)
+    }
+    if k == CXType_Pointer {
+        p := clang_getCanonicalType(clang_getPointeeType(t))
+        if p.kind == CXType_FunctionProto || p.kind == CXType_FunctionNoProto || cppSpell(t).contains("(") {
+            // functions, and pointers to them: a plain pointer, cast back in the wrapper
+            return CppTy(ok: true, c: "void *", cpp: "void *", pre: "reinterpret_cast<" + cppSpell(t) + ">(", post: ")")
+        }
+        cq := ""
+        if clang_isConstQualifiedType(p) != 0 {
+            cq = "const "
+        }
+        if p.kind == CXType_Void {
+            return CppTy(ok: true, c: cq + "void *", cpp: cppSpell(t))
+        }
+        if p.kind == CXType_Record {
+            return CppTy(ok: true, c: cq + cppRecord(gen, p) + " *", cpp: cppSpell(t))
+        }
+        inner := cppType(gen, p)
+        if !inner.ok {
+            return inner
+        }
+        if p.kind == CXType_Enum {
+            return CppTy(ok: true, c: cq + inner.c + " *", cpp: cq + inner.c + " *", pre: "reinterpret_cast<" + cppSpell(t) + ">(", post: ")")
+        }
+        return CppTy(ok: true, c: cq + inner.c + " *", cpp: cppSpell(t))
+    }
+    if k == CXType_LValueReference || k == CXType_RValueReference {
+        p := clang_getCanonicalType(clang_getPointeeType(t))
+        isConst := clang_isConstQualifiedType(p) != 0
+        if p.kind == CXType_Record {
+            rn := cppRecord(gen, p)
+            if !(isConst && gen.layout.has(rn)) {
+                cq := ""
+                if isConst {
+                    cq = "const "
+                }
+                return CppTy(ok: true, c: cq + rn + " *", cpp: cppSpell(p) + " *", pre: "*", post: "")
+            }
+        }
+        inner := cppType(gen, p)
+        if !inner.ok {
+            return inner
+        }
+        if isConst && inner.plain {
+            return inner                // const T&: the wrapper takes a copy and lends it
+        }
+        cq := ""
+        if isConst {
+            cq = "const "
+        }
+        if p.kind == CXType_Enum {
+            return CppTy(ok: true, c: cq + inner.c + " *", cpp: cq + inner.c + " *", pre: "*reinterpret_cast<" + cppSpell(p) + " *>(", post: ")")
+        }
+        return CppTy(ok: true, c: cq + inner.c + " *", cpp: cppSpell(p) + " *", pre: "*", post: "")
+    }
+    if k == CXType_Record {
+        name := cppRecord(gen, t)
+        if !gen.layout.has(name) {
+            return cppNo("passes the C++ class " + cppSpell(t) + " by value (it can be used through a pointer)")
+        }
+        return CppTy(ok: true, c: name, cpp: cppSpell(t).replace("const ", ""), plain: true)
+    }
+    return cppNo("uses the C++ type " + cppSpell(t) + ", which Finch can't pass yet")
+}
+
+struct CppFields {
+    ptr[CppGen] gen
+    []str lines
+    bool plain
+}
+
+fn cppVisitRecordPart(CXCursor c, CXCursor parent, ptr data) -> i32 {
+    ptr[CppFields] f = data
+    kind := clang_getCursorKind(c)
+    if kind == CXCursor_CXXBaseSpecifier {
+        f.plain = false
+    } else if kind == CXCursor_CXXMethod && clang_CXXMethod_isVirtual(c) != 0 {
+        f.plain = false
+    } else if kind == CXCursor_Constructor && clang_CXXMethod_isDefaulted(c) == 0 && (clang_CXXConstructor_isCopyConstructor(c) != 0 || clang_CXXConstructor_isMoveConstructor(c) != 0) {
+        f.plain = false             // its own copy: C++ passes it differently from a C struct
+    } else if kind == CXCursor_Destructor && clang_CXXMethod_isDefaulted(c) == 0 {
+        f.plain = false
+    } else if kind == CXCursor_FieldDecl {
+        if clang_getCXXAccessSpecifier(c) != CX_CXXPublic || clang_Cursor_isBitField(c) != 0 {
+            f.plain = false
+            return CXChildVisit_Continue
+        }
+        name := text(clang_getCursorSpelling(c))
+        ft := clang_getCanonicalType(clang_getCursorType(c))
+        count := ""
+        if ft.kind == CXType_ConstantArray {
+            count = "[" + str(int(clang_getNumElements(ft))) + "]"
+            ft = clang_getCanonicalType(clang_getArrayElementType(ft))
+        }
+        m := cppType(f.gen, ft)
+        if !m.ok || ft.kind == CXType_LValueReference || ft.kind == CXType_RValueReference {
+            f.plain = false
+            return CXChildVisit_Continue
+        }
+        f.lines.push("    " + m.c + " " + name + count + ";")
+    }
+    return CXChildVisit_Continue
+}
+
+// A record's C name. A plain one (public fields only, no bases, nothing virtual) is spelled out in the C header so
+// Finch can make it and pass it by value; any other is opaque: Finch only holds pointers to it.
+fn cppRecord(ptr[CppGen] gen, CXType type) -> str {
+    t := clang_getCanonicalType(type)
+    decl := clang_getTypeDeclaration(t)
+    usr := text(clang_getCursorUSR(decl))
+    if gen.records.has(usr) {
+        return gen.records[usr]
+    }
+    name := cppCName(cppSpell(t).replace("const ", ""))
+    gen.records[usr] = name
+    gen.decls.push("typedef struct " + name + " " + name + ";")
+    def := clang_getCursorDefinition(decl)
+    if clang_Cursor_isNull(def) != 0 || clang_Type_getSizeOf(t) < 0 {
+        return name
+    }
+    f := CppFields(gen: gen, plain: true)
+    clang_visitChildren(def, addr(cppVisitRecordPart), addr(f))
+    if f.plain && f.lines.len > 0 {
+        gen.decls.push("struct " + name + " {\n" + f.lines.join("\n") + "\n};")
+        gen.layout[name] = true
+    }
+    return name
+}
+
+struct CppDefault {
+    bool found
+}
+
+fn cppVisitDefault(CXCursor c, CXCursor parent, ptr data) -> i32 {
+    ptr[CppDefault] d = data
+    if clang_isExpression(clang_getCursorKind(c)) != 0 {
+        d.found = true
+        return CXChildVisit_Break
+    }
+    return CXChildVisit_Continue
+}
+
+fn cppHasDefault(CXCursor param) -> bool {
+    d := CppDefault()
+    clang_visitChildren(param, addr(cppVisitDefault), addr(d))
+    return d.found
+}
+
+// One function, method, constructor or destructor: a wrapper for each number of arguments it can be called with.
+//   how: "fn" (call = the qualified name), "method" (self->name), "static", "new", "delete"
+fn cppWrap(ptr[CppGen] gen, CXCursor c, str finchName, str how, str call) {
+    nargs := int(clang_Cursor_getNumArguments(c))
+    []CppTy params
+    firstDefault := nargs
+    for k in 0..nargs {
+        a := clang_Cursor_getArgument(c, u32(k))
+        m := cppType(gen, clang_getCursorType(a))
+        if !m.ok {
+            if !gen.names.has(finchName) {
+                gen.skipped[finchName] = m.why
+            }
+            return
+        }
+        if cppHasDefault(a) && firstDefault == nargs {
+            firstDefault = k
+        }
+        params.push(m)
+    }
+    ret := CppTy(ok: true, c: "void", cpp: "void")
+    if how == "new" {
+        ret = CppTy(ok: true, c: gen.owner + " *", cpp: gen.ownerCpp + " *")
+    } else if how != "delete" {
+        rt := clang_getCanonicalType(clang_getCursorResultType(c))
+        ret = cppType(gen, rt)
+        if !ret.ok {
+            if !gen.names.has(finchName) {
+                gen.skipped[finchName] = ret.why.replace("passes", "returns").replace("uses", "returns")
+            }
+            return
+        }
+        if rt.kind == CXType_LValueReference || rt.kind == CXType_RValueReference {
+            ret.pre = "&("             // a reference comes back as a pointer to the same thing
+            ret.post = ")"
+            pointee := clang_getCanonicalType(clang_getPointeeType(rt))
+            if ret.plain && !ret.c.ends_with("*") {
+                cq := ""
+                if clang_isConstQualifiedType(pointee) != 0 {
+                    cq = "const "
+                }
+                ret.c = cq + ret.c + " *"
+                ret.cpp = cppSpell(pointee) + " *"
+            }
+        } else if rt.kind == CXType_Enum {
+            ret.pre = "(" + ret.c + ")("
+            ret.post = ")"
+        } else if ret.c == "void *" && ret.cpp == "void *" && rt.kind == CXType_Pointer {
+            ret.pre = "reinterpret_cast<void *>("      // a function pointer comes back as a plain pointer
+            ret.post = ")"
+        } else {
+            ret.pre = ""
+            ret.post = ""
+        }
+    }
+    variadic := clang_Cursor_isVariadic(c) != 0
+    self := how == "method" || how == "delete"
+    for count in firstDefault..nargs + 1 {
+        wname := gen.prefix + str(gen.n)
+        gen.n += 1
+        []str cps
+        []str cpps
+        []str args
+        if self {
+            cps.push(gen.owner + " *self")
+            cpps.push(gen.ownerCpp + " *self")
+        }
+        for k in 0..count {
+            cps.push(params[k].c + " a" + str(k))
+            cpps.push(params[k].cpp + " a" + str(k))
+            args.push(params[k].pre + "a" + str(k) + params[k].post)
+        }
+        if variadic && count > 0 && params[count - 1].c == "const char *" {
+            last := args.pop()
+            args.push("\"%s\"")         // Text("50%") prints 50%: the text is never a format
+            args.push(last)
+        }
+        expr := ""
+        if how == "new" {
+            expr = "new " + call + "(" + args.join(", ") + ")"
+        } else if how == "delete" {
+            expr = "delete self"
+        } else if how == "method" {
+            expr = "self->" + call + "(" + args.join(", ") + ")"
+        } else {
+            expr = call + "(" + args.join(", ") + ")"
+        }
+        cpl := cps.join(", ")
+        if cpl.len == 0 {
+            cpl = "void"
+        }
+        gen.protos.push(ret.c + " " + wname + "(" + cpl + ");")
+        body := ""
+        if ret.c == "void" {
+            body = expr + ";"
+        } else {
+            body = "return " + ret.pre + expr + ret.post + ";"
+        }
+        never := ""
+        if ret.c != "void" {
+            never = " __builtin_unreachable();"      // a value always came back, or finch_cpp_failed stopped the program
+        }
+        gen.bodies.push("extern \"C\" " + ret.cpp + " " + wname + "(" + cpps.join(", ") + ") { FINCH_TRY " + body + " FINCH_CATCH" + never + " }")
+        if !gen.names.has(finchName) {
+            []str none
+            gen.names[finchName] = none
+        }
+        gen.names[finchName].push(wname)
+        gen.skipped.remove(finchName)
+    }
+}
+
+fn cppFromHeader(ptr[CppGen] gen, CXCursor c) -> bool {
+    ptr file = null
+    u32 line = 0
+    u32 col = 0
+    u32 off = 0
+    clang_getExpansionLocation(clang_getCursorLocation(c), addr(file), addr(line), addr(col), addr(off))
+    if file == null {
+        return false
+    }
+    name := text(clang_getFileName(file)).replace("\\", "/")
+    return name == gen.header || name.ends_with("/" + gen.header)
+}
+
+fn cppPublic(CXCursor c) -> bool {
+    a := clang_getCXXAccessSpecifier(c)
+    return a == CX_CXXPublic || a == CX_CXXInvalidAccessSpecifier
+}
+
+fn cppVisitClass(CXCursor c, CXCursor parent, ptr data) -> i32 {
+    ptr[CppGen] gen = data
+    kind := clang_getCursorKind(c)
+    if !cppPublic(c) || clang_CXXMethod_isDeleted(c) != 0 {
+        return CXChildVisit_Continue
+    }
+    name := text(clang_getCursorSpelling(c))
+    if name.starts_with("operator") || name.starts_with("~") && kind != CXCursor_Destructor {
+        return CXChildVisit_Continue
+    }
+    if kind == CXCursor_CXXMethod {
+        if clang_CXXMethod_isStatic(c) != 0 {
+            cppWrap(gen, c, gen.owner + "." + name, "static", gen.ownerCpp + "::" + name)
+        } else {
+            cppWrap(gen, c, gen.owner + "#" + name, "method", name)
+        }
+    } else if kind == CXCursor_Constructor {
+        if clang_CXXConstructor_isCopyConstructor(c) == 0 && clang_CXXConstructor_isMoveConstructor(c) == 0 {
+            cppWrap(gen, c, gen.owner + ".new", "new", gen.ownerCpp)
+        }
+    } else if kind == CXCursor_Destructor {
+        cppWrap(gen, c, gen.owner + "#delete", "delete", "")
+    }
+    return CXChildVisit_Continue
+}
+
+fn cppVisit(CXCursor c, CXCursor parent, ptr data) -> i32 {
+    ptr[CppGen] gen = data
+    kind := clang_getCursorKind(c)
+    name := text(clang_getCursorSpelling(c))
+    if kind == CXCursor_Namespace {
+        gen.spaces.push(name)
+        clang_visitChildren(c, addr(cppVisit), data)
+        gen.spaces.pop()
+        return CXChildVisit_Continue
+    }
+    if kind == CXCursor_LinkageSpec {
+        clang_visitChildren(c, addr(cppVisit), data)
+        return CXChildVisit_Continue
+    }
+    if !cppFromHeader(gen, c) {
+        return CXChildVisit_Continue
+    }
+    qual := ""
+    for s in gen.spaces {
+        qual = qual + s + "::"
+    }
+    if kind == CXCursor_FunctionDecl {
+        if name.starts_with("operator") || clang_getCursorKind(clang_getCursorSemanticParent(c)) == CXCursor_ClassDecl {
+            return CXChildVisit_Continue
+        }
+        finchName := name
+        if gen.spaces.len > 0 {
+            finchName = gen.spaces.join("_") + "." + name
+        }
+        cppWrap(gen, c, finchName, "fn", "::" + qual + name)
+    } else if (kind == CXCursor_StructDecl || kind == CXCursor_ClassDecl) && clang_isCursorDefinition(c) != 0 && name.len > 0 {
+        t := clang_getCursorType(c)
+        savedO := gen.owner
+        savedC := gen.ownerCpp
+        gen.owner = cppRecord(gen, t)
+        gen.ownerCpp = "::" + qual + name
+        clang_visitChildren(c, addr(cppVisitClass), data)
+        gen.owner = savedO
+        gen.ownerCpp = savedC
+    } else if kind == CXCursor_EnumDecl {
+        // its values, as plain C constants: ImGuiWindowFlags_NoTitleBar
+        clang_visitChildren(c, addr(cppVisitEnum), data)
+    }
+    return CXChildVisit_Continue
+}
+
+fn cppVisitEnum(CXCursor c, CXCursor parent, ptr data) -> i32 {
+    ptr[CppGen] gen = data
+    if clang_getCursorKind(c) == CXCursor_EnumConstantDecl {
+        name := text(clang_getCursorSpelling(c))
+        if clang_EnumDecl_isScoped(parent) != 0 {
+            name = text(clang_getCursorSpelling(parent)) + "_" + name       // enum class Color { Red }: Color_Red
+        }
+        gen.decls.push("#define " + name + " (" + str(int(clang_getEnumConstantDeclValue(c))) + "LL)")
+    }
+    return CXChildVisit_Continue
+}
+
+// the C++ compiler that goes with a C compiler: clang -> clang++, gcc -> g++, cc -> c++
+fn cppCompilerFor(str cc) -> str {
+    if cc.ends_with("clang") {
+        return cc + "++"
+    }
+    if cc.ends_with("gcc") {
+        return cc.sub(0, cc.len - 3) + "g++"
+    }
+    if cc.ends_with("cc") {
+        return cc.sub(0, cc.len - 2) + "c++"
+    }
+    return cc
+}
+
+// Read a C++ header and write its two files. `args` are the C arguments (-I, --target, system folders).
+fn translateCpp(ptr index, Header h, []str baseArgs, str ccFor) -> CppResult {
+    []str args = ["-x", "c++", "-std=c++17"]
+    for a in baseArgs {
+        if a != "-x" && a != "c" && !a.starts_with("-std=") && !a.starts_with("-isystem") && !a.starts_with("-iframework") {
+            args.push(a)
+        }
+    }
+    for d in systemIncludeArgsFor(cppCompilerFor(ccFor), "c++") {
+        args.push(d)
+    }
+    []ptr[char] argv
+    for i in 0..args.len {
+        argv.push(args[i].ptr)
+    }
+    src := "#include \"" + h.path + "\"\n"
+    file := host.unsavedFile("finch_import.cpp", src)
+    ptr tu = null
+    err := clang_parseTranslationUnit2(index, "finch_import.cpp", argv.ptr, i32(argv.len), addr(file), 1, u32(CXTranslationUnit_SkipFunctionBodies), addr(tu))
+    if err != CXError_Success || tu == null {
+        return CppResult(why: "couldn't read it as C or as C++")
+    }
+    nd := int(clang_getNumDiagnostics(tu))
+    for k in 0..nd {
+        d := clang_getDiagnostic(tu, u32(k))
+        if clang_getDiagnosticSeverity(d) >= CXDiagnostic_Error {
+            msg := text(clang_getDiagnosticSpelling(d))
+            clang_disposeDiagnostic(d)
+            clang_disposeTranslationUnit(tu)
+            return CppResult(why: "has an error (as C and as C++): " + msg)
+        }
+        clang_disposeDiagnostic(d)
+    }
+    key := cppHash(h.path + "|" + args.join(" "))
+    gen := CppGen(tu: tu, header: h.path.replace("\\", "/"), prefix: "finch_cpp_" + key + "_")
+    clang_visitChildren(clang_getTranslationUnitCursor(tu), addr(cppVisit), addr(gen))
+    clang_disposeTranslationUnit(tu)
+    dir := host.cacheDir() + "/cpp"
+    host.makeDirs(dir)
+    base := dir + "/" + cppCName(h.path.replace("/", "_").replace(".", "_")) + "_" + key
+    cheader := "// Made by Finch from " + h.path + ": what its C++ wrappers look like from C.\n#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n" +
+               gen.decls.join("\n") + "\n" + gen.protos.join("\n") + "\n"
+    cpp := "// Made by Finch from " + h.path + ": C functions for what it has in C++.\n#include \"" + h.path + "\"\n#include <exception>\n" +
+           "extern \"C\" [[noreturn]] void finch_cpp_failed(const char *what);\n" +
+           "#if defined(__clang__)\n#pragma clang diagnostic ignored \"-Wreturn-type-c-linkage\"\n#endif\n" +
+           "#if defined(__cpp_exceptions) || defined(__EXCEPTIONS)\n" +
+           "#include <cstring>\n" +
+           "static void finch_keep_(char *to, const char *what) { std::strncpy(to, what ? what : \"\", 511); to[511] = 0; }\n" +
+           "// the message is kept and the program stops after the catch, when the exception is gone\n" +
+           "#define FINCH_TRY bool finch_threw_ = false; char finch_what_[512]; try {\n" +
+           "#define FINCH_CATCH } catch (const std::exception &e) { finch_threw_ = true; finch_keep_(finch_what_, e.what()); } catch (...) { finch_threw_ = true; finch_keep_(finch_what_, \"an exception that isn't a std::exception\"); } if (finch_threw_) finch_cpp_failed(finch_what_);\n" +
+           "#else\n#define FINCH_TRY {\n#define FINCH_CATCH }\n#endif\n" + gen.bodies.join("\n") + "\n"
+    write_file(base + ".h", cheader)
+    write_file(base + ".cpp", cpp)
+    []str opaque
+    for k in gen.records.keys() {
+        if !gen.layout.has(gen.records[k]) {
+            opaque.push(gen.records[k])
+        }
+    }
+    return CppResult(ok: true, cheader: base + ".h", cppfile: base + ".cpp", names: gen.names, skipped: gen.skipped, opaque: opaque)
 }

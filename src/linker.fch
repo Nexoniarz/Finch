@@ -47,6 +47,15 @@ fn isOwnCode(str l) -> bool {
     return l.ends_with(".c") || l.ends_with(".o") || l.ends_with(".a") || l.ends_with(".lib") || isCpp(l)
 }
 
+// the C wrappers Finch writes for a C++ header (cimport.fch, translateCpp)
+fn isWrapper(str l) -> bool {
+    if !isCpp(l) {
+        return false
+    }
+    text := read_file(l) or ""
+    return text.starts_with("// Made by Finch from ")
+}
+
 fn isCpp(str l) -> bool {
     return l.ends_with(".cpp") || l.ends_with(".cc") || l.ends_with(".cxx")
 }
@@ -57,7 +66,11 @@ fn cxxFor(str cc) -> str {
         return getenv("FINCH_CXX")
     }
     words := cc.split(" ")
-    first := words[0]
+    at := 0
+    while at < words.len - 1 && words[at].contains("=") {
+        at += 1                         // NIX_ENFORCE_NO_NATIVE=0 clang: settings before the compiler itself
+    }
+    first := words[at]
     if first.ends_with("clang") {
         first = first + "++"
     } else if first.ends_with("gcc") {
@@ -65,7 +78,7 @@ fn cxxFor(str cc) -> str {
     } else if first.ends_with("cc") {
         first = first.sub(0, first.len - 2) + "c++"
     }
-    words[0] = first
+    words[at] = first
     return words.join(" ")
 }
 
@@ -403,6 +416,21 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
         }
     }
     cmd := linkWith + " " + quote(obj) + " " + quote(rtobj) + " -o " + quote(b.out)
+    for l in b.links {
+        if isWrapper(l) {
+            // a C++ header's wrappers cover all it declares: the ones the program doesn't call go, and with them
+            // what they would need (a library's demo code, parts that aren't linked)
+            if tg.darwin {
+                cmd = cmd + " -Wl,-dead_strip"
+            } else {
+                cmd = cmd + " -Wl,--gc-sections"
+            }
+            break
+        }
+    }
+    if tg.windows && linkWith != cc && linkWith.contains("g++") {
+        cmd = cmd + " -static-libgcc -static-libstdc++"     // MinGW's C++ library inside the .exe: no DLLs to carry
+    }
     // static inline C functions the program calls: a C file that keeps a pointer to each
     inl := inlineFile(b.ir, ci)
     if inl.len > 0 {
@@ -449,7 +477,11 @@ fn build(Build b, platform.Target tg, cimport.CImports ci) -> int {
             if isCpp(l) {
                 compiler = cxxFor(cc)
             }
-            o := cObject(l, compiler, " -O2" + pic + b.cflags, tg, log) or {
+            flags := " -O2" + pic + b.cflags
+            if isWrapper(l) {
+                flags = flags + " -ffunction-sections -fdata-sections"     // each wrapper on its own, for the linker to drop
+            }
+            o := cObject(l, compiler, flags, tg, log) or {
                 diag.passOn(err)
                 host.remove(log)
                 return 1

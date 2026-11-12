@@ -60,7 +60,7 @@ jobs:
         run: |
           wget -q https://apt.llvm.org/llvm.sh
           sudo bash llvm.sh 21
-          sudo apt-get install -y libclang-21-dev pkg-config gcc-mingw-w64-x86-64 wine64 gcc-aarch64-linux-gnu qemu-user libc6-arm64-cross
+          sudo apt-get install -y libclang-21-dev pkg-config gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 wine64 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user libc6-arm64-cross
           echo "/usr/lib/llvm-21/bin" >> $GITHUB_PATH
       - name: Build the compiler
         run: |

@@ -15,6 +15,7 @@
       <item>export</item>
       <item>const</item>
       <item>mut</item>
+      <item>interface</item>
     </list>
     <list name="control">
       <item>if</item>

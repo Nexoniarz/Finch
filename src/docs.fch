@@ -143,7 +143,7 @@ fn vecMethods() -> []Doc {
 
 fn keywords() -> []str {
     return ["fn", "return", "if", "else", "while", "for", "in", "break", "continue", "true", "false", "null", "import",
-            "link", "struct", "enum", "match", "export", "defer", "or", "try", "self", "const", "mut"]
+            "link", "struct", "enum", "match", "export", "defer", "or", "try", "self", "const", "mut", "interface"]
 }
 
 fn typeNames() -> []str {

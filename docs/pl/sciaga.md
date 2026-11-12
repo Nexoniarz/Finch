@@ -397,6 +397,15 @@ import ui/button as btn   // pod inną nazwą: btn.draw()
 
 ---
 
+## C++
+
+```
+import "imgui.h"     ImGui.Begin("Narzędzia")     ImGui.Button("OK")     // nagłówek C++, importowany taki, jaki jest
+k := Licznik.new(10)     k.add(5)     k.delete()                        // klasy: new, metody, delete
+```
+Przestrzenie nazw jako `ns.f(...)`, domyślne argumenty pomijane, przeciążenia wybierane po argumentach, `T&` jako
+wskaźnik, wyjątki jako błędy w trakcie działania.
+
 ## C
 
 | Kod | Znaczenie |
@@ -500,6 +509,21 @@ struct Stos[T] { []T el }            fn Stos[T].push(T x) { ... }        // typ 
 s := Stos[int]()     Stos[int] t     Para[str, int]("wiek", 31)          //   nigdy samo Stos()
 ```
 
+## Wartości opcjonalne `T?`
+
+```
+fn znajdz(str imie) -> Osoba? { ... return null }    // Osoba albo nic
+o := znajdz("ania") or gosc        if o := znajdz("ania") { print(o.imie) }       znajdz("x") == null
+int? n          str? ksywka        []int? miejsca = [1, null, 3]                  // zaczyna jako null
+```
+
+## Interfejsy
+
+```
+interface Ksztalt { fn pole() -> float }     // każda struktura albo enum z tymi metodami jest Ksztaltem
+[]Ksztalt ksztalty = [Kolo(1.0), Prostokat(2.0, 3.0)]      for k in ksztalty { print(k.pole()) }
+```
+
 ## Biblioteka standardowa (`import nazwa`; twój plik o tej samej nazwie ma pierwszeństwo)
 
 | | |
@@ -514,5 +538,6 @@ s := Stos[int]()     Stos[int] t     Para[str, int]("wiek", 31)          //   ni
 ## Słowa kluczowe
 
 `fn return if else while for in break continue true false null import link struct enum match defer or try const export mut`
+(`interface` tylko tam, gdzie zaczyna interfejs: `interface Ksztalt { ... }`)
 (`test` i `as` tylko tam, gdzie coś znaczą: `test "nazwa" { }`, `import x as y`)
 (oraz `self` wewnątrz metod)

@@ -43,6 +43,8 @@ i rozwiązywanie typowych problemów. Nie opisuje, jak kompilator działa od śr
 30. [C++, Rust i Android](#30-c-rust-i-android)
 31. [Wektory (SIMD)](#31-wektory-simd)
 32. [Asembler w kodzie Fincha: asm](#32-asembler-w-kodzie-fincha-asm)
+33. [Wartości opcjonalne: T?](#33-wartości-opcjonalne-t)
+34. [Interfejsy](#34-interfejsy)
 
 ---
 
@@ -1292,7 +1294,6 @@ write_file(path.join("out", "config.json"), json.pretty(dok))
 
 Czego jeszcze nie ma:
 
-- Interfejsów.
 - Tekstów świadomych Unicode: `.len`, `s[i]` i `upper()` działają na bajtach / ASCII.
 - Zabezpieczenia przed zmienianiem tej samej tablicy przez dwa wątki naraz (użyj muteksu).
 - Windowsa na ARM64, systemów 32-bitowych, WebAssembly.
@@ -1424,24 +1425,41 @@ tylko wtedy, gdy jest tam `stara`, i mówi, czy to zrobiło. `thread.cpus()` mó
 
 ## 30. C++, Rust i Android
 
-Finch rozmawia z innymi językami przez C, tak jak każdy język.
+**C++**: importuj sam nagłówek. Finch czyta go jako C++, gdy nie jest to C (przestrzenie nazw, klasy, `.hpp`):
 
-**C++**: to, co ma wołać Finch, wystaw przez nagłówek C, z `extern "C"` po stronie C++:
+```c
+import "imgui.h"                       // Dear ImGui, taki, jaki jest
+link "imgui.cpp"                       // i jego kod, jak każda biblioteka
 
-```cpp
-// glue.h
-#ifdef __cplusplus
-extern "C" {
-#endif
-int krok_fizyki(float dt);
-#ifdef __cplusplus
-}
-#endif
+ImGui.Begin("Narzędzia")               // funkcja w przestrzeni nazw: Przestrzen.funkcja
+if ImGui.Button("OK") { ... }          // domyślne argumenty uzupełnia C++
+ImGui.TextWrapped(komunikat)           // funkcje w stylu printf wypisują tekst taki, jaki jest
+ImGui.End()
 ```
 
-i `import "glue.h"` z `link "glue.cpp"` (albo `links = ["glue.cpp"]` w `finch.toml`). Plik `.cpp` kompiluje kompilator
-C++ (`clang++` albo `g++`, albo `FINCH_CXX`), który potem też linkuje, więc biblioteka C++ dołącza się sama.
-Bibliotekę C++ z API w C (Box2D 3, JoltC dla Jolta, nakładka C na PhysX) importuje się jak każdą bibliotekę C.
+| C++ | Finch |
+|---|---|
+| `ns::f(a, b)` | `ns.f(a, b)` (zagnieżdżone przestrzenie łączone `_`: `zewn_wewn.f`) |
+| funkcja poza przestrzenią nazw | `f(a, b)` |
+| `obj->metoda(x)` | `obj.metoda(x)`, na wskaźniku do klasy albo na strukturze |
+| `Klasa::stat(x)` | `Klasa.stat(x)` |
+| `new Klasa(a)`, `delete p` | `Klasa.new(a)` (`ptr[Klasa]`), `p.delete()` |
+| domyślne argumenty | pomiń je, jak w C++ |
+| przeciążenia | ta wersja, która pasuje do argumentów |
+| `T &` | wskaźnik (`addr(x)`) albo kopia dla `const T &` liczby czy zwykłej struktury |
+| zwykła struktura (publiczne pola, bez virtual, zwykła kopia) | struktura Fincha: `Vec2(1.0, 2.0)`, przez wartość |
+| każda inna klasa | tylko przez wskaźnik |
+| `enum class Tryb { Szybki }` | `Tryb_Szybki`; zwykłe enumy zachowują nazwy |
+| wyjątek | błąd w trakcie działania: `runtime error: a C++ exception: negative number` |
+
+Jak to działa: Finch zapisuje w swoim katalogu podręcznym mały plik C++ z funkcjami `extern "C"`, po jednej dla każdej
+funkcji, metody, konstruktora i destruktora (po jednej na każdą liczbę argumentów, gdy niektóre mają wartości
+domyślne), oraz nagłówek C, który je opisuje. Importuje ten nagłówek jak każdy nagłówek C i buduje plik C++ razem
+z programem; linker pomija te, których nie wołasz. Szablony, operatory i funkcje przyjmujące np. `std::string` przez
+wartość nie są dostępne (wywołanie mówi dlaczego); dla nich nadal działa własna nakładka w C.
+
+Bibliotekę C++ z API w C (Box2D 3, JoltC dla Jolta, nakładka C na PhysX) importuje się jak każdą bibliotekę C, a własne
+pliki `.cpp` można dołączyć przez `link "glue.cpp"` (budowane `clang++` albo `g++`, albo `FINCH_CXX`).
 
 **Rust**: zbuduj `staticlib` i wystaw funkcje C:
 
@@ -1693,3 +1711,89 @@ asm("mov rcx, 4\n imul {m}, rcx", mut m, scratch: "rcx")         // rcx jest uż
 - Kompilator zakłada, że instrukcje mogą czytać i zapisywać pamięć oraz flagi, więc nigdy nie przestawia kodu wokół
   nich. Instrukcje dla innego procesora nie zbudują się, więc trzymaj je za `--target` albo w dwóch wersjach funkcji;
   `cpu_has(...)` mówi, jakie możliwości ma procesor, na którym działa program.
+
+---
+
+## 33. Wartości opcjonalne: T?
+
+`T?` to `T`, którego może nie być. Tak funkcja mówi „nic nie znalazłam” bez błędu i bez zmyślonej wartości w rodzaju -1:
+
+```c
+fn znajdz(map[str]Osoba ludzie, str imie) -> Osoba? {
+    if ludzie.has(imie) {
+        return ludzie[imie]        // Osoba wchodzi taka, jaka jest
+    }
+    return null                    // albo nic
+}
+```
+
+`Osoba?` nie może być użyta jako `Osoba`, dopóki nie powiesz, co się dzieje, gdy jej nie ma. Są trzy sposoby:
+
+```c
+o := znajdz(ludzie, "ania") or gosc        // wartość zastępcza
+o := znajdz(ludzie, "ania") or {           // albo blok, który wychodzi (return, break, continue, exit)
+    print("nie ma Ani")
+    return
+}
+if o := znajdz(ludzie, "ania") {           // albo tylko wtedy, gdy jest
+    print(o.imie)
+} else {
+    print("nie ma Ani")
+}
+if znajdz(ludzie, "zenek") == null { ... } // i samo pytanie
+```
+
+- Każdy typ może być opcjonalny: `int?`, `str?`, `[]int?` (lista może-liczb), pola struktur (`str? ksywka`).
+  Zmienna `int? x` bez wartości zaczyna jako `null`. `print` pokazuje `null` albo wartość.
+- `ptr` już może być `null`, więc `ptr[T]?` nie jest potrzebne (i nie jest dozwolone).
+- Użycie wprost to błąd, który mówi, co zrobić: `'x' must be int, but this is int?, which may be null`,
+  `this is P?, which may be null, so it has no '.name' until it is checked`.
+
+---
+
+## 34. Interfejsy
+
+Interfejs nazywa, co typ potrafi. **Każda** struktura albo enum, która ma te metody, nim jest: nie trzeba nic więcej
+pisać.
+
+```c
+interface Ksztalt {
+    fn pole() -> float
+    fn nazwa() -> str
+}
+
+struct Kolo {
+    float r
+}
+
+fn Kolo.pole() -> float {
+    return 3.14159 * self.r * self.r
+}
+
+fn Kolo.nazwa() -> str {
+    return "koło"
+}
+
+// Prostokat też ma pole() i nazwa(), więc też jest Ksztaltem
+
+fn razem([]Ksztalt ksztalty) -> float {
+    suma := 0.0
+    for k in ksztalty {
+        suma += k.pole()           // pole() każdego z nich
+    }
+    return suma
+}
+
+[]Ksztalt ksztalty = [Kolo(1.0), Prostokat(2.0, 3.0)]
+print(razem(ksztalty), ksztalty)
+```
+
+- Wartość-interfejs trzyma własną kopię wartości (jak wszystko w Finchu): metoda zmieniająca `self` zmienia tę kopię,
+  a przypisanie ją kopiuje.
+- Mogą być wszędzie tam, gdzie typ: w listach, polach struktur, jako `Ksztalt?`, parametry i wyniki funkcji, w `sort_by`.
+- Metody muszą pasować dokładnie (te same typy parametrów, wynik i `!`). Gdy jakiejś brakuje albo jest inna, błąd to
+  mówi: `Sq can't be a Shape: it has no method area() -> float` z `help: add  fn Sq.area() -> float { ... }`.
+- Lista różnych typów potrzebuje zapisanego typu interfejsu: `[]Ksztalt ksztalty = [...]`.
+- Wartości-interfejsu nie da się zamienić z powrotem na typ, który jest w środku; używaj jej metod.
+- `print(ksztalt)` pokazuje wartość w środku: `Kolo(r: 1)`. `Ksztalt`, w którym jeszcze nic nie ma, wypisuje się jako
+  `null`, a wywołanie na nim metody zatrzymuje program z jasnym komunikatem.

@@ -226,5 +226,33 @@
       "asm(\"${1:add} {${2:x}}, {${3:y}}\", mut ${2:x}, ${3:y})"
     ],
     "description": "Processor instructions inside Finch (Intel syntax on x86)"
+  },
+  "interface": {
+    "prefix": "interface",
+    "body": [
+      "interface ${1:Shape} {",
+      "\tfn ${2:area}() -> ${3:float}",
+      "}"
+    ],
+    "description": "What a type can do: any struct or enum with these methods is one"
+  },
+  "if value": {
+    "prefix": "ifv",
+    "body": [
+      "if ${1:v} := ${2:maybe} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Use a T? only when it holds a value"
+  },
+  "optional result": {
+    "prefix": "fno",
+    "body": [
+      "fn ${1:find}(${2:str name}) -> ${3:Person}? {",
+      "\t$0",
+      "\treturn null",
+      "}"
+    ],
+    "description": "A function that may find nothing (T?)"
   }
 }

@@ -1,0 +1,23 @@
+// A C++ header imported directly: no extern "C" bridge to write
+import "cpp_geo.hpp"
+
+fn main() {
+    v := Vec2(3.0, 4.0)
+    print(geo.length2(v))
+    w := geo.scaled(v)                  // the default argument (2) comes from C++
+    print(w.x, w.y, geo.scaled(v, 0.5).x)
+    print(geo.add(2, 3), geo.add(1.0, 1.0))      // the overload that fits
+    f32 x = 1.5
+    geo.grow(addr(x))                   // a reference is a pointer here
+    print(x)
+    print(geo.mode_value(Mode_Careful))
+
+    c := Counter.new(10)
+    c.add()
+    c.add(5)
+    print(c.value(), Counter.twice(21), counter_total(c))
+    c.delete()
+
+    print(geo.checked(7))
+    print(geo.checked(-1))
+}

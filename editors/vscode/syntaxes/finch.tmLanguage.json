@@ -74,7 +74,7 @@
       ]
     },
     "struct": {
-      "match": "\\b(struct|enum)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "match": "\\b(struct|enum|interface)\\s+([A-Za-z_][A-Za-z0-9_]*)",
       "captures": {
         "1": {
           "name": "storage.type.struct.finch"
