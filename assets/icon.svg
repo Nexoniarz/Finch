@@ -1,26 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <title>Finch</title>
-  <rect x="16" y="16" width="480" height="480" rx="112" fill="#FFF3E6"/>
-  <g transform="translate(22 18) scale(0.86)">
-  <g transform="translate(0 -26)">
-    <!-- tail: two feathers -->
-    <path d="M178 316 L60 360 Q50 374 64 382 L192 348 Z" fill="#1B1F2A"/>
-    <path d="M182 334 L78 398 Q72 412 88 414 L200 360 Z" fill="#2E3445"/>
-    <!-- body -->
-    <path d="M150 330 C150 220 240 140 330 140 C400 140 440 190 440 245 C440 330 370 392 280 395 C220 398 168 372 150 330 Z" fill="#FF7A1A"/>
-    <!-- belly light -->
-    <path d="M236 390 C336 398 428 330 438 254 C432 300 404 330 372 350 C336 372 290 384 236 390 Z" fill="#FFA24D"/>
-    <!-- wing, swept back -->
-    <path d="M352 256 C306 232 228 256 160 340 C244 336 318 316 352 256 Z" fill="#1B1F2A"/>
-    <path d="M330 260 C292 252 246 270 206 306" fill="none" stroke="#FFFFFF" stroke-width="9" stroke-linecap="round"/>
-    <!-- beak -->
-    <path d="M434 212 L494 234 L434 254 Z" fill="#FFC145"/>
-    <!-- eye -->
-    <circle cx="382" cy="206" r="16" fill="#1B1F2A"/>
-    <circle cx="388" cy="200" r="5" fill="#FFFFFF"/>
-    <!-- legs and branch -->
-    <path d="M276 394 L270 420 M316 390 L318 420" stroke="#1B1F2A" stroke-width="10" stroke-linecap="round"/>
-    <path d="M120 424 L440 424" stroke="#1B1F2A" stroke-width="14" stroke-linecap="round"/>
+  <defs>
+    <clipPath id="hex"><path d="M226.6 37.0 Q256.0 20.0 285.4 37.0 L430.9 121.0 Q460.4 138.0 460.4 172.0 L460.4 340.0 Q460.4 374.0 430.9 391.0 L285.4 475.0 Q256.0 492.0 226.6 475.0 L81.1 391.0 Q51.6 374.0 51.6 340.0 L51.6 172.0 Q51.6 138.0 81.1 121.0 Z"/></clipPath>
+  </defs>
+  <g clip-path="url(#hex)">
+    <rect width="512" height="512" fill="#FF7A1A"/>
+    <path d="M256.0 20.0 L282.0 274.0 L51.6 374.0 L51.6 138.0 Z" fill="#FFA24D"/>
+    <path d="M51.6 374.0 L282.0 274.0 L460.4 374.0 L256.0 492.0 Z" fill="#D9570B"/>
   </g>
+  <!-- the finch, in flight -->
+  <g transform="translate(14 22)">
+  <path d="M 386 178 L 426 194 L 392 214 Z" fill="#FFC145"/>
+  <path d="M 396 214 C 396 176 368 150 334 150 C 306 150 284 168 276 194 C 246 160 196 126 120 116 C 132 170 180 210 236 226 C 206 226 172 236 142 254 C 178 264 212 268 246 266 C 226 294 194 318 158 336 L 120 368 L 172 356 L 152 396 L 206 362 C 268 350 322 322 360 290 C 384 268 396 242 396 214 Z" fill="#FFFFFF"/>
+  <circle cx="352" cy="186" r="9" fill="#D9570B"/>
   </g>
 </svg>
