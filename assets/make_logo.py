@@ -1,5 +1,6 @@
 # Draws the Finch mark (a faceted hexagon with a finch in flight) and puts it into the logos:
 #   python3 assets/make_logo.py assets/icon.svg      the mark alone; see the bottom of this file for the rest
+# Plain paths only (no clip paths), so every SVG viewer and file manager shows it the same.
 # Then render the PNGs, e.g. with rsvg-convert (BRAND.md has the list).
 import math, sys
 
@@ -62,21 +63,60 @@ BEAK = "M 386 178 L 426 194 L 392 214 Z"
 EYE = (352, 186, 9)
 
 
+def corners(points, rad):
+    """for each corner: where the rounding starts (a), the corner (p), where it ends (b)"""
+    out = []
+    n = len(points)
+    for i in range(n):
+        p0, p1, p2 = points[i - 1], points[i], points[(i + 1) % n]
+        v1 = (p0[0] - p1[0], p0[1] - p1[1])
+        v2 = (p2[0] - p1[0], p2[1] - p1[1])
+        l1, l2 = math.hypot(*v1), math.hypot(*v2)
+        a = (p1[0] + v1[0] / l1 * rad, p1[1] + v1[1] / l1 * rad)
+        b = (p1[0] + v2[0] / l2 * rad, p1[1] + v2[1] / l2 * rad)
+        out.append((a, p1, b))
+    return out
+
+
+def pt(q):
+    return f"{q[0]:.1f} {q[1]:.1f}"
+
+
+def half(a, b):
+    return ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+
+
+def facet(cs, start, end, inner):
+    """the hexagon's rounded outline from the middle of corner `start`, clockwise, to the middle of corner `end`,
+    then straight to `inner`: a facet with no clip path, so every SVG viewer draws it the same"""
+    n = len(cs)
+    a, p, b = cs[start]
+    m = ((a[0] + 2 * p[0] + b[0]) / 4, (a[1] + 2 * p[1] + b[1]) / 4)
+    d = [f"M{pt(m)} Q{pt(half(p, b))} {pt(b)}"]
+    j = (start + 1) % n
+    while j != end:
+        a, p, b = cs[j]
+        d.append(f"L{pt(a)} Q{pt(p)} {pt(b)}")
+        j = (j + 1) % n
+    a, p, b = cs[end]
+    m = ((a[0] + 2 * p[0] + b[0]) / 4, (a[1] + 2 * p[1] + b[1]) / 4)
+    d.append(f"L{pt(a)} Q{pt(half(a, p))} {pt(m)}")
+    d.append(f"L{pt(inner)} Z")
+    return " ".join(d)
+
+
 def svg(size=512, bg=None, colors=("#FFA24D", "#FF7A1A", "#D9570B"), bird="#FFFFFF", beak="#FFC145", title="Finch"):
     light, mid, dark = colors
-    hexpath = rounded(P, ROUND)
+    cs = corners(P, ROUND)
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="{size}" height="{size}">',
-           f'  <title>{title}</title>',
-           '  <defs>',
-           f'    <clipPath id="hex"><path d="{hexpath}"/></clipPath>',
-           '  </defs>']
+           f'  <title>{title}</title>']
     if bg:
         out.append(f'  <rect width="512" height="512" fill="{bg}"/>')
-    out += ['  <g clip-path="url(#hex)">',
-            f'    <rect width="512" height="512" fill="{mid}"/>',
-            f'    <path d="{LIGHT}" fill="{light}"/>',
-            f'    <path d="{DARK}" fill="{dark}"/>',
-            '  </g>',
+    # corners clockwise from the top: 0 top, 1 upper right, 2 lower right, 3 bottom, 4 lower left, 5 upper left
+    out += ['  <!-- the hexagon: the whole of it in the middle tone, then the lit face and the shaded face -->',
+            f'  <path d="{rounded(P, ROUND)}" fill="{mid}"/>',
+            f'  <path d="{facet(cs, 4, 0, k)}" fill="{light}"/>',
+            f'  <path d="{facet(cs, 2, 4, k)}" fill="{dark}"/>',
             '  <!-- the finch, in flight -->',
             '  <g transform="translate(14 22)">',
             f'  <path d="{BEAK}" fill="{beak}"/>',
@@ -87,15 +127,14 @@ def svg(size=512, bg=None, colors=("#FFA24D", "#FF7A1A", "#D9570B"), bird="#FFFF
     return "\n".join(out) + "\n"
 
 
+def mark(clip_id=None):
+    """the mark as SVG elements to put into another document"""
+    s = svg()
+    return s.split('\n', 2)[2].rsplit('</svg>', 1)[0]
+
+
 if __name__ == "__main__":
     open(sys.argv[1], "w").write(svg())
-
-
-def mark(clip_id):
-    """the hexagon and the bird, as SVG elements for any document (the clip path gets its own id)"""
-    s = svg()
-    body = s.split('\n', 2)[2].rsplit('</svg>', 1)[0]     # without <svg ...> and <title>
-    return body.replace('id="hex"', f'id="{clip_id}"').replace('url(#hex)', f'url(#{clip_id})')
 
 
 def swap_bird(path, clip_id):
