@@ -3,3 +3,4 @@
 void *GetStdHandle(unsigned long which);
 int GetConsoleMode(void *console, unsigned long *mode);
 int SetConsoleMode(void *console, unsigned long mode);
+unsigned long long GetTickCount64(void);

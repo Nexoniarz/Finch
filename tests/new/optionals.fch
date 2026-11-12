@@ -1,0 +1,80 @@
+// T?: a value that may be missing (null), and the ways to use it safely
+struct Person {
+    str name
+    int age
+    str? nickname
+}
+
+fn find(map[str]Person people, str name) -> Person? {
+    if people.has(name) {
+        return people[name]
+    }
+    return null
+}
+
+fn parse_port(str s) -> int? {
+    n := int(s) or {
+        return null
+    }
+    if n < 1 || n > 65535 {
+        return null
+    }
+    return n
+}
+
+fn first_long([]str words) -> str? {
+    for w in words {
+        if w.len > 4 {
+            return w
+        }
+    }
+    return null
+}
+
+fn describe(Person? p) -> str {
+    if q := p {
+        return q.name + " (" + str(q.age) + ")"
+    } else {
+        return "nobody"
+    }
+}
+
+fn main() {
+    people := ["ann": Person(name: "Ann", age: 31), "bob": Person(name: "Bob", age: 25, nickname: "Bobby")]
+    print(describe(find(people, "ann")), describe(find(people, "zed")))
+
+    port := parse_port("8080") or 80
+    bad := parse_port("lots") or 80
+    print(port, bad)
+
+    int? maybe
+    print(maybe, maybe == null, maybe != null)
+    maybe = 7
+    print(maybe, maybe == null, (maybe or 0) + 1)
+
+    for p in people.values() {
+        nick := p.nickname or p.name
+        print(p.name, "->", nick, p.nickname)
+    }
+
+    w := first_long(["a", "bird", "finches", "sky"])
+    if word := w {
+        print("long word:", word, word.len)
+    }
+    copy := w
+    w = null
+    print(copy, w)
+
+    []int? slots = [1, null, 3]
+    total := 0
+    for s in slots {
+        total += s or 100
+    }
+    print(slots, total)
+
+    names := first_long(["xx"]) or {
+        print("no long word")
+        return
+    }
+    print("unreachable", names)
+}

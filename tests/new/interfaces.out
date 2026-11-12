@@ -1,0 +1,12 @@
+circle 3
+rect red+big 6
+up 0
+box of 7 1
+10
+[Circle(r: 1), Rect(w: 2, h: 3, tags: ["red", "big"]), Up, Box[int](item: 7)]
+biggest: rect red+big
+["up", "box of 7", "circle", "rect red+big"]
+7 107
+7 -1 -2
+circle 12 Scene(title: "demo", main: Circle(r: 2))
+null

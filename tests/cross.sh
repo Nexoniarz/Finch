@@ -36,7 +36,8 @@ for f in run/*.fch new/*.fch; do
     fi
     got=$(run_exe "$exe" "$input")
     # (warnings come from the build, which is not part of what the program prints)
-    if [ "$got" == "$(tr -d '\r' < "${f%.fch}.out" | grep -v ': warning: ')" ]; then
+    want=$(tr -d '\r' < "${f%.fch}.out" | awk '/: warning: /{skip=1; next} skip && /^ +([0-9]+ +)?[|=]/{next} {skip=0; print}')
+    if [ "$got" == "$want" ]; then
         pass=$((pass + 1))
     else
         failed=$((failed + 1)); echo "FAIL $f"; diff <(echo "$got") "${f%.fch}.out" | head -10

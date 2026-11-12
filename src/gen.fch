@@ -64,6 +64,17 @@ struct EnumDef {
 
 // What happens when a scope ends, in the order things happened (run newest first): a variable is dropped,
 // a defer is run. `idx` is the variable's number in the scope, or the defer's.
+// interface Shape { ... }: its methods, worked out (types resolved) the first time it is used
+struct IfaceDef {
+    str module
+    str name
+    int prog
+    int index
+    bool resolved
+    []str mnames
+    []ast.Type mtypes      // each method as a fn type: fn(params) -> result (name "!" if it can fail)
+}
+
 struct Cleanup {
     bool isDefer
     int idx
@@ -229,6 +240,7 @@ struct Gen {
     []str features      // the processor features of the whole program (--cpu)
     []str curFeatures   // and of the function being built: those and its @cpu(...)
     int nlambda         // function values written in the code so far
+    []IfaceDef ifaces
 }
 
 // ---------- basics ----------
@@ -398,6 +410,12 @@ fn byteSize(ptr[Gen] g, ast.Type t) -> int {
     }
     if k == "str" || k == "array" || k == "map" || k == "fn" {
         return 0                    // only its { ptr, len, cap } is copied when it is passed: not counted
+    }
+    if k == "iface" {
+        return 0
+    }
+    if k == "opt" {
+        return 1 + byteSize(g, t.elem[0])
     }
     if k == "ptr" || k == "enum" || k == "int" || k == "float" {
         return 8
@@ -631,6 +649,16 @@ fn modFor(ptr[Gen] g, str name) -> str {
 }
 
 fn resolve(ptr[Gen] g, ast.Type t, ast.Node at) -> ast.Type {
+    if t.kind == "opt" {
+        inner := resolve(g, t.elem[0], at)
+        if inner.kind == "void" {
+            fail(g, at, "'nothing' can't be optional")
+        }
+        if inner.kind == "ptr" {
+            fail(g, at, "a ptr can already be null, so it needs no ?")
+        }
+        return ast.optOf(inner)
+    }
     if t.kind == "fn" {
         out := ast.Type(kind: "fn", name: t.name)
         for i in 0..t.elem.len {
@@ -705,6 +733,9 @@ fn resolve(ptr[Gen] g, ast.Type t, ast.Node at) -> ast.Type {
     if findEnum(g, module, t.name) >= 0 {
         return ast.Type(kind: "enum", name: t.name, module: module)
     }
+    if findIface(g, module, t.name) >= 0 {
+        return ast.Type(kind: "iface", name: t.name, module: module)
+    }
     if findStruct(g, module, t.name) < 0 {
         // a bare name may be a struct from a C header
         if t.module.len == 0 && findStruct(g, "C", t.name) >= 0 {
@@ -729,6 +760,12 @@ fn modName(str m) -> str {
 
 fn llty(ptr[Gen] g, ast.Type t) -> str {
     k := t.kind
+    if k == "iface" {
+        return "{ ptr, ptr }"           // the boxed value, and its table: { drop, copy, format, methods... }
+    }
+    if k == "opt" {
+        return "{ i1, " + llty(g, t.elem[0]) + " }"     // is there a value, the value
+    }
     if k == "fn" {
         return "{ ptr, ptr }"           // the function, and its environment (null if it captured nothing)
     }
@@ -815,6 +852,12 @@ fn owning(ptr[Gen] g, ast.Type t) -> bool {
     if t.kind == "str" || t.kind == "array" || t.kind == "map" || t.kind == "fn" {
         return true
     }
+    if t.kind == "opt" {
+        return owning(g, t.elem[0])
+    }
+    if t.kind == "iface" {
+        return true
+    }
     if t.kind == "struct" {
         return g.structs[findStruct(g, t.module, t.name)].owning
     }
@@ -822,6 +865,12 @@ fn owning(ptr[Gen] g, ast.Type t) -> bool {
 }
 
 fn typeKey(ast.Type t) -> str {
+    if t.kind == "iface" {
+        return "I_" + modName(t.module) + "_" + t.name
+    }
+    if t.kind == "opt" {
+        return "opt_" + typeKey(t.elem[0])
+    }
     if t.kind == "array" {
         return "arr_" + typeKey(t.elem[0])
     }
@@ -959,11 +1008,13 @@ fn loopEnd(ptr[Gen] g, []str l) {
 }
 
 fn copyAt(ptr[Gen] g, str dst, str src, ast.Type t) {
-    if t.kind == "fn" {
+    if t.kind == "iface" {
+        emit(g, "call void @finch_iface_copy(ptr " + dst + ", ptr " + src + ")")
+    } else if t.kind == "fn" {
         emit(g, "call void @finch_fn_copy(ptr " + dst + ", ptr " + src + ")")
     } else if t.kind == "str" {
         emit(g, "call void @finch_str_copy(ptr " + dst + ", ptr " + src + ")")
-    } else if t.kind == "array" || t.kind == "map" || (t.kind == "struct" && owning(g, t)) {
+    } else if t.kind == "array" || t.kind == "map" || ((t.kind == "struct" || t.kind == "opt") && owning(g, t)) {
         emit(g, "call void " + copyFn(g, t) + "(ptr " + dst + ", ptr " + src + ")")
     } else {
         store(g, llty(g, t), load(g, llty(g, t), src), dst)
@@ -1008,6 +1059,17 @@ fn copyFn(ptr[Gen] g, ast.Type t) -> str {
             label(g, next)
             loopEnd(g, l)
         }
+    } else if t.kind == "opt" {
+        // the flag and the bytes, then the value's own copy if there is one
+        ot := llty(g, t)
+        store(g, ot, load(g, ot, "%src"), "%dst")
+        some := newLabel(g, "opt.some")
+        done := newLabel(g, "opt.done")
+        condBr(g, load(g, "i1", op(g, "getelementptr inbounds " + ot + ", ptr %src, i32 0, i32 0")), some, done)
+        label(g, some)
+        copyAt(g, op(g, "getelementptr inbounds " + ot + ", ptr %dst, i32 0, i32 1"), op(g, "getelementptr inbounds " + ot + ", ptr %src, i32 0, i32 1"), t.elem[0])
+        br(g, done)
+        label(g, done)
     } else {
         sd := g.structs[findStruct(g, t.module, t.name)]
         st := llty(g, t)
@@ -1045,6 +1107,8 @@ fn dropAt(ptr[Gen] g, str slot, ast.Type t) {
         emit(g, "call void @finch_str_drop(ptr " + slot + ")")
     } else if t.kind == "fn" {
         emit(g, "call void @finch_fn_drop(ptr " + slot + ")")
+    } else if t.kind == "iface" {
+        emit(g, "call void @finch_iface_drop(ptr " + slot + ")")
     } else {
         emit(g, "call void " + dropFn(g, t) + "(ptr " + slot + ")")
     }
@@ -1103,6 +1167,17 @@ fn dropFn(ptr[Gen] g, ast.Type t) -> str {
             loopEnd(g, l)
         }
         emit(g, "call void @finch_map_free(ptr %a)")
+    } else if t.kind == "opt" {
+        ot := llty(g, t)
+        some := newLabel(g, "opt.some")
+        done := newLabel(g, "opt.done")
+        flag := op(g, "getelementptr inbounds " + ot + ", ptr %a, i32 0, i32 0")
+        condBr(g, load(g, "i1", flag), some, done)
+        label(g, some)
+        dropAt(g, op(g, "getelementptr inbounds " + ot + ", ptr %a, i32 0, i32 1"), t.elem[0])
+        store(g, "i1", "false", flag)
+        br(g, done)
+        label(g, done)
     } else {
         sd := g.structs[findStruct(g, t.module, t.name)]
         st := llty(g, t)
@@ -1196,7 +1271,19 @@ fn cstr(ptr[Gen] g, str v) -> str {
 
 fn emitPrint(ptr[Gen] g, str v, ast.Type t, bool quoted) {
     k := t.kind
-    if k == "fn" {
+    if k == "opt" {
+        some := newLabel(g, "print.some")
+        none := newLabel(g, "print.none")
+        done := newLabel(g, "print.done")
+        condBr(g, op(g, "extractvalue " + llty(g, t) + " " + v + ", 0"), some, none)
+        label(g, some)
+        emitPrint(g, op(g, "extractvalue " + llty(g, t) + " " + v + ", 1"), t.elem[0], quoted)
+        br(g, done)
+        label(g, none)
+        printf(g, "null", "")
+        br(g, done)
+        label(g, done)
+    } else if k == "fn" {
         printf(g, ast.show(t).replace("%", "%%"), "")      // a function prints as its type
     } else if isSigned(t) {
         printf(g, "%lld", "i64 " + intCast(g, v, t, T("int")))
@@ -1260,7 +1347,36 @@ fn emitFormat(ptr[Gen] g, str buf, str v, ast.Type t, bool quoted) {
     if quoted {
         q = "1"
     }
-    if k == "fn" {
+    if k == "iface" {
+        data := op(g, "extractvalue { ptr, ptr } " + v + ", 0")
+        some := newLabel(g, "fmt.some")
+        none := newLabel(g, "fmt.none")
+        done := newLabel(g, "fmt.done")
+        condBr(g, op(g, "icmp ne ptr " + data + ", null"), some, none)
+        label(g, some)
+        vt := op(g, "extractvalue { ptr, ptr } " + v + ", 1")
+        fmtp := load(g, "ptr", op(g, "getelementptr inbounds ptr, ptr " + vt + ", i64 2"))
+        emit(g, "call void " + fmtp + "(ptr " + buf + ", ptr " + data + ", i32 " + q + ")")
+        br(g, done)
+        label(g, none)
+        bufText(g, buf, "null")
+        br(g, done)
+        label(g, done)
+        return
+    }
+    if k == "opt" {
+        some := newLabel(g, "fmt.some")
+        none := newLabel(g, "fmt.none")
+        done := newLabel(g, "fmt.done")
+        condBr(g, op(g, "extractvalue " + llty(g, t) + " " + v + ", 0"), some, none)
+        label(g, some)
+        emitFormat(g, buf, op(g, "extractvalue " + llty(g, t) + " " + v + ", 1"), t.elem[0], quoted)
+        br(g, done)
+        label(g, none)
+        bufText(g, buf, "null")
+        br(g, done)
+        label(g, done)
+    } else if k == "fn" {
         bufText(g, buf, ast.show(t))
     } else if isSigned(t) {
         emit(g, "call void @finch_buf_int(ptr " + buf + ", i64 " + intCast(g, v, t, T("int")) + ")")
@@ -1467,6 +1583,27 @@ fn intToFloat(ptr[Gen] g, str v, ast.Type from, ast.Type to) -> str {
 fn coerce(ptr[Gen] g, Val v, ast.Type want, ast.Node at, str what) -> Val {
     if ast.same(v.ty, want) {
         return v
+    }
+    if want.kind == "iface" && (v.ty.kind == "struct" || v.ty.kind == "enum") {
+        return toIface(g, v, want, at)
+    }
+    if want.kind == "opt" && v.ty.kind == "null" {
+        return Val(v: "zeroinitializer", ty: want, fresh: true)        // nothing in it
+    }
+    if want.kind == "opt" && v.ty.kind != "opt" {
+        inner := coerce(g, v, want.elem[0], at, what)
+        ot := llty(g, want)
+        a := op(g, "insertvalue " + ot + " zeroinitializer, i1 true, 0")
+        return Val(v: op(g, "insertvalue " + ot + " " + a + ", " + llty(g, want.elem[0]) + " " + inner.v + ", 1"), ty: want, fresh: inner.fresh || !owning(g, want))
+    }
+    if v.ty.kind == "iface" && (want.kind == "struct" || want.kind == "enum") {
+        fail(g, at, what + " must be " + ast.show(want) + ", but this is " + ast.show(v.ty) + ", and a " + ast.show(v.ty) + " can't be turned back into the type inside it (use its methods instead)")
+    }
+    if what == "every element of this array" && (v.ty.kind == "struct" || v.ty.kind == "enum") && (want.kind == "struct" || want.kind == "enum") {
+        fail(g, at, "every element of this array must be " + ast.show(want) + ", but this is " + ast.show(v.ty) + " (to keep different types in one list, give it an interface type:  []Shape list = [...])")
+    }
+    if v.ty.kind == "opt" && ast.same(v.ty.elem[0], want) {
+        fail(g, at, what + " must be " + ast.show(want) + ", but this is " + ast.show(v.ty) + ", which may be null (give a fallback:  x or <value>,  or check it:  if v := x { ... })")
     }
     if v.ty.kind == "null" && want.kind == "ptr" {
         return Val(v: "null", ty: want)
@@ -1718,6 +1855,15 @@ fn mutates(ptr[Gen] g, str name, ast.Node n) -> bool {
 // ---------- program ----------
 
 fn declare(ptr[Gen] g) {
+    for pi in 0..g.progs.len {
+        for ii in 0..g.progs[pi].ifaces.len {
+            n := g.progs[pi].ifaces[ii]
+            if findIface(g, g.progs[pi].module, n.name) >= 0 {
+                fail(g, n, "the interface '" + n.name + "' is defined twice")
+            }
+            g.ifaces.push(IfaceDef(module: g.progs[pi].module, name: n.name, prog: pi, index: ii))
+        }
+    }
     for pi in 0..g.progs.len {
         g.module = g.progs[pi].module
         for si in 0..g.progs[pi].structs.len {
@@ -1988,6 +2134,10 @@ fn bindType(ptr[Gen] g, ast.Type pat, ast.Type actual, []str tparams, ptr[Binds]
     if pat.kind == "map" && actual.kind == "map" {
         bindType(g, pat.elem[0], actual.elem[0], tparams, b)
         bindType(g, pat.elem[1], actual.elem[1], tparams, b)
+        return
+    }
+    if pat.kind == "opt" && actual.kind == "opt" {
+        bindType(g, pat.elem[0], actual.elem[0], tparams, b)
         return
     }
     if pat.kind == "fn" && actual.kind == "fn" && pat.elem.len == actual.elem.len {
@@ -2314,7 +2464,7 @@ fn basicType(ptr[Gen] g, str name, int bits, str enc) -> int {
 // the debug type of a Finch type; -1 where there is none (nothing, null)
 fn diType(ptr[Gen] g, ast.Type t) -> int {
     k := t.kind
-    if k == "void" || k == "null" || k == "fn" {
+    if k == "void" || k == "null" || k == "fn" || k == "opt" || k == "iface" {
         return -1
     }
     key := "T:" + ast.show(t)
@@ -2789,6 +2939,10 @@ fn condition(ptr[Gen] g, ast.Node e) -> str {
 }
 
 fn ifStmt(ptr[Gen] g, ast.Node s) {
+    if s.flag {
+        ifSome(g, s)
+        return
+    }
     c := condition(g, s.kids[0])
     then := newLabel(g, "then")
     els := newLabel(g, "else")
@@ -2810,6 +2964,36 @@ fn ifStmt(ptr[Gen] g, ast.Node s) {
     } else {
         reached = true
     }
+    if reached {
+        label(g, end)
+    }
+}
+
+// if p := find(name) { ... } else { ... }: the block runs only when there is a value, and p is that value
+fn ifSome(ptr[Gen] g, ast.Node s) {
+    v := expr(g, s.kids[0])
+    if v.ty.kind != "opt" {
+        fail(g, s.kids[0], "if " + s.name + " := ... needs a value that may be null (T?), but this is " + ast.show(v.ty) + " (to make a variable, write it before the if)")
+    }
+    ot := llty(g, v.ty)
+    then := newLabel(g, "then")
+    els := newLabel(g, "else")
+    end := newLabel(g, "endif")
+    condBr(g, op(g, "extractvalue " + ot + " " + v.v + ", 0"), then, els)
+    label(g, then)
+    pushScope(g)
+    inner := Val(v: op(g, "extractvalue " + ot + " " + v.v + ", 1"), ty: v.ty.elem[0], fresh: v.fresh && owning(g, v.ty.elem[0]))
+    addVar(g, s, s.name, inner.ty, own(g, inner), false, true)     // a fresh value moves in; one held elsewhere is copied
+    block(g, s.kids[1], false)
+    popScope(g)
+    reached := !g.term
+    br(g, end)
+    label(g, els)
+    if s.kids.len > 2 {
+        stmt(g, s.kids[2])           // nothing to drop here: there was no value
+    }
+    reached = reached || !g.term
+    br(g, end)
     if reached {
         label(g, end)
     }
@@ -3674,8 +3858,46 @@ fn tryExpr(ptr[Gen] g, ast.Node e) -> Val {
 }
 
 // f(x) or fallback  /  f(x) or { ... err ... }
+// What comes before `or`: a call that can fail, or a value that may be null (T?), which fails when it is null.
+fn orSource(ptr[Gen] g, ast.Node site) -> Fallible {
+    callish := site.kind == "call" || site.kind == "method" || site.kind == "callv"
+    v := Val()
+    if callish {
+        savedT := g.ftarget
+        savedF := g.ffailed
+        savedM := g.fmsg
+        g.ftarget = nodeKey(site)
+        g.ffailed = ""
+        g.fmsg = ""
+        v = expr(g, site)
+        out := Fallible(v: v, failed: g.ffailed, msg: g.fmsg)
+        g.ftarget = savedT
+        g.ffailed = savedF
+        g.fmsg = savedM
+        if out.failed.len > 0 {
+            return out
+        }
+        if v.ty.kind != "opt" {
+            fail(g, site, "this call can't fail and its value is never null, so it needs no 'or'")
+        }
+    } else {
+        v = expr(g, site)
+        if v.ty.kind != "opt" {
+            fail(g, site, "'or' goes after a call that can fail or a value that may be null (T?), but this is " + ast.show(v.ty))
+        }
+    }
+    if !v.fresh && owning(g, v.ty) {
+        v = Val(v: copyValue(g, v.v, v.ty), ty: v.ty, fresh: true)        // what comes out is its own
+    }
+    ot := llty(g, v.ty)
+    present := op(g, "extractvalue " + ot + " " + v.v + ", 0")
+    inner := op(g, "extractvalue " + ot + " " + v.v + ", 1")
+    msg := strConst(g, "the value was null")
+    return Fallible(v: Val(v: inner, ty: v.ty.elem[0], fresh: owning(g, v.ty.elem[0])), failed: op(g, "xor i1 " + present + ", true"), msg: msg.v)
+}
+
 fn orElse(ptr[Gen] g, ast.Node e, bool discard) -> Val {
-    f := fallibleCall(g, e.kids[0])
+    f := orSource(g, e.kids[0])
     v := f.v
     bad := newLabel(g, "or.failed")
     ok := newLabel(g, "or.ok")
@@ -3889,6 +4111,9 @@ fn badOperands(ptr[Gen] g, str o, Val l, Val r, ast.Node at) {
     if o == "+" && (l.ty.kind == "str" || r.ty.kind == "str") {
         msg = msg + " (turn the other side into text first: str(...))"
     }
+    if l.ty.kind == "opt" || r.ty.kind == "opt" {
+        msg = msg + " (a T? may be null: give a fallback first, like  (x or 0) " + o + " ...,  or check it:  if v := x { ... })"
+    }
     if (o == "&" || o == "|") && l.ty.kind == "bool" {
         if o == "&" {
             msg = msg + " (for true/false use '&&')"
@@ -4043,6 +4268,27 @@ fn foldInt(str o, int a, int b) -> int {
 
 fn compare(ptr[Gen] g, str o, Val l, Val r, ast.Node at) -> Val {
     eq := o == "==" || o == "!="
+    if (l.ty.kind == "opt" && r.ty.kind == "null") || (r.ty.kind == "opt" && l.ty.kind == "null") {
+        if !eq {
+            badOperands(g, o, l, r, at)
+        }
+        x := l
+        if r.ty.kind == "opt" {
+            x = r
+        }
+        present := op(g, "extractvalue " + llty(g, x.ty) + " " + x.v + ", 0")
+        release(g, x)
+        if o == "==" {
+            return Val(v: op(g, "xor i1 " + present + ", true"), ty: T("bool"))
+        }
+        return Val(v: present, ty: T("bool"))
+    }
+    if l.ty.kind == "opt" || r.ty.kind == "opt" {
+        if !eq {
+            fail(g, at, "an optional value (T?) can only be compared with null; get the value first:  (x or 0) " + o + " ...")
+        }
+        fail(g, at, "an optional value (T?) can only be compared with null (x == null); to compare what is in it, get it first:  if v := x { ... }")
+    }
     if l.ty.kind == "ptr" || r.ty.kind == "ptr" || l.ty.kind == "null" || r.ty.kind == "null" {
         if l.ty.kind == "str" || r.ty.kind == "str" {
             fail(g, at, "a str is never null; to check for empty text use s.len == 0")
@@ -4579,6 +4825,9 @@ fn member(ptr[Gen] g, ast.Node m, bool write) -> Ref {
         return Ref(isPlace: false, val: Val(v: n, ty: T("int")))
     }
     if t.kind != "struct" {
+        if t.kind == "opt" {
+            fail(g, m, "this is " + ast.show(t) + ", which may be null, so it has no '." + m.name + "' until it is checked (if v := x { v." + m.name + " },  or  (x or fallback)." + m.name + ")")
+        }
         fail(g, m, ast.show(t) + " has no fields (no '." + m.name + "')")
     }
     sd := g.structs[findStruct(g, t.module, t.name)]
@@ -6127,6 +6376,210 @@ fn callFn(ptr[Gen] g, int fi, ast.Node c, int first, str shown, str selfAddr, st
     return r
 }
 
+// ---------- interfaces ----------
+//   interface Shape { fn area() -> float }      what a type must be able to do
+//   Shape s = Circle(2.0)                        any struct or enum with those methods is one: no "implements"
+// An interface value is { ptr box, ptr table }: the box is its own copy of the value on the heap, the table is
+// { drop, copy, format, the methods in the interface's order }, one table per (type, interface). Each method is the
+// type's own method, which takes the box as its self.
+
+fn findIface(ptr[Gen] g, str module, str name) -> int {
+    for i in 0..g.ifaces.len {
+        if g.ifaces[i].module == module && g.ifaces[i].name == name {
+            return i
+        }
+    }
+    return -1
+}
+
+fn ifaceDef(ptr[Gen] g, ast.Type t) -> IfaceDef {
+    ii := findIface(g, t.module, t.name)
+    if !g.ifaces[ii].resolved {
+        g.ifaces[ii].resolved = true
+        node := g.progs[g.ifaces[ii].prog].ifaces[g.ifaces[ii].index]
+        savedM := g.module
+        savedN := g.tnames
+        savedA := g.targs
+        g.module = g.ifaces[ii].module
+        []str none
+        []ast.Type noTypes
+        g.tnames = none
+        g.targs = noTypes
+        for m in node.kids {
+            if g.ifaces[ii].mnames.contains(m.name) {
+                fail(g, m, "the interface " + t.name + " has the method " + m.name + " twice")
+            }
+            ft := ast.Type(kind: "fn")
+            if m.fallible {
+                ft.name = "!"
+            }
+            ft.elem.push(resolve(g, m.ty, m))
+            for prm in m.kids {
+                ft.elem.push(resolve(g, prm.ty, prm))
+            }
+            g.ifaces[ii].mnames.push(m.name)
+            g.ifaces[ii].mtypes.push(ft)
+        }
+        g.module = savedM
+        g.tnames = savedN
+        g.targs = savedA
+    }
+    return g.ifaces[ii]
+}
+
+// how a method is written, for messages: area() -> float
+fn methodText(str name, ast.Type ft) -> str {
+    []str ps
+    for i in 1..ft.elem.len {
+        ps.push(ast.show(ft.elem[i]))
+    }
+    out := name + "(" + ps.join(", ") + ")"
+    if ft.elem[0].kind != "void" {
+        out += " -> " + ast.show(ft.elem[0])
+        if ft.name == "!" {
+            out += "!"
+        }
+    } else if ft.name == "!" {
+        out += " -> !"
+    }
+    return out
+}
+
+// the method of `conc` an interface's method k is, checked to be the same shape
+fn ifaceMethod(ptr[Gen] g, ast.Type conc, IfaceDef d, int k, ast.Node at) -> int {
+    name := d.mnames[k]
+    fi := findMethod(g, conc.module, conc.name, name)
+    if fi < 0 && conc.kind == "struct" {
+        sdi := findStruct(g, conc.module, conc.name)
+        if g.structs[sdi].base.len > 0 {
+            mti := findTemplate(g, conc.module, name, g.structs[sdi].base, false)
+            if mti >= 0 {
+                fi = instFn(g, mti, g.structs[sdi].targs, conc, at)
+            }
+        }
+    }
+    want := methodText(name, d.mtypes[k])
+    if fi < 0 {
+        fail(g, at, ast.show(conc) + " can't be a " + d.name + ": it has no method " + want + " (add  fn " + ast.show(conc) + "." + want + " { ... })")
+    }
+    sig := g.sigs[fi]
+    have := methodText(name, fnTypeOf(sig))
+    if have != want || sig.muts.contains(true) {
+        fail(g, at, ast.show(conc) + " can't be a " + d.name + ": its method is " + have + ", but " + d.name + " wants " + want)
+    }
+    return fi
+}
+
+// the table of `conc` as interface `it`, made once
+fn ifaceTable(ptr[Gen] g, ast.Type conc, ast.Type it, ast.Node at) -> str {
+    d := ifaceDef(g, it)
+    name := "@finch.vt." + typeKey(it) + "." + typeKey(conc)
+    if g.cdone.contains("vt:" + name) {
+        return name
+    }
+    []str fns
+    for k in 0..d.mnames.len {
+        fns.push("ptr " + g.sigs[ifaceMethod(g, conc, d, k, at)].ll)
+    }
+    g.cdone.push("vt:" + name)
+    helpers := boxHelpers(g, conc)
+    []str all = ["ptr " + helpers[0], "ptr " + helpers[1], "ptr " + helpers[2]]
+    for f in fns {
+        all.push(f)
+    }
+    g.head.push(name + " = internal constant [" + str(all.len) + " x ptr] [" + all.join(", ") + "]")
+    return name
+}
+
+// drop, copy and format for a boxed value of type t
+fn boxHelpers(ptr[Gen] g, ast.Type t) -> []str {
+    key := typeKey(t)
+    drop := "@finch.boxdrop." + key
+    copy := "@finch.boxcopy." + key
+    format := "@finch.boxfmt." + key
+    if g.done.contains(drop) {
+        return [drop, copy, format]
+    }
+    g.done.push(drop)
+    s := beginHelper(g)
+    dropAt(g, "%b", t)
+    emit(g, "call void @free(ptr %b)")
+    emit(g, "ret void")
+    endHelper(g, s, "define internal void " + drop + "(ptr %b)")
+    s2 := beginHelper(g)
+    n := op(g, "call ptr @finch_alloc(i64 " + sizeOf(g, t) + ")")
+    copyAt(g, n, "%b", t)
+    emit(g, "ret ptr " + n)
+    endHelper(g, s2, "define internal ptr " + copy + "(ptr %b)")
+    s3 := beginHelper(g)
+    // print(shape) shows the value inside, the way print shows it anywhere
+    some := newLabel(g, "q.yes")
+    no := newLabel(g, "q.no")
+    done := newLabel(g, "q.done")
+    condBr(g, op(g, "icmp ne i32 %q, 0"), some, no)
+    label(g, some)
+    emitFormat(g, "%buf", load(g, llty(g, t), "%b"), t, true)
+    br(g, done)
+    label(g, no)
+    emitFormat(g, "%buf", load(g, llty(g, t), "%b"), t, false)
+    br(g, done)
+    label(g, done)
+    emit(g, "ret void")
+    endHelper(g, s3, "define internal void " + format + "(ptr %buf, ptr %b, i32 %q)")
+    return [drop, copy, format]
+}
+
+// Circle(2.0) where a Shape goes: boxed, with Circle's table for Shape
+fn toIface(ptr[Gen] g, Val v, ast.Type it, ast.Node at) -> Val {
+    table := ifaceTable(g, v.ty, it, at)
+    box := op(g, "call ptr @finch_alloc(i64 " + sizeOf(g, v.ty) + ")")
+    store(g, llty(g, v.ty), own(g, v), box)         // a fresh value moves in; one held elsewhere is copied
+    a := op(g, "insertvalue { ptr, ptr } zeroinitializer, ptr " + box + ", 0")
+    return Val(v: op(g, "insertvalue { ptr, ptr } " + a + ", ptr " + table + ", 1"), ty: it, fresh: true)
+}
+
+// shape.area(): the method from the value's table, with its box as self
+fn ifaceCall(ptr[Gen] g, Val iv, ast.Node m, str shownType) -> Val {
+    d := ifaceDef(g, iv.ty)
+    k := d.mnames.find(m.name)
+    if k < 0 {
+        fail(g, m, "the interface " + d.name + " has no method '" + m.name + "' (it has: " + d.mnames.join(", ") + ")")
+    }
+    ft := d.mtypes[k]
+    shown := d.name + "." + m.name
+    if g.index {
+        noteRef(g, m, m.col + 1, m.name.len, "```finch\nfn " + d.name + "." + methodText(m.name, ft) + "\n```", "", 0, 0)
+    }
+    np := ft.elem.len - 1
+    checkArgs(g, m, 1, np, shown)
+    mark := g.pending.len
+    hold(g, iv)
+    data := op(g, "extractvalue { ptr, ptr } " + iv.v + ", 0")
+    panicIf(g, op(g, "icmp eq ptr " + data + ", null"), "this " + d.name + " holds nothing yet (give it a value first)", m)
+    vt := op(g, "extractvalue { ptr, ptr } " + iv.v + ", 1")
+    fnp := load(g, "ptr", op(g, "getelementptr inbounds ptr, ptr " + vt + ", i64 " + str(k + 3)))
+    []str args = ["ptr " + data]
+    []Val fresh
+    for i in 0..np {
+        a := m.kids[1 + i]
+        pt := ft.elem[i + 1]
+        v := coerce(g, argWant(g, a, pt), pt, a, "argument " + str(i + 1) + " of " + shown)
+        args.push(llty(g, pt) + " " + v.v)
+        if v.fresh {
+            fresh.push(v)
+        }
+        hold(g, v)
+    }
+    sig := FnSig(name: shown, shown: shown, ll: fnp, ret: ft.elem[0], fallible: ft.name == "!", prog: -1)
+    r := emitCall(g, sig, m, args, shown)
+    for v in fresh {
+        release(g, v)
+    }
+    release(g, iv)
+    heldEnd(g, mark)
+    return r
+}
+
 // ---------- functions as values ----------
 //   fn(int) -> int        a type: { ptr function, ptr environment }
 //   fn(int x) -> int { return x * 2 }      a function written where it is used; it takes copies of the variables
@@ -6843,6 +7296,13 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
     if r.isPlace {
         t = r.pl.ty
     }
+    if t.kind == "iface" {
+        iv := r.val
+        if r.isPlace {
+            iv = Val(v: load(g, "{ ptr, ptr }", r.pl.addr), ty: t)
+        }
+        return ifaceCall(g, iv, m, ast.show(t))
+    }
     if t.kind == "vec" {
         v := r.val
         if r.isPlace {
@@ -6989,6 +7449,9 @@ fn method(ptr[Gen] g, ast.Node m) -> Val {
         }
         heldEnd(g, mark)
         return out
+    }
+    if t.kind == "opt" {
+        fail(g, m, "this is " + ast.show(t) + ", which may be null, so " + m.name + "() can't be called on it until it is checked (if v := x { v." + m.name + "(...) })")
     }
     fail(g, m, ast.show(t) + " has no methods")
     return Val()
@@ -7445,6 +7908,8 @@ fn runtimeDecls() -> str {
         "declare void @finch_map_free(ptr)",
         "declare void @finch_fn_copy(ptr, ptr)",
         "declare void @finch_fn_drop(ptr)",
+        "declare void @finch_iface_copy(ptr, ptr)",
+        "declare void @finch_iface_drop(ptr)",
         "declare void @finch_sort_by(ptr, i64, i64, ptr, ptr)",
         "declare void @finch_str_own(ptr)",
         "declare void @finch_str_concat(ptr, ptr, ptr)",

@@ -1,0 +1,4 @@
+// expect: one ? is enough
+fn main() {
+    int?? x
+}

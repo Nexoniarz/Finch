@@ -76,7 +76,7 @@ fn operator(ptr[Lexer] lx) -> str {
             return two
         }
     }
-    ones := "(){}[],.:+-*/%&|^~<>=!@"
+    ones := "(){}[],.:+-*/%&|^~<>=!@?"
     c := lx.src.sub(lx.i, lx.i + 1)
     if ones.contains(c) {
         return c

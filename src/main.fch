@@ -15,7 +15,6 @@ import embedded
 import manifest
 import fmt
 import diag
-import time
 import "stdlib.h"
 
 fn version() -> str {
@@ -289,7 +288,7 @@ fn format([]str args) -> int {
 }
 
 fn main([]str args) -> int {
-    started := time.millis()
+    started := host.millis()
     if args.len == 2 && (args[1] == "version" || args[1] == "--version") {
         print(fn_head(diag.colors()))
         return 0
@@ -571,7 +570,7 @@ fn main([]str args) -> int {
     if linker.build(linker.Build(out: out, ir: ir, rt: rt, opt: opt, extra: extra, shared: shared, links: links, name: absolute(file), cflags: cflagList.join(""), ldflags: ldflags), tg, ci) != 0 {
         return 1
     }
-    took := diag.seconds(time.millis() - started)
+    took := diag.seconds(host.millis() - started)
     if cmd == "build" {
         how := "optimized"
         if opt == "-O0" {

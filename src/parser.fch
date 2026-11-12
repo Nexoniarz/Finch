@@ -95,8 +95,20 @@ fn isTypeName(str n) -> bool {
     return names.contains(n) || ast.vecType(n).kind.len > 0
 }
 
-// int, str, ptr[T], []T, Name, module.Name
+// int, str, ptr[T], []T, Name, module.Name, and any of them with ? after: may be missing (null)
 fn parseType(ptr[Parser] p) -> ast.Type {
+    t := parseBaseType(p)
+    if at(p, "?") && !cur(p).nl {
+        next(p)
+        if at(p, "?") {
+            fail(p, cur(p), "one ? is enough: T? is a T or nothing")
+        }
+        return ast.optOf(t)
+    }
+    return t
+}
+
+fn parseBaseType(ptr[Parser] p) -> ast.Type {
     if at(p, "fn") {
         // fn(int, int) -> bool: a function as a value
         next(p)
@@ -191,6 +203,9 @@ fn genericDeclAhead(ptr[Parser] p) -> bool {
         } else if k == "]" {
             depth -= 1
             if depth == 0 {
+                if i + 2 < p.toks.len && p.toks[i + 1].kind == "?" && !p.toks[i + 1].nl {
+                    i += 1                  // Stack[int]? s
+                }
                 return i + 1 < p.toks.len && p.toks[i + 1].kind == "ident" && !p.toks[i + 1].nl
             }
         } else if k == "eof" || p.toks[i].nl && depth == 0 {
@@ -255,8 +270,17 @@ fn atDeclaration(ptr[Parser] p) -> bool {
     if n == "ident" {
         return !p.toks[p.i + 1].nl
     }
+    if n == "?" && peekKind(p, 2) == "?" {
+        return true                 // int?? x: parseType says one ? is enough
+    }
+    if n == "?" && peekKind(p, 2) == "ident" {
+        return !p.toks[p.i + 1].nl && !p.toks[p.i + 2].nl         // int? x
+    }
     if (cur(p).text == "ptr" || cur(p).text == "map") && n == "[" {
         return true
+    }
+    if n == "." && peekKind(p, 2) == "ident" && peekKind(p, 3) == "?" {
+        return peekKind(p, 4) == "ident" && !p.toks[p.i + 4].nl     // shapes.Box? b
     }
     return n == "." && peekKind(p, 2) == "ident" && peekKind(p, 3) == "ident" && !p.toks[p.i + 3].nl
 }
@@ -310,6 +334,8 @@ fn parseProgram(ptr[Parser] p) -> ast.Program {
             prog.links.push(lib)
         } else if at(p, "struct") {
             prog.structs.push(parseStruct(p))
+        } else if at(p, "ident") && cur(p).text == "interface" && peekKind(p, 1) == "ident" {
+            prog.ifaces.push(parseInterface(p))
         } else if at(p, "const") {
             prog.consts.push(parseConst(p))
         } else if at(p, "ident") && cur(p).text == "test" && peekKind(p, 1) == "string" {
@@ -508,6 +534,54 @@ fn parseTParams(ptr[Parser] p) -> []str {
     }
     expect(p, "]", "']' after the type parameters")
     return names
+}
+
+// interface Shape { fn area() -> float }: what a type must be able to do. Any struct or enum with these methods is one.
+fn parseInterface(ptr[Parser] p) -> ast.Node {
+    s := node(p, "interface")
+    next(p)
+    s.name = expect(p, "ident", "an interface name").text
+    expect(p, "{", "'{'")
+    while !at(p, "}") {
+        if at(p, "eof") {
+            fail(p, cur(p), "an interface is never closed (missing '}')")
+        }
+        if !at(p, "fn") {
+            fail(p, cur(p), "unexpected " + describe(cur(p)) + " (an interface lists methods, one per line: fn area() -> float)")
+        }
+        m := node(p, "fn")
+        next(p)
+        m.name = expect(p, "ident", "a method name").text
+        expect(p, "(", "'('")
+        p.depth += 1
+        while !at(p, ")") {
+            if at(p, "mut") {
+                fail(p, cur(p), "an interface's methods can't take mut parameters (yet)")
+            }
+            prm := node(p, "param")
+            prm.ty = parseType(p)
+            prm.name = expect(p, "ident", "a parameter name").text
+            m.kids.push(prm)
+            if !accept(p, ",") {
+                break
+            }
+        }
+        p.depth -= 1
+        expect(p, ")", "')'")
+        m.ty = ast.simple("void")
+        if accept(p, "->") {
+            if !at(p, "!") {
+                m.ty = parseType(p)
+            }
+            m.fallible = accept(p, "!")
+        }
+        if at(p, "{") {
+            fail(p, cur(p), "an interface only names its methods; their code goes in each struct's own  fn Type." + m.name + "(...) { ... }")
+        }
+        s.kids.push(m)
+    }
+    next(p)
+    return s
 }
 
 fn parseStruct(ptr[Parser] p) -> ast.Node {
@@ -713,6 +787,12 @@ fn parseStatement(ptr[Parser] p) -> ast.Node {
 fn parseIf(ptr[Parser] p) -> ast.Node {
     s := node(p, "if")
     expect(p, "if", "'if'")
+    if at(p, "ident") && peekKind(p, 1) == ":=" {
+        // if p := find(name) { ... }: only when there is a value, which p then is
+        s.name = next(p).text
+        next(p)
+        s.flag = true
+    }
     s.kids.push(parseExpr(p))
     s.kids.push(parseBlock(p))
     if accept(p, "else") {

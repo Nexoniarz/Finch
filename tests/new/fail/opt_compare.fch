@@ -1,0 +1,5 @@
+// expect: an optional value (T?) can only be compared with null
+fn main() {
+    int? m = 3
+    print(m > 2)
+}

@@ -68,6 +68,11 @@ fn cacheDir() -> str {
     return tempDir() + "/finch-cache"
 }
 
+// milliseconds, for saying how long a build took
+fn millis() -> int {
+    return int(GetTickCount64())
+}
+
 // is this stream (0 in, 1 out, 2 errors) a console a person is looking at? Then it is also told to understand colours
 // (Windows 10 and newer; the older console just shows them as they are, and FINCH_COLOR=never turns them off).
 fn isTerminal(int fd) -> bool {

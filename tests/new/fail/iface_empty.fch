@@ -1,0 +1,17 @@
+// expect: this Shape holds nothing yet
+interface Shape {
+    fn area() -> float
+}
+struct Sq {
+    float s
+}
+struct Ci {
+    float r
+}
+fn Ci.area() -> float {
+    return self.r
+}
+fn main() {
+    Shape x
+    print(x.area())
+}

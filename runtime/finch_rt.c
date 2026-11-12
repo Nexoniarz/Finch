@@ -199,6 +199,23 @@ void finch_fn_drop(FFn *f) {
     f->env = NULL;
 }
 
+// An interface value is { box, table }: the table starts with how to drop, copy and format what is in the box.
+typedef struct {
+    void *data;
+    void **table;
+} FIface;
+
+void finch_iface_copy(FIface *dst, const FIface *src) {
+    void *data = src->data ? ((void *(*)(void *))src->table[1])(src->data) : NULL;
+    dst->data = data;
+    dst->table = src->table;
+}
+
+void finch_iface_drop(FIface *v) {
+    if (v->data) ((void (*)(void *))v->table[0])(v->data);
+    v->data = NULL;
+}
+
 // list.sort_by(less): a stable merge sort; less(ctx, a, b) says whether the element at a goes before the one at b.
 // Elements are moved as bytes (nothing is copied or dropped), so it works for every element type.
 void finch_sort_by(void *data, int64_t n, int64_t size, int (*less)(void *, const void *, const void *), void *ctx) {
