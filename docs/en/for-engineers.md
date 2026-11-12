@@ -526,7 +526,7 @@ test.
 | Signed integer overflow | UB | defined wraparound (no `nsw`) |
 | Integer division by zero, `INT_MIN / -1` | UB | compile error if constant, otherwise runtime error |
 | Array index out of range | UB | runtime error (also for `[N]T` fields of C structs) |
-| Null dereference | UB | runtime error for `.value`, `.field`, `[i]` |
+| Null dereference | UB | runtime error for `deref(p)`, `.value`, `.field`, `[i]` |
 | Use after free / double free of arrays, strings, structs | common bugs | impossible: no manual freeing of those |
 | Memory leak of arrays, strings, structs | common bug | impossible without `new` |
 | `x & 1 == 0` | `x & (1 == 0)` | `(x & 1) == 0` |

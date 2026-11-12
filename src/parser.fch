@@ -767,8 +767,9 @@ fn parseStatement(ptr[Parser] p) -> ast.Node {
     e := parseExpr(p)
     ops := ["=", "+=", "-=", "*=", "/=", "%="]
     if ops.contains(curKind(p)) && sameLine(p) {
-        if e.kind != "var" && e.kind != "member" && e.kind != "index" {
-            fail(p, start, "only a variable, a field, an element or p.value can be assigned to")
+        derefs := e.kind == "call" && e.name == "deref" && e.kids.len == 1      // deref(p) = x: what p points to
+        if e.kind != "var" && e.kind != "member" && e.kind != "index" && !derefs {
+            fail(p, start, "only a variable, a field, an element or deref(p) can be assigned to")
         }
         s := ast.Node(kind: "assign", line: start.line, col: start.col, file: p.file)
         s.name = next(p).kind

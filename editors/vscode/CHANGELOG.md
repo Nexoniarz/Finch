@@ -8,6 +8,7 @@
 - Snippets: `fnv` (a function value), `sortby`, `fnm` (a function with a mut parameter), `asm`, `interface`, `ifv`, `fno`.
 - Interfaces: `interface Shape { ... }` highlighted, in the outline, and their methods completed after `shape.`.
 - Optional values: `T?` types, `if v := x { }`.
+- `deref(p)` highlighted and described on hover.
 - Errors in the terminal come with the line of code, a `^` under the spot and a `help:` line (the Problems panel is unchanged).
 
 ## 2.6.0

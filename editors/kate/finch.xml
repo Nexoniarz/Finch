@@ -90,6 +90,7 @@
       <item>muladd</item>
       <item>cpu_has</item>
       <item>asm</item>
+      <item>deref</item>
       <item>f32_bits</item>
       <item>f32_from_bits</item>
       <item>f64_bits</item>
