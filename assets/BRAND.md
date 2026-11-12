@@ -19,6 +19,8 @@ Seed dot), the shape of the classic systems languages. `make_logo.py` draws it a
 `python3 assets/make_logo.py --png` (the PNGs are rendered with `rsvg-convert` or Inkscape).
 
 The wordmark is drawn with strokes (no font needed), lowercase, with an orange dot over the **i**.
+In the logo the icon is exactly as tall as the lettering (from the top of the **f** and **h** to the bottom of the
+letters), shares its middle line, and sits about two letter spaces before it.
 Keep clear space around the logo of at least the height of the letter **n**. Don't recolor the mark, rotate it,
 stretch it, add shading or outlines, or put it on busy backgrounds; the dot stays in the f's top-right corner.
 
@@ -55,6 +57,8 @@ sześciokącie Finch Orange (białe f, kropka Seed), kształcie klasycznych jęz
 `make_logo.py` (`python3 assets/make_logo.py --png` zapisuje wszystkie pliki). `logo.svg` jest na jasne tło, `logo-dark.svg` na ciemne,
 `logo-mark.svg` / `logo-mark-dark.svg` to sam znak bez tła (na jasne / na ciemne tło), `icon*` to ikona i awatar, a `social-preview.png` to podgląd linku na GitHubie.
 Napis jest rysowany liniami (nie potrzebuje czcionki), małymi literami, z pomarańczową kropką nad **i**.
+W logo ikona ma dokładnie wysokość liter (od góry **f** i **h** do dołu liter), ma z nimi wspólną linię środkową
+i stoi około dwóch odstępów między literami przed napisem.
 Zostaw wokół logo wolne miejsce co najmniej wysokości litery **n**. Nie zmieniaj kolorów znaku, nie obracaj
 go, nie rozciągaj, nie dodawaj cieni ani obrysów i nie kładź go na pstrokatym tle; kropka zostaje w prawym górnym rogu f.
 
